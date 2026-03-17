@@ -1,5 +1,14 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function clampInt(value, fallback, min, max) {
@@ -35,7 +44,12 @@ function estimateBytes(text) {
 
 function compactByBudget(text, limits) {
   if (typeof text !== "string") {
-    return { text, truncated: false, estimatedTokensBefore: 0, estimatedTokensAfter: 0 };
+    return {
+      text,
+      truncated: false,
+      estimatedTokensBefore: 0,
+      estimatedTokensAfter: 0,
+    };
   }
 
   const estimatedTokensBefore = estimateTokens(text);
@@ -51,11 +65,13 @@ function compactByBudget(text, limits) {
   }
 
   const charBudgetFromTokens = Math.max(800, limits.maxTokens * 4);
-  const effectiveCharBudget = Math.max(800, Math.min(limits.maxChars, charBudgetFromTokens));
+  const effectiveCharBudget = Math.max(
+    800,
+    Math.min(limits.maxChars, charBudgetFromTokens),
+  );
 
   const omittedTokens = Math.max(0, estimatedTokensBefore - limits.maxTokens);
-  const marker =
-    `\n\n[moon truncated ~${omittedTokens} tokens; ` +
+  const marker = `\n\n[moon truncated ~${omittedTokens} tokens; ` +
     `full payload may be available in details]\n\n`;
 
   const sliceBudget = Math.max(220, effectiveCharBudget - marker.length);
@@ -124,6 +140,23 @@ function projectJsonSummary(text) {
   return null;
 }
 
+function resolvePathSetting(api, value) {
+  if (!isNonEmptyString(value)) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (typeof api?.resolvePath === "function") {
+    try {
+      return api.resolvePath(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+
+  return trimmed;
+}
+
 const DEFAULT_TOOL_PROFILES = {
   read: { maxTokens: 6000, maxChars: 32000 },
   "message/readMessages": { maxTokens: 5000, maxChars: 28000 },
@@ -132,10 +165,34 @@ const DEFAULT_TOOL_PROFILES = {
   "web.fetch": { maxTokens: 7000, maxChars: 35000 },
 };
 
+const DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS = 20_000;
+const DEFAULT_MAX_ASSEMBLY_CHARS = 24_000;
+const DEFAULT_FALLBACK_MODE = "disabled";
+const MOON_CLEANSE_TARGET_TOKENS = 40_000;
+const MIN_COMPACTION_TARGET_TOKENS = 2_000;
+const COMPACTION_TARGET_BUDGET_RATIO = 0.45;
+const COMPACTION_SUMMARY_HEADROOM_TOKENS = 200;
+
+function normalizeFallbackMode(raw) {
+  if (!isNonEmptyString(raw)) {
+    return DEFAULT_FALLBACK_MODE;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "disabled" || normalized === "off" || normalized === "none") {
+    return "disabled";
+  }
+  return "openclaw";
+}
+
 function resolveLimits(pluginConfig, toolName) {
   const globalMaxTokens = clampInt(pluginConfig.maxTokens, 12000, 500, 500000);
   const globalMaxChars = clampInt(pluginConfig.maxChars, 60000, 1000, 200000);
-  const maxRetainedBytes = clampInt(pluginConfig.maxRetainedBytes, 250000, 0, 5000000);
+  const maxRetainedBytes = clampInt(
+    pluginConfig.maxRetainedBytes,
+    250000,
+    0,
+    5000000,
+  );
 
   const profileDefault = isObject(DEFAULT_TOOL_PROFILES[toolName])
     ? DEFAULT_TOOL_PROFILES[toolName]
@@ -159,6 +216,51 @@ function resolveLimits(pluginConfig, toolName) {
   );
 
   return { maxTokens, maxChars, maxRetainedBytes };
+}
+
+function resolveContextEngineSettings(api) {
+  const pluginConfig = isObject(api?.pluginConfig) ? api.pluginConfig : {};
+
+  return {
+    moonPath: resolvePathSetting(api, pluginConfig.moonPath) ||
+      (isNonEmptyString(process.env.MOON_BIN)
+        ? process.env.MOON_BIN.trim()
+        : "moon"),
+    moonHome: resolvePathSetting(api, pluginConfig.moonHome) ||
+      (isNonEmptyString(process.env.MOON_HOME)
+        ? process.env.MOON_HOME.trim()
+        : null),
+    memoryDir: resolvePathSetting(api, pluginConfig.memoryDir),
+    memoryFile: resolvePathSetting(api, pluginConfig.memoryFile),
+    contextEngineTimeoutMs: clampInt(
+      pluginConfig.contextEngineTimeoutMs,
+      DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS,
+      1000,
+      300000,
+    ),
+    maxAssemblyChars: clampInt(
+      pluginConfig.maxAssemblyChars,
+      DEFAULT_MAX_ASSEMBLY_CHARS,
+      1000,
+      200000,
+    ),
+    syncAfterTurn: pluginConfig.syncAfterTurn !== false,
+    fallbackMode: normalizeFallbackMode(
+      pluginConfig.fallbackMode ||
+        (isNonEmptyString(process.env.MOON_CONTEXT_ENGINE_FALLBACK_MODE)
+          ? process.env.MOON_CONTEXT_ENGINE_FALLBACK_MODE
+          : DEFAULT_FALLBACK_MODE),
+    ),
+    compactFallbackOnSkip: pluginConfig.compactFallbackOnSkip === true,
+  };
+}
+
+function openclawFallbackEnabled(settings) {
+  return settings?.fallbackMode === "openclaw";
+}
+
+function fallbackReason(trigger, reason) {
+  return `moon->openclaw fallback trigger=${trigger} reason=${reason}`;
 }
 
 function compactToolResultMessage(message, toolName, pluginConfig) {
@@ -191,7 +293,10 @@ function compactToolResultMessage(message, toolName, pluginConfig) {
   let totalTokensAfter = 0;
 
   for (const block of message.content) {
-    if (!isObject(block) || block.type !== "text" || typeof block.text !== "string") {
+    if (
+      !isObject(block) || block.type !== "text" ||
+      typeof block.text !== "string"
+    ) {
       nextContent.push(block);
       continue;
     }
@@ -243,10 +348,9 @@ function compactToolResultMessage(message, toolName, pluginConfig) {
   const metadata = {
     compactedAt: new Date().toISOString(),
     toolName: toolName || null,
-    strategy:
-      strategies.size > 0
-        ? Array.from(strategies).sort().join("+")
-        : "head_tail_trim",
+    strategy: strategies.size > 0
+      ? Array.from(strategies).sort().join("+")
+      : "head_tail_trim",
     textBlockCount,
     compactedBlockCount,
     originalTextChars: totalCharsBefore,
@@ -272,14 +376,725 @@ function compactToolResultMessage(message, toolName, pluginConfig) {
   return { ...message, content: nextContent, details };
 }
 
+function extractReportDetail(report, prefix) {
+  if (!isObject(report) || !Array.isArray(report.details)) {
+    return null;
+  }
+
+  for (const detail of report.details) {
+    if (typeof detail === "string" && detail.startsWith(prefix)) {
+      return detail.slice(prefix.length);
+    }
+  }
+
+  return null;
+}
+
+function parseCommandReport(raw) {
+  if (!isNonEmptyString(raw)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      isObject(parsed) && Array.isArray(parsed.details) &&
+      Array.isArray(parsed.issues)
+    ) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function serializeMessagesAsJsonl(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "";
+  }
+
+  return `${
+    messages.map((message) => JSON.stringify({ message })).join("\n")
+  }\n`;
+}
+
+function sanitizeSessionId(sessionId) {
+  if (!isNonEmptyString(sessionId)) {
+    return "session";
+  }
+  return sessionId.trim().replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+function createTempTranscript(messages, sessionId) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "moon-context-engine-"));
+  const filePath = path.join(dir, `${sanitizeSessionId(sessionId)}.jsonl`);
+  fs.writeFileSync(filePath, serializeMessagesAsJsonl(messages), "utf8");
+
+  return {
+    filePath,
+    cleanup() {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup only.
+      }
+    },
+  };
+}
+
+function estimateMessageTokens(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return 0;
+  }
+
+  try {
+    return estimateTokens(JSON.stringify(messages));
+  } catch {
+    return 0;
+  }
+}
+
+function trimAssemblyText(text, maxChars) {
+  if (typeof text !== "string" || text.length <= maxChars) {
+    return text;
+  }
+
+  const marker = `\n\n[moon assembly truncated; omitted ${
+    text.length - maxChars
+  } chars]\n\n`;
+  const budget = Math.max(400, maxChars - marker.length);
+  const head = Math.max(240, Math.floor(budget * 0.72));
+  const tail = Math.max(120, budget - head);
+
+  return `${text.slice(0, head)}${marker}${text.slice(-tail)}`;
+}
+
+function logMoonPluginError(api, message) {
+  const logger = api?.logger ?? api?.runtime?.logger ?? api?.log;
+  if (typeof logger?.error === "function") {
+    try {
+      logger.error(message);
+      return;
+    } catch {
+      // Fall back to stderr if the host logger rejects the payload.
+    }
+  }
+
+  console.error(`[moon plugin] ${message}`);
+}
+
+function stripFrontMatter(text) {
+  if (!isNonEmptyString(text)) {
+    return "";
+  }
+
+  const trimmedStart = text.trimStart();
+  if (!trimmedStart.startsWith("---")) {
+    return text.trim();
+  }
+
+  const match = trimmedStart.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/);
+  if (!match) {
+    return text.trim();
+  }
+
+  return trimmedStart.slice(match[0].length).trim();
+}
+
+function readFileIfExists(filePath) {
+  if (!isNonEmptyString(filePath)) {
+    return null;
+  }
+
+  const resolved = filePath.trim();
+  if (!fs.existsSync(resolved)) {
+    return null;
+  }
+
+  return fs.readFileSync(resolved, "utf8");
+}
+
+function parseJsonlEntries(raw) {
+  if (!isNonEmptyString(raw)) {
+    return [];
+  }
+
+  const entries = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // Ignore malformed lines; OpenClaw repair handles the authoritative path.
+    }
+  }
+  return entries;
+}
+
+function resolveSessionBranch(entries) {
+  const branchableEntries = entries.filter(
+    (entry) =>
+      isObject(entry) && entry.type !== "session" && isNonEmptyString(entry.id),
+  );
+  if (branchableEntries.length === 0) {
+    return [];
+  }
+
+  const byId = new Map(branchableEntries.map((entry) => [entry.id, entry]));
+  const seen = new Set();
+  const pathEntries = [];
+  let current = branchableEntries[branchableEntries.length - 1];
+
+  while (
+    isObject(current) && isNonEmptyString(current.id) && !seen.has(current.id)
+  ) {
+    pathEntries.unshift(current);
+    seen.add(current.id);
+    current = isNonEmptyString(current.parentId)
+      ? byId.get(current.parentId)
+      : null;
+  }
+
+  return pathEntries;
+}
+
+function isContextBearingEntry(entry) {
+  return (
+    isObject(entry) &&
+    (entry.type === "message" || entry.type === "custom_message" ||
+      entry.type === "branch_summary")
+  );
+}
+
+function estimateEntryTokens(entry) {
+  if (!isObject(entry)) {
+    return 0;
+  }
+
+  if (entry.type === "message") {
+    return estimateTokens(JSON.stringify(entry.message ?? {}));
+  }
+  if (entry.type === "custom_message") {
+    return estimateTokens(
+      JSON.stringify({
+        customType: entry.customType,
+        content: entry.content,
+        details: entry.details,
+      }),
+    );
+  }
+  if (entry.type === "branch_summary") {
+    return estimateTokens(entry.summary ?? "");
+  }
+
+  return 0;
+}
+
+function resolveCompactionTargetTokens(tokenBudget) {
+  if (Number.isFinite(tokenBudget) && tokenBudget > 0) {
+    const budgetTarget = Math.floor(
+      tokenBudget * COMPACTION_TARGET_BUDGET_RATIO,
+    );
+    return Math.max(
+      MIN_COMPACTION_TARGET_TOKENS,
+      Math.min(MOON_CLEANSE_TARGET_TOKENS, budgetTarget),
+    );
+  }
+
+  return MOON_CLEANSE_TARGET_TOKENS;
+}
+
+function normalizeCompactionSummary(text, targetTokens) {
+  const summary = stripFrontMatter(text);
+  if (!isNonEmptyString(summary)) {
+    return null;
+  }
+
+  const summaryTokenBudget = Math.min(
+    3000,
+    Math.max(500, Math.floor(targetTokens * 0.35)),
+  );
+  const summaryCharBudget = Math.min(
+    24_000,
+    Math.max(2_000, summaryTokenBudget * 6),
+  );
+  return compactByBudget(summary, {
+    maxTokens: summaryTokenBudget,
+    maxChars: summaryCharBudget,
+  }).text;
+}
+
+function generateSessionEntryId(existingIds) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const id = randomUUID().slice(0, 8);
+    if (!existingIds.has(id)) {
+      return id;
+    }
+  }
+  return randomUUID();
+}
+
+function appendMoonCompactionEntry(sessionFile, params) {
+  if (!isNonEmptyString(sessionFile)) {
+    return {
+      ok: false,
+      compacted: false,
+      reason: "session file missing",
+    };
+  }
+
+  const resolvedSessionFile = sessionFile.trim();
+  if (!fs.existsSync(resolvedSessionFile)) {
+    return {
+      ok: false,
+      compacted: false,
+      reason: `session file not found: ${resolvedSessionFile}`,
+    };
+  }
+
+  const raw = fs.readFileSync(resolvedSessionFile, "utf8");
+  const entries = parseJsonlEntries(raw);
+  const header = entries[0];
+  if (
+    !isObject(header) || header.type !== "session" ||
+    !isNonEmptyString(header.id)
+  ) {
+    return {
+      ok: false,
+      compacted: false,
+      reason: "invalid OpenClaw session transcript header",
+    };
+  }
+
+  const branch = resolveSessionBranch(entries);
+  if (branch.length === 0) {
+    return {
+      ok: true,
+      compacted: false,
+      reason: "empty session",
+    };
+  }
+
+  const targetTokens = resolveCompactionTargetTokens(params.tokenBudget);
+  const summary = normalizeCompactionSummary(
+    params.cleanseSummaryText,
+    targetTokens,
+  );
+  if (!isNonEmptyString(summary)) {
+    const reason = params.cleanseReason === "no-pressure-snapshot"
+      ? "moon cleanse did not trigger"
+      : "moon context-engine did not emit a readable cleanse summary";
+    params.logError?.(
+      `missing cleanse summary during compaction session_id=${
+        params.sessionId ?? "unknown"
+      } reason=${reason} cleanse_summary_path=${
+        params.cleanseSummaryPath ?? "none"
+      } assembly_path=${params.assemblyPath ?? "none"}`,
+    );
+    return {
+      ok: true,
+      compacted: false,
+      reason,
+    };
+  }
+
+  const contextEntries = branch.filter(isContextBearingEntry);
+  const summaryTokens = estimateTokens(summary);
+  const tailBudget = Math.max(
+    0,
+    targetTokens - summaryTokens - COMPACTION_SUMMARY_HEADROOM_TOKENS,
+  );
+
+  let keptTokens = 0;
+  let keptEntryCount = 0;
+  let firstKeptEntryId = branch[branch.length - 1]?.id ?? null;
+
+  for (let index = contextEntries.length - 1; index >= 0; index -= 1) {
+    const entry = contextEntries[index];
+    const entryTokens = estimateEntryTokens(entry);
+    if (keptEntryCount > 0 && keptTokens + entryTokens > tailBudget) {
+      break;
+    }
+
+    keptTokens += entryTokens;
+    keptEntryCount += 1;
+    firstKeptEntryId = entry.id;
+  }
+
+  if (!isNonEmptyString(firstKeptEntryId)) {
+    firstKeptEntryId = branch[branch.length - 1].id;
+  }
+
+  const existingIds = new Set(
+    entries
+      .filter((entry) => isObject(entry) && isNonEmptyString(entry.id))
+      .map((entry) => entry.id),
+  );
+  const compactionEntry = {
+    type: "compaction",
+    id: generateSessionEntryId(existingIds),
+    parentId: branch[branch.length - 1].id,
+    timestamp: new Date().toISOString(),
+    summary,
+    firstKeptEntryId,
+    tokensBefore: Number.isFinite(params.tokensBefore)
+      ? Math.max(0, Math.floor(params.tokensBefore))
+      : contextEntries.reduce(
+        (total, entry) => total + estimateEntryTokens(entry),
+        0,
+      ),
+    details: {
+      moon: {
+        source: "moon-context-engine",
+        cleanseSummaryPath: params.cleanseSummaryPath ?? null,
+        assemblyPath: params.assemblyPath ?? null,
+        cleanseReason: params.cleanseReason ?? null,
+        targetTokens,
+        keptEntryCount,
+        summaryTokens,
+        keptTokens,
+      },
+    },
+  };
+
+  const leadingNewline = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
+  fs.appendFileSync(
+    resolvedSessionFile,
+    `${leadingNewline}${JSON.stringify(compactionEntry)}\n`,
+    "utf8",
+  );
+
+  return {
+    ok: true,
+    compacted: true,
+    result: {
+      summary,
+      firstKeptEntryId,
+      tokensBefore: compactionEntry.tokensBefore,
+      tokensAfter: summaryTokens + keptTokens,
+      details: compactionEntry.details,
+    },
+  };
+}
+
+async function runMoonContextEngine(api, settings, params) {
+  const sessionId = sanitizeSessionId(params.sessionId);
+  const sourcePath = isNonEmptyString(params.sourcePath) &&
+      fs.existsSync(params.sourcePath.trim())
+    ? params.sourcePath.trim()
+    : null;
+  const usedTokens = Number.isFinite(params.usedTokens)
+    ? Math.max(0, Math.floor(params.usedTokens))
+    : null;
+  const maxTokens = Number.isFinite(params.maxTokens)
+    ? Math.max(1, Math.floor(params.maxTokens))
+    : null;
+
+  let tempTranscript = null;
+  const effectiveSourcePath = sourcePath ||
+    (() => {
+      tempTranscript = createTempTranscript(params.messages, sessionId);
+      return tempTranscript.filePath;
+    })();
+
+  const argv = [
+    settings.moonPath,
+    "--json",
+    "--allow-out-of-bounds",
+    "context-engine",
+    "--source",
+    effectiveSourcePath,
+    "--session-id",
+    sessionId,
+  ];
+  if (usedTokens !== null && maxTokens !== null) {
+    argv.push(
+      "--used-tokens",
+      String(usedTokens),
+      "--max-tokens",
+      String(maxTokens),
+    );
+  }
+  if (params.forceCleanse === true) {
+    argv.push("--force-cleanse");
+  }
+
+  const env = { ...process.env };
+  if (isNonEmptyString(settings.moonHome)) {
+    env.MOON_HOME = settings.moonHome;
+  }
+
+  try {
+    const result = await api.runtime.system.runCommandWithTimeout(argv, {
+      timeoutMs: settings.contextEngineTimeoutMs,
+      env,
+    });
+
+    if (result.code !== 0) {
+      throw new Error(
+        result.stderr.trim() || result.stdout.trim() ||
+          `moon context-engine exited with ${String(result.code)}`,
+      );
+    }
+
+    const report = parseCommandReport(result.stdout);
+    if (!report) {
+      throw new Error("moon context-engine returned non-JSON output");
+    }
+    if (report.ok !== true) {
+      throw new Error(
+        Array.isArray(report.issues) && report.issues.length > 0
+          ? report.issues.join("; ")
+          : "moon context-engine reported failure",
+      );
+    }
+
+    const assemblyPath = extractReportDetail(
+      report,
+      "context_engine.assembly_path=",
+    );
+    if (!isNonEmptyString(assemblyPath) || !fs.existsSync(assemblyPath)) {
+      throw new Error(
+        "moon context-engine did not emit a readable assembly artifact",
+      );
+    }
+    const cleanseSummaryPath = extractReportDetail(
+      report,
+      "context_engine.cleanse_summary_path=",
+    );
+    const effectiveCleanseSummaryPath =
+      isNonEmptyString(cleanseSummaryPath) && cleanseSummaryPath !== "none"
+        ? cleanseSummaryPath
+        : null;
+
+    return {
+      report,
+      assemblyPath,
+      assemblyText: fs.readFileSync(assemblyPath, "utf8"),
+      cleanseSummaryPath: effectiveCleanseSummaryPath,
+      cleanseSummaryText: readFileIfExists(effectiveCleanseSummaryPath),
+      cleanseReason: extractReportDetail(
+        report,
+        "context_engine.cleanse_reason=",
+      ),
+    };
+  } finally {
+    tempTranscript?.cleanup();
+  }
+}
+
+function createMoonContextEngine(api) {
+  const sessionFiles = new Map();
+
+  function cacheSessionFile(sessionId, sessionFile) {
+    if (isNonEmptyString(sessionId) && isNonEmptyString(sessionFile)) {
+      sessionFiles.set(sessionId.trim(), sessionFile.trim());
+    }
+  }
+
+  function knownSessionFile(sessionId) {
+    if (!isNonEmptyString(sessionId)) {
+      return null;
+    }
+    const cached = sessionFiles.get(sessionId.trim());
+    if (isNonEmptyString(cached) && fs.existsSync(cached)) {
+      return cached;
+    }
+    return null;
+  }
+
+  return {
+    info: {
+      id: "moon",
+      name: "Moon Context Engine",
+      version: "1.0.0",
+      ownsCompaction: true,
+    },
+    async bootstrap(params) {
+      cacheSessionFile(params.sessionId, params.sessionFile);
+      return {
+        bootstrapped: false,
+        reason:
+          "moon bootstrap caches the OpenClaw transcript path for later checkpoints",
+      };
+    },
+    async ingest() {
+      return { ingested: false };
+    },
+    async assemble(params) {
+      const settings = resolveContextEngineSettings(api);
+      const usedTokens = estimateMessageTokens(params.messages);
+      try {
+        const output = await runMoonContextEngine(api, settings, {
+          sessionId: params.sessionId,
+          sourcePath: knownSessionFile(params.sessionId),
+          messages: params.messages,
+          usedTokens,
+          maxTokens: params.tokenBudget,
+        });
+
+        const systemPromptAddition = trimAssemblyText(
+          output.assemblyText,
+          settings.maxAssemblyChars,
+        );
+        return {
+          messages: Array.isArray(params.messages) ? params.messages : [],
+          estimatedTokens: usedTokens +
+            estimateTokens(systemPromptAddition || ""),
+          ...(isNonEmptyString(systemPromptAddition)
+            ? { systemPromptAddition }
+            : {}),
+        };
+      } catch (err) {
+        if (!openclawFallbackEnabled(settings)) {
+          throw err;
+        }
+        logMoonPluginError(
+          api,
+          fallbackReason("assemble-error", String(err)),
+        );
+        return {
+          messages: Array.isArray(params.messages) ? params.messages : [],
+          estimatedTokens: usedTokens,
+        };
+      }
+    },
+    async afterTurn(params) {
+      cacheSessionFile(params.sessionId, params.sessionFile);
+
+      const settings = resolveContextEngineSettings(api);
+      if (!settings.syncAfterTurn) {
+        return;
+      }
+
+      try {
+        await runMoonContextEngine(api, settings, {
+          sessionId: params.sessionId,
+          sourcePath: params.sessionFile,
+          messages: params.messages,
+          usedTokens: estimateMessageTokens(params.messages),
+          maxTokens: params.tokenBudget,
+        });
+      } catch (err) {
+        if (!openclawFallbackEnabled(settings)) {
+          throw err;
+        }
+        logMoonPluginError(
+          api,
+          fallbackReason("after-turn-error", String(err)),
+        );
+      }
+    },
+    async compact(params) {
+      cacheSessionFile(params.sessionId, params.sessionFile);
+      const settings = resolveContextEngineSettings(api);
+
+      try {
+        const output = await runMoonContextEngine(api, settings, {
+          sessionId: params.sessionId,
+          sourcePath: params.sessionFile || knownSessionFile(params.sessionId),
+          messages: [],
+          usedTokens: Number.isFinite(params.currentTokenCount)
+            ? params.currentTokenCount
+            : null,
+          maxTokens: params.tokenBudget,
+          forceCleanse: params.force === true,
+        });
+
+        const compacted = appendMoonCompactionEntry(params.sessionFile, {
+          tokenBudget: params.tokenBudget,
+          tokensBefore: params.currentTokenCount,
+          sessionId: params.sessionId,
+          cleanseSummaryPath: output.cleanseSummaryPath,
+          cleanseSummaryText: output.cleanseSummaryText,
+          cleanseReason: output.cleanseReason,
+          assemblyPath: output.assemblyPath,
+          logError: (message) => logMoonPluginError(api, message),
+        });
+        if (!openclawFallbackEnabled(settings) || compacted.compacted === true) {
+          return compacted;
+        }
+        if (compacted.ok === false) {
+          const reason = fallbackReason(
+            "compact-error",
+            compacted.reason || "moon compact failed",
+          );
+          logMoonPluginError(api, reason);
+          return {
+            ok: false,
+            compacted: false,
+            reason,
+          };
+        }
+        if (
+          compacted.ok === true &&
+          compacted.compacted === false &&
+          settings.compactFallbackOnSkip
+        ) {
+          const reason = fallbackReason(
+            "compact-skip",
+            compacted.reason || "moon compact skipped",
+          );
+          logMoonPluginError(api, reason);
+          return {
+            ok: false,
+            compacted: false,
+            reason,
+          };
+        }
+        return compacted;
+      } catch (err) {
+        if (openclawFallbackEnabled(settings)) {
+          const reason = fallbackReason("compact-error", String(err));
+          logMoonPluginError(api, reason);
+          return {
+            ok: false,
+            compacted: false,
+            reason,
+          };
+        }
+        return {
+          ok: false,
+          compacted: false,
+          reason: String(err),
+        };
+      }
+    },
+    async dispose() {
+      sessionFiles.clear();
+    },
+  };
+}
+
 export default {
   id: "moon",
   register(api) {
+    api.registerContextEngine("moon", () => createMoonContextEngine(api));
+
     api.on("tool_result_persist", (event, ctx) => {
-      const pluginCfg = isObject(api && api.pluginConfig) ? api.pluginConfig : {};
+      const pluginCfg = isObject(api && api.pluginConfig)
+        ? api.pluginConfig
+        : {};
       const toolName = event.toolName || ctx.toolName || "";
       const next = compactToolResultMessage(event.message, toolName, pluginCfg);
       return { message: next };
     });
   },
+};
+
+export const __moonTest = {
+  appendMoonCompactionEntry,
+  createMoonContextEngine,
+  extractReportDetail,
+  parseJsonlEntries,
+  parseCommandReport,
+  resolveContextEngineSettings,
+  serializeMessagesAsJsonl,
+  stripFrontMatter,
+  trimAssemblyText,
+  logMoonPluginError,
 };

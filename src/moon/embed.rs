@@ -1,7 +1,12 @@
 use crate::moon::config::MoonEmbedConfig;
+use crate::moon::files::{file_epoch_secs, gather_files_with_extension};
 use crate::moon::paths::MoonPaths;
 use crate::moon::qmd;
-use crate::moon::state::MoonState;
+use crate::moon::state::{
+    LIBRARY_EMBED_COLLECTION, MoonState, embedded_projection_epoch, hot_projection_dir_for_collection,
+    is_hot_embed_collection, record_embedded_projection,
+    retain_embedded_projections_for_collection,
+};
 use crate::moon::util::now_epoch_secs;
 use anyhow::{Context, Result};
 use fs2::FileExt;
@@ -10,7 +15,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::Instant;
 use thiserror::Error;
 
 const EMBED_LOCK_STALE_TTL_SECS: u64 = 21_600;
@@ -110,49 +115,22 @@ fn is_cooldown_ready(last_epoch: Option<u64>, now_epoch: u64, cooldown_secs: u64
     }
 }
 
-fn path_epoch_secs(path: &Path) -> u64 {
-    let Ok(metadata) = fs::metadata(path) else {
-        return 0;
-    };
-    let Ok(modified) = metadata.modified() else {
-        return 0;
-    };
-    let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
-        return 0;
-    };
-    duration.as_secs()
+fn projection_root_for_collection(paths: &MoonPaths, collection_name: &str) -> PathBuf {
+    if collection_name.trim() == LIBRARY_EMBED_COLLECTION {
+        return paths.mlib_dir.clone();
+    }
+    if is_hot_embed_collection(collection_name) {
+        return hot_projection_dir_for_collection(paths, collection_name);
+    }
+    paths.mlib_dir.clone()
 }
 
 fn gather_projection_docs(root: &Path, out: &mut Vec<ProjectionDoc>) -> Result<()> {
-    if !root.exists() {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(root)
-        .with_context(|| format!("failed to read projection dir {}", root.display()))?;
-
-    for entry in entries {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", root.display()))?;
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            gather_projection_docs(&path, out)?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
-        {
-            continue;
-        }
+    let mut paths = Vec::new();
+    gather_files_with_extension(root, "md", true, &mut paths)?;
+    for path in paths {
         out.push(ProjectionDoc {
-            mtime_epoch_secs: path_epoch_secs(&path),
+            mtime_epoch_secs: file_epoch_secs(&path),
             path,
         });
     }
@@ -160,9 +138,9 @@ fn gather_projection_docs(root: &Path, out: &mut Vec<ProjectionDoc>) -> Result<(
     Ok(())
 }
 
-fn projection_docs(paths: &MoonPaths) -> Result<Vec<ProjectionDoc>> {
+fn projection_docs(root: &Path) -> Result<Vec<ProjectionDoc>> {
     let mut docs = Vec::new();
-    gather_projection_docs(&paths.moon_home.join("mds"), &mut docs)?;
+    gather_projection_docs(root, &mut docs)?;
     docs.sort_by(|a, b| {
         a.mtime_epoch_secs
             .cmp(&b.mtime_epoch_secs)
@@ -171,13 +149,17 @@ fn projection_docs(paths: &MoonPaths) -> Result<Vec<ProjectionDoc>> {
     Ok(docs)
 }
 
-fn pending_docs<'a>(state: &MoonState, docs: &'a [ProjectionDoc]) -> Vec<&'a ProjectionDoc> {
+fn pending_docs<'a>(
+    state: &MoonState,
+    collection_name: &str,
+    docs: &'a [ProjectionDoc],
+) -> Vec<&'a ProjectionDoc> {
     docs.iter()
         .filter(|doc| {
             let key = doc.path.display().to_string();
-            match state.embedded_projections.get(&key) {
+            match embedded_projection_epoch(state, collection_name, &key) {
                 None => true,
-                Some(last_embed) => doc.mtime_epoch_secs > *last_embed,
+                Some(last_embed) => doc.mtime_epoch_secs > last_embed,
             }
         })
         .collect()
@@ -286,6 +268,86 @@ fn run_bounded_embed_with_backoff(
     }
 }
 
+fn infer_doc_collection(paths: &MoonPaths, path: &Path) -> String {
+    if path.starts_with(&paths.mlib_dir) {
+        return LIBRARY_EMBED_COLLECTION.to_string();
+    }
+    if let Ok(relative) = path.strip_prefix(&paths.mds_dir)
+        && let Some(component) = relative.components().next()
+    {
+        let candidate = component.as_os_str().to_string_lossy().trim().to_string();
+        if is_hot_embed_collection(&candidate) {
+            return candidate;
+        }
+    }
+    LIBRARY_EMBED_COLLECTION.to_string()
+}
+
+fn all_projection_docs(paths: &MoonPaths) -> Result<Vec<ProjectionDoc>> {
+    let mut docs = projection_docs(&paths.mlib_dir)?;
+    let mut hot_docs = projection_docs(&paths.mds_dir)?;
+    docs.append(&mut hot_docs);
+    Ok(docs)
+}
+
+fn reconcile_embedded_projection_state(paths: &MoonPaths, state: &mut MoonState) -> Result<()> {
+    let docs = all_projection_docs(paths)?;
+    let existing_paths = docs
+        .iter()
+        .map(|doc| doc.path.display().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    let collection_names = state
+        .embedded_projection_collections
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for collection_name in collection_names {
+        retain_embedded_projections_for_collection(state, &collection_name, |path, _| {
+            existing_paths.contains(path)
+        });
+    }
+    Ok(())
+}
+
+fn mark_global_embed_success(paths: &MoonPaths, state: &mut MoonState, embedded_at: u64) -> Result<usize> {
+    let docs = all_projection_docs(paths)?;
+    let mut recorded = 0usize;
+    for doc in docs {
+        let collection_name = infer_doc_collection(paths, &doc.path);
+        let path_key = doc.path.display().to_string();
+        let is_pending = embedded_projection_epoch(state, &collection_name, &path_key)
+            .is_none_or(|last_embed| doc.mtime_epoch_secs > last_embed);
+        if !is_pending {
+            continue;
+        }
+        record_embedded_projection(
+            state,
+            &collection_name,
+            path_key,
+            embedded_at.max(doc.mtime_epoch_secs),
+        );
+        recorded += 1;
+    }
+    reconcile_embedded_projection_state(paths, state)?;
+    Ok(recorded)
+}
+
+fn clear_drained_pending_collections(paths: &MoonPaths, state: &mut MoonState) -> Result<()> {
+    let pending_collections = state
+        .pending_embed_collections
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for collection_name in pending_collections {
+        let projection_root = projection_root_for_collection(paths, &collection_name);
+        let docs = projection_docs(&projection_root)?;
+        if pending_docs(state, &collection_name, &docs).is_empty() {
+            state.pending_embed_collections.remove(&collection_name);
+        }
+    }
+    Ok(())
+}
+
 pub fn run(
     paths: &MoonPaths,
     state: &mut MoonState,
@@ -294,9 +356,11 @@ pub fn run(
 ) -> std::result::Result<EmbedRunSummary, EmbedRunError> {
     let started = Instant::now();
     let now_epoch = now_epoch_secs().map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
+    let projection_root = projection_root_for_collection(paths, &opts.collection_name);
 
-    let docs = projection_docs(paths).map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
-    let pending = pending_docs(state, &docs);
+    let docs = projection_docs(&projection_root)
+        .map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
+    let pending = pending_docs(state, &opts.collection_name, &docs);
     let pending_before = pending.len();
 
     if opts.caller == EmbedCaller::Watcher {
@@ -383,24 +447,7 @@ pub fn run(
 
     match probe.capability {
         qmd::EmbedCapability::Bounded => {}
-        qmd::EmbedCapability::UnboundedOnly => {
-            if opts.caller == EmbedCaller::Watcher {
-                return Ok(EmbedRunSummary {
-                    collection: opts.collection_name.clone(),
-                    mode: opts.caller.as_str().to_string(),
-                    capability: probe.capability.as_str().to_string(),
-                    requested_max_docs: opts.max_docs,
-                    selected_docs,
-                    embedded_docs: 0,
-                    pending_before,
-                    pending_after: pending_before,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    degraded: true,
-                    skip_reason: SkipReason::CapabilityMissing.as_str().to_string(),
-                });
-            }
-            return Err(EmbedRunError::CapabilityMissing(probe.note));
-        }
+        qmd::EmbedCapability::UnboundedOnly => {}
         qmd::EmbedCapability::Missing => {
             if opts.caller == EmbedCaller::Watcher {
                 return Ok(EmbedRunSummary {
@@ -451,7 +498,27 @@ pub fn run(
         }
     };
 
-    let (embedded_docs, exec) = run_bounded_embed_with_backoff(paths, opts, selected_docs)?;
+    let (embedded_docs, exec) = match probe.capability {
+        qmd::EmbedCapability::Bounded => run_bounded_embed_with_backoff(paths, opts, selected_docs)?,
+        qmd::EmbedCapability::UnboundedOnly => {
+            let requested_batch = selected_docs.max(1);
+            let exec =
+                qmd::embed_global_batched(&paths.qmd_bin, requested_batch, opts.max_cycle_secs)
+                    .map_err(|err| {
+                        let timeout_text = opts
+                            .max_cycle_secs
+                            .map(|secs| secs.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        EmbedRunError::Failed(format!(
+                            "global-embed-failed max_docs_per_batch={requested_batch} timeout_secs={timeout_text} error={err:#}"
+                        ))
+                    })?;
+            let recorded = mark_global_embed_success(paths, state, now_epoch)
+                .map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
+            (recorded, exec)
+        }
+        qmd::EmbedCapability::Missing => unreachable!("missing capability handled above"),
+    };
 
     if qmd::output_indicates_embed_status_failed(&exec.stdout, &exec.stderr) {
         return Err(EmbedRunError::StatusFailed(
@@ -459,22 +526,22 @@ pub fn run(
         ));
     }
 
-    for doc in selected.iter().take(embedded_docs) {
-        state.embedded_projections.insert(
-            doc.path.display().to_string(),
-            now_epoch.max(doc.mtime_epoch_secs),
-        );
+    if probe.capability == qmd::EmbedCapability::Bounded {
+        for doc in selected.iter().take(embedded_docs) {
+            record_embedded_projection(
+                state,
+                &opts.collection_name,
+                doc.path.display().to_string(),
+                now_epoch.max(doc.mtime_epoch_secs),
+            );
+        }
+        reconcile_embedded_projection_state(paths, state)
+            .map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
     }
 
-    let existing_projection_paths = docs
-        .iter()
-        .map(|doc| doc.path.display().to_string())
-        .collect::<std::collections::BTreeSet<_>>();
-    state
-        .embedded_projections
-        .retain(|path, _| existing_projection_paths.contains(path));
-
-    let pending_after = pending_docs(state, &docs).len();
+    let pending_after = pending_docs(state, &opts.collection_name, &docs).len();
+    clear_drained_pending_collections(paths, state)
+        .map_err(|err| EmbedRunError::Failed(format!("{err:#}")))?;
 
     Ok(EmbedRunSummary {
         collection: opts.collection_name.clone(),
@@ -491,6 +558,38 @@ pub fn run(
     })
 }
 
+pub fn run_manual_now(
+    paths: &MoonPaths,
+    state: &mut MoonState,
+    cfg: &MoonEmbedConfig,
+    collection_name: &str,
+) -> std::result::Result<EmbedRunSummary, EmbedRunError> {
+    run(
+        paths,
+        state,
+        cfg,
+        &EmbedRunOptions {
+            collection_name: collection_name.to_string(),
+            max_docs: cfg.max_docs_per_cycle as usize,
+            dry_run: false,
+            caller: EmbedCaller::Manual,
+            max_cycle_secs: Some(cfg.max_cycle_secs),
+        },
+    )
+}
+
+pub fn clear_pending_collection_if_drained(
+    paths: &MoonPaths,
+    state: &mut MoonState,
+    collection_name: &str,
+    summary: &EmbedRunSummary,
+) {
+    if summary.pending_after == 0 || (summary.pending_before == 0 && summary.selected_docs == 0) {
+        state.pending_embed_collections.remove(collection_name);
+    }
+    let _ = clear_drained_pending_collections(paths, state);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProjectionDoc, pending_docs};
@@ -501,10 +600,14 @@ mod tests {
     fn pending_docs_detects_missing_and_stale_epochs() {
         let mut state = MoonState::default();
         state
-            .embedded_projections
+            .embedded_projection_collections
+            .entry("history_hot".to_string())
+            .or_default()
             .insert("/tmp/a.md".to_string(), 100);
         state
-            .embedded_projections
+            .embedded_projection_collections
+            .entry("history_hot".to_string())
+            .or_default()
             .insert("/tmp/b.md".to_string(), 300);
 
         let docs = vec![
@@ -522,7 +625,7 @@ mod tests {
             },
         ];
 
-        let pending = pending_docs(&state, &docs);
+        let pending = pending_docs(&state, "history_hot", &docs);
         let names = pending
             .iter()
             .map(|doc| doc.path.display().to_string())

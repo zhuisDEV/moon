@@ -29,8 +29,12 @@ exit 0
 }
 
 fn run_install(temp_root: &Path, state_dir: &Path, config_path: &Path, openclaw_bin: &Path) {
+    let moon_home = temp_root.join("moon-home");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon env");
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(temp_root)
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", state_dir)
         .env("OPENCLAW_CONFIG_PATH", config_path)
         .env("OPENCLAW_BIN", openclaw_bin)
@@ -42,6 +46,9 @@ fn run_install(temp_root: &Path, state_dir: &Path, config_path: &Path, openclaw_
 #[test]
 fn status_fails_when_runtime_reports_untracked_provenance() {
     let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon env");
     let state_dir = tmp.path().join("state");
     fs::create_dir_all(&state_dir).expect("mkdir");
     let config_path = state_dir.join("openclaw.json");
@@ -68,6 +75,7 @@ fn status_fails_when_runtime_reports_untracked_provenance() {
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_CONFIG_PATH", &config_path)
         .env("OPENCLAW_BIN", &fake_openclaw)
@@ -82,6 +90,9 @@ fn status_fails_when_runtime_reports_untracked_provenance() {
 #[test]
 fn status_tolerates_missing_install_record_when_diagnostics_are_clean() {
     let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon env");
     let state_dir = tmp.path().join("state");
     fs::create_dir_all(&state_dir).expect("mkdir");
     let config_path = state_dir.join("openclaw.json");
@@ -117,6 +128,7 @@ fn status_tolerates_missing_install_record_when_diagnostics_are_clean() {
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_CONFIG_PATH", &config_path)
         .env("OPENCLAW_BIN", &fake_openclaw)
@@ -129,6 +141,9 @@ fn status_tolerates_missing_install_record_when_diagnostics_are_clean() {
 #[test]
 fn verify_strict_fails_when_runtime_reports_untracked_provenance() {
     let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon env");
     let state_dir = tmp.path().join("state");
     fs::create_dir_all(&state_dir).expect("mkdir");
     let config_path = state_dir.join("openclaw.json");
@@ -155,6 +170,7 @@ fn verify_strict_fails_when_runtime_reports_untracked_provenance() {
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_CONFIG_PATH", &config_path)
         .env("OPENCLAW_BIN", &fake_openclaw)

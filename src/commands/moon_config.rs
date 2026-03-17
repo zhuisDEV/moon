@@ -7,6 +7,13 @@ pub struct MoonConfigOptions {
     pub show: bool,
 }
 
+fn ratio_tokens(window_tokens: u64, ratio: f64) -> u64 {
+    ((window_tokens as f64) * ratio)
+        .ceil()
+        .max(1.0)
+        .min(u64::MAX as f64) as u64
+}
+
 pub fn run(opts: &MoonConfigOptions) -> Result<CommandReport> {
     let mut report = CommandReport::new("config");
     let cfg = load_config()?;
@@ -41,22 +48,6 @@ pub fn run(opts: &MoonConfigOptions) -> Result<CommandReport> {
             cfg.watcher.cooldown_secs
         ));
         report.detail(format!(
-            "inbound_watch.enabled={}",
-            cfg.inbound_watch.enabled
-        ));
-        report.detail(format!(
-            "inbound_watch.recursive={}",
-            cfg.inbound_watch.recursive
-        ));
-        report.detail(format!(
-            "inbound_watch.event_mode={}",
-            cfg.inbound_watch.event_mode
-        ));
-        report.detail(format!(
-            "inbound_watch.watch_paths={:?}",
-            cfg.inbound_watch.watch_paths
-        ));
-        report.detail(format!(
             "distill.max_per_cycle={}",
             cfg.distill.max_per_cycle
         ));
@@ -75,13 +66,18 @@ pub fn run(opts: &MoonConfigOptions) -> Result<CommandReport> {
             cfg.distill.model_context_tokens
         ));
         report.detail(format!(
-            "retention.active_days={}",
-            cfg.retention.active_days
+            "cleanse.model={}",
+            crate::moon::cleanse::resolved_cleanse_model_label()
         ));
-        report.detail(format!("retention.warm_days={}", cfg.retention.warm_days));
-        report.detail(format!("retention.cold_days={}", cfg.retention.cold_days));
+        report.detail(format!(
+            "cleanse.provider_override={}",
+            std::env::var("MOON_CLEANSE_PROVIDER")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "auto".to_string())
+        ));
         report.detail(format!("embed.mode={}", cfg.embed.mode));
-        report.detail(format!("embed.idle_secs={}", cfg.embed.idle_secs));
         report.detail(format!("embed.cooldown_secs={}", cfg.embed.cooldown_secs));
         report.detail(format!(
             "embed.max_docs_per_cycle={}",
@@ -92,23 +88,40 @@ pub fn run(opts: &MoonConfigOptions) -> Result<CommandReport> {
             cfg.embed.min_pending_docs
         ));
         report.detail(format!("embed.max_cycle_secs={}", cfg.embed.max_cycle_secs));
+        report.detail(format!(
+            "hot_collection.lifecycle_mode={}",
+            cfg.hot_collection.lifecycle_mode.as_str()
+        ));
+        report.detail(format!(
+            "hot_collection.lifecycle_command_mode={}",
+            cfg.hot_collection.lifecycle_command_mode.as_str()
+        ));
 
         if let Some(context) = &cfg.context {
             report.detail(format!("context.window_mode={:?}", context.window_mode));
             report.detail(format!("context.window_tokens={:?}", context.window_tokens));
-            report.detail(format!("context.prune_mode={:?}", context.prune_mode));
             report.detail(format!(
                 "context.compaction_authority={:?}",
                 context.compaction_authority
             ));
             report.detail(format!(
-                "context.compaction_start_ratio={}",
-                context.compaction_start_ratio
+                "context.cleanse_trigger_ratio={}",
+                context.cleanse_trigger_ratio
             ));
             report.detail(format!(
-                "context.compaction_emergency_ratio={}",
-                context.compaction_emergency_ratio
+                "context.cleanse_emergency_ratio={}",
+                context.cleanse_emergency_ratio
             ));
+            if let Some(window_tokens) = context.window_tokens {
+                report.detail(format!(
+                    "context.cleanse_trigger_tokens={}",
+                    ratio_tokens(window_tokens, context.cleanse_trigger_ratio)
+                ));
+                report.detail(format!(
+                    "context.cleanse_emergency_tokens={}",
+                    ratio_tokens(window_tokens, context.cleanse_emergency_ratio)
+                ));
+            }
         }
 
         for key in SECRET_ENV_KEYS {

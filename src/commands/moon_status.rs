@@ -1,30 +1,157 @@
 use anyhow::Result;
 
 use crate::commands::CommandReport;
-use crate::moon::config::{SECRET_ENV_KEYS, masked_env_secret};
+use crate::moon::assemble::output_path as assembly_output_path;
+use crate::moon::config::{
+    MoonHotCollectionLifecycleMode, SECRET_ENV_KEYS, masked_env_secret,
+    resolve_hot_collection_lifecycle_policy_for_diagnostics,
+};
 use crate::moon::paths::resolve_paths;
-use crate::moon::state::state_file_path;
+use crate::moon::qmd;
+use crate::moon::state::{load, state_file_path};
+
+fn optional_text(value: Option<&str>) -> &str {
+    value.unwrap_or("none")
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn optional_f64(value: Option<f64>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
 
 pub fn run() -> Result<CommandReport> {
     let paths = resolve_paths()?;
+    qmd::install_runtime_env(&paths);
+    let state = load(&paths)?;
+    let (lifecycle_mode, lifecycle_command_mode, lifecycle_mode_note) =
+        resolve_hot_collection_lifecycle_policy_for_diagnostics();
+    let lifecycle_probe =
+        qmd::probe_collection_lifecycle_capability(&paths.qmd_bin, lifecycle_command_mode);
     let mut report = CommandReport::new("status");
 
     report.detail(format!("moon_home={}", paths.moon_home.display()));
+    report.detail(format!("raw_dir={}", paths.raw_dir.display()));
+    report.detail(format!("mds_dir={}", paths.mds_dir.display()));
+    report.detail(format!("mlib_dir={}", paths.mlib_dir.display()));
+    report.detail(format!("cleanse_dir={}", paths.cleanse_dir.display()));
     report.detail(format!("archives_dir={}", paths.archives_dir.display()));
     report.detail(format!("memory_dir={}", paths.memory_dir.display()));
     report.detail(format!("memory_file={}", paths.memory_file.display()));
     report.detail(format!("logs_dir={}", paths.logs_dir.display()));
+    report.detail(format!(
+        "context_engine_dir={}",
+        paths.context_engine_dir.display()
+    ));
     report.detail(format!("state_file={}", state_file_path(&paths).display()));
+    report.detail(format!(
+        "state.last_session_id={}",
+        optional_text(state.last_session_id.as_deref())
+    ));
+    report.detail(format!(
+        "state.last_usage_ratio={}",
+        optional_f64(state.last_usage_ratio)
+    ));
+    report.detail(format!(
+        "state.last_compaction_trigger_epoch_secs={}",
+        optional_u64(state.last_compaction_trigger_epoch_secs)
+    ));
+    report.detail(format!(
+        "state.last_provider={}",
+        optional_text(state.last_provider.as_deref())
+    ));
+    report.detail(format!(
+        "state.last_assembly_session_id={}",
+        optional_text(state.last_assembly_session_id.as_deref())
+    ));
+    report.detail(format!(
+        "state.last_assembly_epoch_secs={}",
+        optional_u64(state.last_assembly_epoch_secs)
+    ));
+    if let Some(session_id) = state.last_assembly_session_id.as_deref() {
+        let latest_output = assembly_output_path(&paths, session_id);
+        report.detail(format!(
+            "context_engine.latest_output_path={}",
+            latest_output.display()
+        ));
+        report.detail(format!(
+            "context_engine.latest_output_exists={}",
+            latest_output.exists()
+        ));
+    } else {
+        report.detail("context_engine.latest_output_path=none".to_string());
+        report.detail("context_engine.latest_output_exists=false".to_string());
+    }
     report.detail(format!(
         "openclaw_sessions_dir={}",
         paths.openclaw_sessions_dir.display()
     ));
     report.detail(format!("qmd_bin={}", paths.qmd_bin.display()));
     report.detail(format!("qmd_db={}", paths.qmd_db.display()));
+    report.detail(format!(
+        "hot_collection.lifecycle_mode={}",
+        lifecycle_mode.as_str()
+    ));
+    report.detail(format!(
+        "hot_collection.lifecycle_command_mode={}",
+        lifecycle_command_mode.as_str()
+    ));
+    if let Some(note) = lifecycle_mode_note {
+        report.detail(format!(
+            "hot_collection.lifecycle_mode_note={}",
+            crate::moon::util::truncate_with_ellipsis(&note, 220)
+        ));
+    }
+    report.detail(format!(
+        "hot_collection.lifecycle_capability={}",
+        lifecycle_probe.capability.as_str()
+    ));
+    report.detail(format!(
+        "hot_collection.lifecycle_note={}",
+        &lifecycle_probe.note
+    ));
+    if lifecycle_mode == MoonHotCollectionLifecycleMode::Disabled {
+        report.detail(format!(
+            "hot collection lifecycle disabled by config ({})",
+            &lifecycle_probe.note
+        ));
+    } else if lifecycle_mode == MoonHotCollectionLifecycleMode::Degrade
+        && lifecycle_probe.capability == qmd::CollectionLifecycleCapability::Missing
+    {
+        report.detail(format!(
+            "hot collection lifecycle running in degraded mode; qmd lifecycle support missing ({})",
+            &lifecycle_probe.note
+        ));
+    }
+    report.detail(format!(
+        "state.managed_hot_collections={}",
+        state.managed_hot_collections.len()
+    ));
     for key in SECRET_ENV_KEYS {
         report.detail(format!("secret.{key}={}", masked_env_secret(key)));
     }
 
+    if !paths.raw_dir.exists() {
+        report.issue(format!("missing raw dir ({})", paths.raw_dir.display()));
+    }
+    if !paths.mds_dir.exists() {
+        report.issue(format!("missing mds dir ({})", paths.mds_dir.display()));
+    }
+    if !paths.mlib_dir.exists() {
+        report.issue(format!("missing mlib dir ({})", paths.mlib_dir.display()));
+    }
+    if !paths.cleanse_dir.exists() {
+        report.issue(format!(
+            "missing cleanse dir ({})",
+            paths.cleanse_dir.display()
+        ));
+    }
     if !paths.archives_dir.exists() {
         report.issue(format!(
             "missing archives dir ({})",
@@ -43,6 +170,12 @@ pub fn run() -> Result<CommandReport> {
             paths.logs_dir.display()
         ));
     }
+    if !paths.context_engine_dir.exists() {
+        report.issue(format!(
+            "missing context-engine dir ({})",
+            paths.context_engine_dir.display()
+        ));
+    }
     if !paths.memory_file.exists() {
         report.issue(format!(
             "missing long-term memory file ({})",
@@ -57,6 +190,14 @@ pub fn run() -> Result<CommandReport> {
     }
     if !paths.qmd_bin.exists() {
         report.issue(format!("missing qmd binary ({})", paths.qmd_bin.display()));
+    }
+    if lifecycle_mode == MoonHotCollectionLifecycleMode::Strict
+        && lifecycle_probe.capability == qmd::CollectionLifecycleCapability::Missing
+    {
+        report.issue(format!(
+            "hot collection lifecycle strict mode requires qmd collection lifecycle support ({})",
+            &lifecycle_probe.note
+        ));
     }
 
     Ok(report)

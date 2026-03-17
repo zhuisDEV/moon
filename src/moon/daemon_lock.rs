@@ -27,18 +27,7 @@ pub fn parse_daemon_lock_payload(raw: &str) -> Option<DaemonLockPayload> {
         return None;
     }
 
-    if let Ok(payload) = serde_json::from_str::<DaemonLockPayload>(trimmed) {
-        return Some(payload);
-    }
-
-    // Backward compatibility: older lockfiles stored only a PID line.
-    let pid = trimmed.lines().next()?.trim().parse::<u32>().ok()?;
-    Some(DaemonLockPayload {
-        pid,
-        started_at_epoch_secs: 0,
-        build_uuid: String::new(),
-        moon_home: String::new(),
-    })
+    serde_json::from_str::<DaemonLockPayload>(trimmed).ok()
 }
 
 pub fn read_daemon_lock_payload(paths: &MoonPaths) -> Result<Option<DaemonLockPayload>> {
@@ -62,12 +51,5 @@ mod tests {
         let payload = parse_daemon_lock_payload(raw).expect("payload");
         assert_eq!(payload.pid, 42);
         assert_eq!(payload.build_uuid, "abc");
-    }
-
-    #[test]
-    fn parses_legacy_pid_payload() {
-        let payload = parse_daemon_lock_payload("4242\n").expect("payload");
-        assert_eq!(payload.pid, 4242);
-        assert!(payload.build_uuid.is_empty());
     }
 }

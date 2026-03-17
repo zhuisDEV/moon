@@ -1,8 +1,14 @@
 pub mod install;
+pub mod moon_assemble;
+pub mod moon_cleanse;
 pub mod moon_config;
+pub mod moon_context_engine;
 pub mod moon_distill;
 pub mod moon_embed;
 pub mod moon_health;
+pub mod moon_project;
+pub mod moon_recall;
+pub mod moon_record;
 pub mod moon_restart;
 pub mod moon_status;
 pub mod moon_stop;

@@ -2,28 +2,22 @@
 window_mode = "fixed"
 # Required when window_mode = "fixed"
 window_tokens = 200000
-prune_mode = "disabled"
 compaction_authority = "moon"
-compaction_start_ratio = 0.5
-compaction_emergency_ratio = 0.90
+cleanse_trigger_ratio = 0.5
+cleanse_emergency_ratio = 0.90
 
 [watcher]
-poll_interval_secs = 30
-cooldown_secs = 30
+poll_interval_secs = 60
+cooldown_secs = 60
 
 [distill]
 max_per_cycle = 3
 residential_timezone = "UTC"
 topic_discovery = true
 # L1 archive chunk controls (optional; env fallback still supported).
-# chunk_bytes = "auto"
-# max_chunks = 128
-# model_context_tokens = 200000
-
-[retention]
-active_days = 7
-warm_days = 30
-cold_days = 60
+chunk_bytes = "auto"
+max_chunks = 128
+model_context_tokens = 200000
 
 [embed]
 mode = "auto"
@@ -32,8 +26,11 @@ max_docs_per_cycle = 3
 min_pending_docs = 1
 max_cycle_secs = 300
 
-[inbound_watch]
-enabled = false
-recursive = true
-watch_paths = []
-event_mode = "now"
+[hot_collection]
+# disabled: skip hot qmd lifecycle registration entirely
+# degrade: best-effort hot collection registration/removal (default)
+# strict: fail checkpoint when hot collection registration/removal fails
+lifecycle_mode = "degrade"
+# primary: use qmd folder-backed collection add/remove/show commands (default)
+# fallback: use alternate lifecycle command forms only
+lifecycle_command_mode = "primary"

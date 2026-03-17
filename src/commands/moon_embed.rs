@@ -17,6 +17,7 @@ pub struct MoonEmbedOptions {
 
 pub fn run(opts: &MoonEmbedOptions) -> Result<CommandReport> {
     let paths = resolve_paths()?;
+    crate::moon::qmd::install_runtime_env(&paths);
     let cfg = load_config()?;
     let mut state = state::load(&paths)?;
     let mut report = CommandReport::new("embed");

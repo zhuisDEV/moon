@@ -988,7 +988,7 @@ fn is_status_echo_noise(text: &str) -> bool {
         && lower.contains("poll_interval_secs=")
         || (lower.contains("threshold.trigger=")
             && lower.contains("distill.mode=")
-            && lower.contains("retention.active_days="))
+            && lower.contains("embed.mode="))
 }
 
 fn is_projection_noise_entry(entry: &ProjectionEntry) -> bool {
@@ -1199,13 +1199,13 @@ impl ProjectionData {
         }
         let mut excerpt = out.join("\n");
         if self.truncated {
-            excerpt.push_str("\n[archive excerpt truncated]");
+            excerpt.push_str("\n[source excerpt truncated]");
         }
         excerpt
     }
 }
 
-pub fn load_archive_excerpt(path: &str) -> Result<String> {
+pub fn load_source_excerpt(path: &str) -> Result<String> {
     let data = extract_projection_data(path)?;
     Ok(data.to_excerpt())
 }
@@ -3707,13 +3707,19 @@ mod tests {
     fn make_test_paths(root: &std::path::Path) -> MoonPaths {
         MoonPaths {
             moon_home: root.join("moon-home"),
+            raw_dir: root.join("moon-home/raw"),
+            mds_dir: root.join("moon-home/mds"),
+            mlib_dir: root.join("moon-home/mlib"),
+            cleanse_dir: root.join("moon-home/cleanse"),
             archives_dir: root.join("archives"),
             memory_dir: root.join("memory"),
             memory_file: root.join("MEMORY.md"),
-            logs_dir: root.join("moon/logs"),
+            logs_dir: root.join("logs"),
+            context_engine_dir: root.join("mce"),
             openclaw_sessions_dir: root.join("sessions"),
             qmd_bin: root.join("qmd"),
             qmd_db: root.join("qmd.db"),
+            qmd_config_dir: root.join("qmd-config"),
             moon_home_is_explicit: true,
         }
     }

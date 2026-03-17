@@ -62,3 +62,56 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(parent)?;
     Ok(())
 }
+
+pub fn normalize_path_for_storage(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let mut suffix = Vec::new();
+    let mut cursor = path;
+    loop {
+        if cursor.exists() {
+            let mut normalized =
+                std::fs::canonicalize(cursor).unwrap_or_else(|_| cursor.to_path_buf());
+            for segment in suffix.iter().rev() {
+                normalized.push(segment);
+            }
+            return normalized;
+        }
+
+        let Some(name) = cursor.file_name() else {
+            return path.to_path_buf();
+        };
+        suffix.push(name.to_os_string());
+
+        let Some(parent) = cursor.parent() else {
+            return path.to_path_buf();
+        };
+        cursor = parent;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_path_for_storage;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn normalize_path_for_storage_resolves_symlinked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let real_root = temp.path().join("real");
+        fs::create_dir_all(&real_root).expect("mkdir real");
+
+        let alias_root = temp.path().join("alias");
+        symlink(&real_root, &alias_root).expect("symlink alias");
+
+        let normalized = normalize_path_for_storage(&alias_root.join("moon-home"));
+        let expected_root = fs::canonicalize(&real_root).expect("canonicalize real");
+        assert_eq!(normalized, expected_root.join("moon-home"));
+    }
+}

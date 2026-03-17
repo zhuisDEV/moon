@@ -2,111 +2,223 @@
 
 ## Scope
 
-This document defines Phase 0 contract shapes for the moon watcher pipeline.
+This document defines the Moon v1 primary-path contracts under `mip-moonv1.md`.
 
-## SessionUsageSnapshot
+It is intentionally limited to the normal MOON-owned control flow:
 
-Fields:
-1. `session_id: String`
-2. `used_tokens: u64`
-3. `max_tokens: u64`
-4. `usage_ratio: f64` (`used_tokens / max_tokens`)
-5. `captured_at_epoch_secs: u64`
-6. `provider: String`
+1. `record`
+2. `project`
+3. `cleanse`
+4. `assemble`
 
-Rules:
-1. `max_tokens > 0`
-2. `usage_ratio` in `[0.0, 1.0+]`
+OpenClaw fallback behavior is out of scope here and must not be mixed into these
+contracts.
 
-## ArchiveRecord
+## Control Rules
 
-Fields:
-1. `session_id: String`
-2. `archive_path: String`
-3. `content_hash: String`
-4. `created_at_epoch_secs: u64`
-5. `indexed_collection: String`
-6. `projection_filtered_noise_count: Option<usize>`
+1. MOON owns the normal-path context flow before model dispatch.
+2. `record` always runs at a stable checkpoint.
+3. `cleanse` runs only when pressure policy requires compaction.
+4. `project` is deterministic background/deferred work and is not the same as `cleanse`.
+5. `assemble` is the pre-dispatch control boundary for the next active context window.
+6. Search and memory maintenance are downstream support systems, not the control plane.
 
-Rules:
-1. `content_hash` is deterministic for identical snapshots.
-2. Same hash + session pair is idempotent.
-3. `projection_filtered_noise_count` records deterministic pre-emptive noise filtering volume when projection markdown is generated.
+## Controller Form
 
-## DistillationRecord
+1. `moon-context-engine` is short-lived and runs when OpenClaw needs the active context window prepared.
+2. The watcher, if present, is a separate long-running maintenance worker.
+3. The watcher must not be described or treated as the normal-path context controller.
 
-Fields:
-1. `session_id: String`
-2. `archive_path: String`
-3. `provider: String` (for example `l1-normaliser`, `local`, `openai`, `anthropic`, `gemini`, `openai-compatible`)
-4. `summary_path: String`
-5. `audit_log_path: String`
-6. `created_at_epoch_secs: u64`
+## Runtime Root
 
-Rules:
-1. Must always include `provider` and output paths.
-2. Failure path must emit an audit record.
+The canonical runtime root is `$MOON_HOME`.
 
-## Distill Trigger Contract
+Primary contract paths:
 
-Fields:
-1. `watcher.cooldown_secs: u64`
-2. `distill.max_per_cycle: u64`
-3. `distill.residential_timezone: String` (IANA TZ; default `UTC`)
-4. `distill.chunk_bytes: Option<String>` (`"auto"` or positive integer)
-5. `distill.max_chunks: Option<u64>` (`>= 1` when set)
-6. `distill.model_context_tokens: Option<u64>` (`>= 1` when set)
+1. raw capture: `$MOON_HOME/raw/`
+2. projection markdown: `$MOON_HOME/mds/`
+3. compaction summaries: `$MOON_HOME/cleanse/`
+4. daily memory: `$MOON_HOME/memory/`
+5. durable memory: `$MOON_HOME/MEMORY.md`
 
-Rules:
-1. Watcher auto L1 runs only when cooldown passes and pending projection markdown exists in `archives/mlib/*.md`.
-2. L1 selection is deterministic and bounded by `max_per_cycle`.
-3. L1 lock is non-blocking and single-run; watcher lock contention degrades/skips current cycle.
-4. `moon watch --once` is the manual watcher trigger for the same L1 queue.
-5. Manual L1 (`moon distill -mode norm -archive <path>`) requires explicit readable pending projection path and lock availability; lock/no-pending returns error.
-6. Auto L2 Synthesis (`syns`) runs once per residential day on the first watcher cycle after local midnight.
-7. Auto `syns` sources are yesterday's daily memory file plus current `memory.md` (when present).
-8. Direct CLI triggers: `moon distill -mode norm` (L1 Normalisation) and `moon distill -mode syns` (L2 Synthesis).
+Legacy archive-era paths are migration debt and must not define the target
+architecture.
 
-## DaemonLockPayload
+## `record`
 
-Fields:
-1. `pid: u32`
-2. `started_at_epoch_secs: u64`
-3. `build_uuid: String`
-4. `moon_home: String`
+Purpose:
+
+1. capture the active session into MOON-owned raw state
+2. establish the single raw source consumed by downstream MOON stages
+
+Input contract:
+
+1. a readable active-session source
+2. a resolvable `session_id`
+3. stable checkpoint timing chosen by MOON
+
+Output contract:
+
+1. write `$MOON_HOME/raw/<session_id>.jsonl`
+2. preserve full-fidelity source content
+3. update runtime state with the latest recorded session identity
 
 Rules:
-1. Lock file path is `$MOON_LOGS_DIR/moon-watch.daemon.lock`.
-2. Payload is JSON; legacy single-line PID lock payloads remain backward compatible for readers.
-3. Mutating commands may use `moon_home` to enforce workspace boundary checks.
 
-## ContinuityMap
+1. `record` is unconditional in the primary path
+2. `record` must not depend on `cleanse`
+3. `record` must not perform summarisation, projection, or search maintenance
+4. repeated runs against the same unchanged source should be operationally safe
 
-Fields:
-1. `source_session_id: String`
-2. `target_session_id: String`
-3. `archive_refs: Vec<String>`
-4. `daily_memory_refs: Vec<String>`
-5. `key_decisions: Vec<String>`
-6. `generated_at_epoch_secs: u64`
+## `project`
 
-Rules:
-1. Must be deterministic and machine-readable.
-2. Must include at least one archive reference.
+Purpose:
 
-## RecallResult
+1. transform raw session documents into Moon-managed projection markdown
+2. create the deterministic bridge between raw capture and downstream L1 memory work
 
-Fields:
-1. `query: String`
-2. `matches: Vec<RecallMatch>`
-3. `generated_at_epoch_secs: u64`
+Input contract:
 
-`RecallMatch` fields:
-1. `archive_path: String`
-2. `snippet: String`
-3. `score: f64`
-4. `metadata: serde_json::Value`
+1. a readable raw session document from `$MOON_HOME/raw/`
+2. a resolvable `session_id`
+
+Output contract:
+
+1. write `$MOON_HOME/mds/<session_id>.md`
+2. preserve high-signal user, assistant, and tool activity
+3. remove obvious transport noise deterministically
 
 Rules:
-1. Output must be safe to inject into active session context.
-2. Include ranking score for deterministic ordering.
+
+1. `project` is not an LLM compaction step
+2. `project` must be deterministic for the same raw input
+3. `project` is background/deferred work, not the active-window recovery path
+4. `distill --mode norm` consumes projection markdown, not cleanse summaries
+
+## `cleanse`
+
+Purpose:
+
+1. reduce active-context pressure under MOON control
+2. produce a compact recovery summary for the next active context window
+
+Input contract:
+
+1. a readable active raw session source
+2. pressure metadata or policy state sufficient to justify compaction
+3. a dedicated cleanse model configuration separate from `syns`
+
+Output contract:
+
+1. write `$MOON_HOME/cleanse/<session_id>.md`
+2. emit a compact recovery summary, not projection markdown
+3. preserve current goal, active work, decisions, blockers, and relevant evidence
+
+Policy anchors:
+
+1. trigger: `60k`
+2. target: `40k`
+3. emergency: `100k`
+
+Rules:
+
+1. `cleanse` is conditional, not unconditional
+2. `cleanse` output does not replace raw capture
+3. `cleanse` output does not replace `project`
+4. `cleanse` config and model role must remain separate from `syns`
+
+## `assemble`
+
+Purpose:
+
+1. compose the next model-dispatch context under MOON ownership
+2. define the exact boundary where MOON becomes the normal-path controller
+
+Input contract:
+
+1. current session identity and control state
+2. latest applicable raw-session context
+3. latest applicable `cleanse` summary when compaction has occurred
+4. optional minimal search/indexing anchor when it materially helps recovery
+
+Output contract:
+
+1. produce the final MOON-owned dispatch payload for the next active context window
+2. include the latest `cleanse` summary when compaction has run
+3. exclude bulk search receipts, embed logs, and low-signal transport noise
+
+Rules:
+
+1. `assemble` is the primary control boundary before model dispatch
+2. `assemble` must not delegate normal-path context ownership back to OpenClaw
+3. `assemble` must stay focused on prompt/context composition, not background maintenance
+4. fallback behavior must not be embedded into the normal-path `assemble` contract
+
+## Search Support Contracts
+
+These are important Moon subsystems, but they are not the primary control path.
+
+### `embed`
+
+Purpose:
+
+1. refresh the searchable Moon corpus from projection markdown
+2. keep retrieval current after projected documents change
+
+Rules:
+
+1. `embed` operates on `$MOON_HOME/mds/`
+2. `embed` is bounded maintenance work
+3. full embed receipts do not belong in active context assembly
+
+### `recall`
+
+Purpose:
+
+1. retrieve relevant prior Moon-managed context
+2. supply at most a minimal retrieval anchor to the active workflow when needed
+
+Rules:
+
+1. `recall` returns structured search results
+2. no-match is a valid non-fatal outcome
+3. retrieval is support for the control path, not the control path itself
+
+## Memory Distillation Contracts
+
+These stages are downstream from projection and separate from active context
+control.
+
+### `distill --mode norm`
+
+Purpose:
+
+1. normalise projection markdown into daily memory artifacts
+
+Rules:
+
+1. consumes `$MOON_HOME/mds/*.md`
+2. remains deterministic and bounded
+
+### `distill --mode syns`
+
+Purpose:
+
+1. synthesize durable memory from daily memory inputs
+
+Rules:
+
+1. uses its own synthesis model role
+2. must remain separate from `cleanse`
+3. writes durable memory outcomes, not active context recovery summaries
+
+## Transitional Runtime Note
+
+The watcher may continue to exist during migration, but it is transitional
+infrastructure only.
+
+It must not be treated as the final architectural owner of:
+
+1. context capture
+2. compaction policy
+3. pre-dispatch context assembly

@@ -3,10 +3,11 @@ use clap::{Args, Parser, Subcommand};
 use std::ffi::OsString;
 
 use crate::commands;
+use crate::moon::project::ProjectLane;
 
 #[derive(Debug, Parser)]
 #[command(name = "moon")]
-#[command(about = "OpenClaw context optimization installer/repair CLI")]
+#[command(about = "MOON v1 context-control and memory CLI")]
 pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
@@ -24,9 +25,16 @@ pub enum Command {
     Verify(VerifyArgs),
     Repair(RepairArgs),
     Status,
+    Record(RecordArgs),
+    Project(ProjectArgs),
+    Cleanse(CleanseArgs),
+    Assemble(AssembleArgs),
+    #[command(name = "context-engine")]
+    ContextEngine(ContextEngineArgs),
     Stop,
     Restart,
     Watch(MoonWatchArgs),
+    Recall(RecallArgs),
     Embed(MoonEmbedArgs),
     #[command(name = "distill")]
     Distill(DistillArgs),
@@ -66,9 +74,75 @@ pub struct MoonWatchArgs {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Args, Default)]
+pub struct RecordArgs {
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct ProjectArgs {
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
+    #[arg(long, default_value = "hot", value_parser = ["hot", "library", "lib"])]
+    pub lane: String,
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct CleanseArgs {
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AssembleArgs {
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct ContextEngineArgs {
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
+    #[arg(long = "used-tokens")]
+    pub used_tokens: Option<u64>,
+    #[arg(long = "max-tokens")]
+    pub max_tokens: Option<u64>,
+    #[arg(long = "force-cleanse")]
+    pub force_cleanse: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RecallArgs {
+    #[arg(long)]
+    pub query: String,
+    #[arg(long, default_value = "history_lib")]
+    pub name: String,
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
+}
+
 #[derive(Debug, Args)]
 pub struct MoonEmbedArgs {
-    #[arg(long, default_value = "history")]
+    #[arg(long, default_value = "history_lib")]
     pub name: String,
     #[arg(long, default_value_t = 25)]
     pub max_docs: usize,
@@ -133,12 +207,22 @@ fn normalize_single_dash_long_flags() -> Vec<OsString> {
                 "-archive" => Some("--archive".to_string()),
                 "-file" => Some("--file".to_string()),
                 "-session-id" => Some("--session-id".to_string()),
+                "-lane" => Some("--lane".to_string()),
                 "-dry-run" => Some("--dry-run".to_string()),
+                "-source" => Some("--source".to_string()),
+                "-query" => Some("--query".to_string()),
+                "-name" => Some("--name".to_string()),
+                "-limit" => Some("--limit".to_string()),
                 _ if raw.starts_with("-mode=")
                     || raw.starts_with("-archive=")
                     || raw.starts_with("-file=")
                     || raw.starts_with("-session-id=")
-                    || raw.starts_with("-dry-run=") =>
+                    || raw.starts_with("-lane=")
+                    || raw.starts_with("-dry-run=")
+                    || raw.starts_with("-source=")
+                    || raw.starts_with("-query=")
+                    || raw.starts_with("-name=")
+                    || raw.starts_with("-limit=") =>
                 {
                     Some(format!("--{}", &raw[1..]))
                 }
@@ -150,9 +234,20 @@ fn normalize_single_dash_long_flags() -> Vec<OsString> {
         .collect()
 }
 
+fn env_truthy(var: &str) -> bool {
+    match std::env::var(var) {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse_from(normalize_single_dash_long_flags());
     let paths = crate::moon::paths::resolve_paths()?;
+    let allow_out_of_bounds = cli.allow_out_of_bounds || env_truthy("MOON_ALLOW_OUT_OF_BOUNDS");
 
     // Every command validates CWD except diagnostics.
     match &cli.command {
@@ -160,7 +255,7 @@ pub fn run() -> Result<()> {
             // Diagnostics are exempt from CWD enforcement.
         }
         _ => {
-            commands::validate_cwd(&paths, cli.allow_out_of_bounds)?;
+            commands::validate_cwd(&paths, allow_out_of_bounds)?;
         }
     }
 
@@ -177,6 +272,47 @@ pub fn run() -> Result<()> {
             commands::repair::run(&commands::repair::RepairOptions { force: args.force })?
         }
         Command::Status => commands::moon_status::run()?,
+        Command::Record(args) => {
+            commands::moon_record::run(&commands::moon_record::MoonRecordOptions {
+                source_path: args.source.clone(),
+                session_id: args.session_id.clone(),
+                dry_run: args.dry_run,
+            })?
+        }
+        Command::Project(args) => {
+            commands::moon_project::run(&commands::moon_project::MoonProjectOptions {
+                source_path: args.source.clone(),
+                session_id: args.session_id.clone(),
+                lane: match args.lane.as_str() {
+                    "library" | "lib" => ProjectLane::Library,
+                    _ => ProjectLane::Hot,
+                },
+                dry_run: args.dry_run,
+            })?
+        }
+        Command::Cleanse(args) => {
+            commands::moon_cleanse::run(&commands::moon_cleanse::MoonCleanseOptions {
+                source_path: args.source.clone(),
+                session_id: args.session_id.clone(),
+                dry_run: args.dry_run,
+            })?
+        }
+        Command::Assemble(args) => {
+            commands::moon_assemble::run(&commands::moon_assemble::MoonAssembleOptions {
+                source_path: args.source.clone(),
+                session_id: args.session_id.clone(),
+                dry_run: args.dry_run,
+            })?
+        }
+        Command::ContextEngine(args) => commands::moon_context_engine::run(
+            &commands::moon_context_engine::MoonContextEngineOptions {
+                source_path: args.source.clone(),
+                session_id: args.session_id.clone(),
+                used_tokens: args.used_tokens,
+                max_tokens: args.max_tokens,
+                force_cleanse: args.force_cleanse,
+            },
+        )?,
         Command::Stop => commands::moon_stop::run()?,
         Command::Restart => commands::moon_restart::run()?,
         Command::Watch(args) => {
@@ -184,6 +320,13 @@ pub fn run() -> Result<()> {
                 once: args.once,
                 daemon: args.daemon,
                 dry_run: args.dry_run,
+            })?
+        }
+        Command::Recall(args) => {
+            commands::moon_recall::run(&commands::moon_recall::MoonRecallOptions {
+                collection_name: args.name.clone(),
+                query: args.query.clone(),
+                limit: args.limit,
             })?
         }
         Command::Embed(args) => {

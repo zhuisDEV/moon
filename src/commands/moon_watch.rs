@@ -71,8 +71,29 @@ pub fn run(opts: &MoonWatchOptions) -> Result<CommandReport> {
         "distill.max_per_cycle={}",
         cycle.distill_max_per_cycle
     ));
-    report.detail(format!("pending_mds_docs={}", cycle.pending_mds_docs));
+    report.detail(format!(
+        "pending_raw_sessions={}",
+        cycle.pending_raw_sessions
+    ));
+    report.detail(format!("project.runs={}", cycle.projected_sessions));
+    report.detail(format!("pending_mlib_docs={}", cycle.pending_mlib_docs));
     report.detail(format!("distill.runs={}", cycle.distill_runs));
+    report.detail(format!(
+        "pending_embed_collections={}",
+        cycle.pending_embed_collections
+    ));
+    report.detail(format!("embed.runs={}", cycle.embed_runs));
+    report.detail(format!(
+        "hot_collection.lifecycle_mode={}",
+        cycle.hot_collection_lifecycle_mode
+    ));
+    report.detail(format!(
+        "hot_collection.lifecycle_command_mode={}",
+        cycle.hot_collection_lifecycle_command_mode
+    ));
+    if let Some(summary) = cycle.embed_last_summary {
+        report.detail(format!("embed.result={summary}"));
+    }
     report.detail(format!("syns.due={}", cycle.syns_due));
     if let Some(distill) = cycle.distill {
         report.detail(format!("distill.provider={}", distill.provider));

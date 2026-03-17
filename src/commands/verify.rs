@@ -11,6 +11,8 @@ pub struct VerifyOptions {
 
 pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
     let mut report = CommandReport::new("verify");
+    report.detail("runtime.controller=moon-context-engine".to_string());
+    report.detail("runtime.watcher_role=transitional-shell".to_string());
 
     let openclaw_ready = ensure_openclaw_available(&mut report);
     if openclaw_ready {

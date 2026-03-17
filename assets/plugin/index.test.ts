@@ -1,0 +1,402 @@
+import { __moonTest } from "./index.js";
+
+function assert(
+  condition: unknown,
+  message = "assertion failed",
+): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function assertEquals<T>(
+  actual: T,
+  expected: T,
+  message = "values are not equal",
+) {
+  if (!Object.is(actual, expected)) {
+    throw new Error(
+      `${message}: expected ${JSON.stringify(expected)}, got ${
+        JSON.stringify(actual)
+      }`,
+    );
+  }
+}
+
+function assertStringIncludes(
+  actual: string,
+  expected: string,
+  message = "missing substring",
+) {
+  if (!actual.includes(expected)) {
+    throw new Error(
+      `${message}: expected ${JSON.stringify(actual)} to include ${
+        JSON.stringify(expected)
+      }`,
+    );
+  }
+}
+
+function writeSessionFile(filePath: string) {
+  const entries = [
+    {
+      type: "session",
+      version: 3,
+      id: "session-1",
+      timestamp: "2026-03-14T00:00:00.000Z",
+      cwd: "/tmp/moon",
+    },
+    {
+      type: "message",
+      id: "m1",
+      parentId: null,
+      timestamp: "2026-03-14T00:00:01.000Z",
+      message: {
+        role: "user",
+        content: [{
+          type: "text",
+          text: "Summarize the current architecture.",
+        }],
+        timestamp: 1,
+      },
+    },
+    {
+      type: "message",
+      id: "m2",
+      parentId: "m1",
+      timestamp: "2026-03-14T00:00:02.000Z",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: "Moon should own the primary context path.",
+        }],
+        timestamp: 2,
+      },
+    },
+    {
+      type: "message",
+      id: "m3",
+      parentId: "m2",
+      timestamp: "2026-03-14T00:00:03.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Keep the fallback path separate." }],
+        timestamp: 3,
+      },
+    },
+    {
+      type: "message",
+      id: "m4",
+      parentId: "m3",
+      timestamp: "2026-03-14T00:00:04.000Z",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: "Understood. I will finish the Moon-owned path first.",
+        }],
+        timestamp: 4,
+      },
+    },
+  ];
+
+  const raw = `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+  Deno.writeTextFileSync(filePath, raw);
+}
+
+function createApi(
+  stdout: string,
+  callLog: Array<{ argv: string[]; timeoutMs: number }>,
+  pluginConfigOverrides: Record<string, unknown> = {},
+) {
+  return {
+    pluginConfig: {
+      moonPath: "moon",
+      moonHome: "/tmp/moon-home",
+      ...pluginConfigOverrides,
+    },
+    runtime: {
+      system: {
+        async runCommandWithTimeout(
+          argv: string[],
+          opts: { timeoutMs: number },
+        ) {
+          callLog.push({ argv, timeoutMs: opts.timeoutMs });
+          return {
+            code: 0,
+            stdout,
+            stderr: "",
+          };
+        },
+      },
+    },
+  };
+}
+
+Deno.test("moon plugin owns compaction and appends a Moon compaction entry", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const sessionFile = `${tempDir}/session.jsonl`;
+    const assemblyPath = `${tempDir}/assembly.md`;
+    const cleansePath = `${tempDir}/cleanse.md`;
+    writeSessionFile(sessionFile);
+
+    await Deno.writeTextFile(assemblyPath, "# MOON Assembly Context\n");
+    await Deno.writeTextFile(
+      cleansePath,
+      [
+        "---",
+        "moon_cleanse: 1",
+        'session_id: "session-1"',
+        "---",
+        "",
+        "# Cleanse Summary",
+        "## Decisions",
+        "- Keep the primary flow under Moon control.",
+        "## Open Tasks",
+        "- Preserve only the latest active context.",
+        "",
+      ].join("\n"),
+    );
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.cleanse_summary_path=${cleansePath}`,
+        "context_engine.cleanse_reason=forced",
+      ],
+      issues: [],
+    });
+    const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+    const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+    assertEquals(
+      engine.info.ownsCompaction,
+      true,
+      "plugin should advertise compaction ownership",
+    );
+
+    const result = await engine.compact({
+      sessionId: "session-1",
+      sessionFile,
+      tokenBudget: 20_000,
+      currentTokenCount: 90_000,
+      force: true,
+    });
+
+    assertEquals(result.ok, true, "compaction should succeed");
+    assertEquals(result.compacted, true, "compaction should report success");
+    assertEquals(
+      result.result?.tokensBefore,
+      90_000,
+      "tokensBefore should use caller snapshot",
+    );
+    assert(
+      typeof result.result?.tokensAfter === "number",
+      "tokensAfter should be reported",
+    );
+    assert(
+      (result.result?.tokensAfter ?? Number.POSITIVE_INFINITY) < 90_000,
+      "tokensAfter should shrink",
+    );
+    assertEquals(calls.length, 1, "context-engine should be invoked once");
+    assert(
+      calls[0].argv.includes("--allow-out-of-bounds"),
+      "context-engine call should bypass workspace boundary in embedded runtime",
+    );
+    assert(
+      calls[0].argv.includes("--force-cleanse"),
+      "compact should force Moon cleanse",
+    );
+
+    const entries = __moonTest.parseJsonlEntries(
+      await Deno.readTextFile(sessionFile),
+    );
+    const lastEntry = entries[entries.length - 1];
+    assertEquals(
+      lastEntry.type,
+      "compaction",
+      "session should end with a compaction entry",
+    );
+    assertEquals(
+      lastEntry.parentId,
+      "m4",
+      "compaction should attach to the current leaf",
+    );
+    assertStringIncludes(
+      lastEntry.summary,
+      "Keep the primary flow under Moon control.",
+    );
+    assert(
+      typeof lastEntry.firstKeptEntryId === "string" &&
+        lastEntry.firstKeptEntryId.length > 0,
+    );
+    assertEquals(
+      lastEntry.tokensBefore,
+      90_000,
+      "persisted compaction should carry tokensBefore",
+    );
+    assertEquals(lastEntry.details.moon.cleanseSummaryPath, cleansePath);
+    assertEquals(lastEntry.details.moon.assemblyPath, assemblyPath);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin requests OpenClaw fallback when Moon does not emit a cleanse summary", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const sessionFile = `${tempDir}/session.jsonl`;
+    const assemblyPath = `${tempDir}/assembly.md`;
+    writeSessionFile(sessionFile);
+    await Deno.writeTextFile(assemblyPath, "# MOON Assembly Context\n");
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        "context_engine.cleanse_summary_path=none",
+        "context_engine.cleanse_reason=no-pressure-snapshot",
+      ],
+      issues: [],
+    });
+    const engine = __moonTest.createMoonContextEngine(
+      createApi(stdout, [], {
+        fallbackMode: "openclaw",
+        compactFallbackOnSkip: true,
+      }),
+    );
+    const before =
+      __moonTest.parseJsonlEntries(await Deno.readTextFile(sessionFile)).length;
+    const errors: string[] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((value) => String(value)).join(" "));
+    };
+
+    try {
+      const result = await engine.compact({
+        sessionId: "session-1",
+        sessionFile,
+        tokenBudget: 20_000,
+        currentTokenCount: 5_000,
+        force: false,
+      });
+
+      assertEquals(result.ok, false, "skip should request fallback");
+      assertEquals(
+        result.compacted,
+        false,
+        "fallback request should not report compaction",
+      );
+      assertStringIncludes(
+        result.reason ?? "",
+        "moon->openclaw fallback trigger=compact-skip",
+      );
+      assertStringIncludes(result.reason ?? "", "moon cleanse did not trigger");
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    const after =
+      __moonTest.parseJsonlEntries(await Deno.readTextFile(sessionFile)).length;
+    assertEquals(after, before, "fallback request should not append entries");
+    assert(errors.length >= 2, "fallback path should log skip + fallback");
+    assertStringIncludes(
+      errors.join("\n"),
+      "missing cleanse summary during compaction",
+    );
+    assertStringIncludes(errors.join("\n"), "session_id=session-1");
+    assertStringIncludes(errors.join("\n"), "reason=moon cleanse did not trigger");
+    assertStringIncludes(
+      errors.join("\n"),
+      "moon->openclaw fallback trigger=compact-skip",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin can keep primary-only compaction skip behavior when fallback is disabled", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const sessionFile = `${tempDir}/session.jsonl`;
+    const assemblyPath = `${tempDir}/assembly.md`;
+    writeSessionFile(sessionFile);
+    await Deno.writeTextFile(assemblyPath, "# MOON Assembly Context\n");
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        "context_engine.cleanse_summary_path=none",
+        "context_engine.cleanse_reason=no-pressure-snapshot",
+      ],
+      issues: [],
+    });
+    const engine = __moonTest.createMoonContextEngine(
+      createApi(stdout, [], { fallbackMode: "disabled" }),
+    );
+
+    const result = await engine.compact({
+      sessionId: "session-1",
+      sessionFile,
+      tokenBudget: 20_000,
+      currentTokenCount: 5_000,
+      force: false,
+    });
+
+    assertEquals(result.ok, true, "disabled fallback should keep skip semantics");
+    assertEquals(result.compacted, false, "skip should not report compaction");
+    assertStringIncludes(result.reason ?? "", "moon cleanse did not trigger");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin falls back to base assembly output when context-engine fails", async () => {
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const api = {
+    pluginConfig: {
+      moonPath: "moon",
+      moonHome: "/tmp/moon-home",
+      fallbackMode: "openclaw",
+    },
+    runtime: {
+      system: {
+        async runCommandWithTimeout(
+          argv: string[],
+          opts: { timeoutMs: number },
+        ) {
+          calls.push({ argv, timeoutMs: opts.timeoutMs });
+          return { code: 1, stdout: "", stderr: "context-engine failed" };
+        },
+      },
+    },
+  };
+  const engine = __moonTest.createMoonContextEngine(api);
+
+  const messages = [{
+    role: "user",
+    content: [{ type: "text", text: "hello" }],
+  }];
+  const result = await engine.assemble({
+    sessionId: "session-1",
+    messages,
+    tokenBudget: 20_000,
+  });
+
+  assertEquals(calls.length, 1, "assemble should still invoke context-engine once");
+  assertEquals(Array.isArray(result.messages), true);
+  assertEquals(result.messages.length, 1);
+  assertEquals(
+    Object.prototype.hasOwnProperty.call(result, "systemPromptAddition"),
+    false,
+    "fallback assembly should not inject moon system prompt content",
+  );
+});

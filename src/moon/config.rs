@@ -16,6 +16,7 @@ pub const SECRET_ENV_KEYS: [&str; 4] = [
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MoonThresholds {
     pub trigger_ratio: f64,
 }
@@ -29,6 +30,7 @@ impl Default for MoonThresholds {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MoonWatcherConfig {
     pub poll_interval_secs: u64,
     pub cooldown_secs: u64,
@@ -44,25 +46,7 @@ impl Default for MoonWatcherConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MoonInboundWatchConfig {
-    pub enabled: bool,
-    pub recursive: bool,
-    pub watch_paths: Vec<String>,
-    pub event_mode: String,
-}
-
-impl Default for MoonInboundWatchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            recursive: true,
-            watch_paths: Vec::new(),
-            event_mode: "now".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MoonDistillConfig {
     pub max_per_cycle: u64,
     #[serde(default = "default_residential_timezone")]
@@ -95,16 +79,9 @@ impl Default for MoonDistillConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MoonRetentionConfig {
-    pub active_days: u64,
-    pub warm_days: u64,
-    pub cold_days: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MoonEmbedConfig {
     pub mode: String,
-    pub idle_secs: u64,
     pub cooldown_secs: u64,
     pub max_docs_per_cycle: u64,
     pub min_pending_docs: u64,
@@ -115,7 +92,6 @@ impl Default for MoonEmbedConfig {
     fn default() -> Self {
         Self {
             mode: "auto".to_string(),
-            idle_secs: 0,
             cooldown_secs: 60,
             max_docs_per_cycle: 25,
             min_pending_docs: 1,
@@ -124,12 +100,54 @@ impl Default for MoonEmbedConfig {
     }
 }
 
-impl Default for MoonRetentionConfig {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MoonHotCollectionLifecycleMode {
+    #[default]
+    Degrade,
+    Disabled,
+    Strict,
+}
+
+impl MoonHotCollectionLifecycleMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Degrade => "degrade",
+            Self::Disabled => "disabled",
+            Self::Strict => "strict",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MoonHotCollectionLifecycleCommandMode {
+    #[default]
+    Primary,
+    Fallback,
+}
+
+impl MoonHotCollectionLifecycleCommandMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MoonHotCollectionConfig {
+    pub lifecycle_mode: MoonHotCollectionLifecycleMode,
+    pub lifecycle_command_mode: MoonHotCollectionLifecycleCommandMode,
+}
+
+impl Default for MoonHotCollectionConfig {
     fn default() -> Self {
         Self {
-            active_days: 7,
-            warm_days: 30,
-            cold_days: 31,
+            lifecycle_mode: MoonHotCollectionLifecycleMode::Degrade,
+            lifecycle_command_mode: MoonHotCollectionLifecycleCommandMode::Primary,
         }
     }
 }
@@ -140,14 +158,6 @@ pub enum MoonContextWindowMode {
     #[default]
     Inherit,
     Fixed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MoonContextPruneMode {
-    #[default]
-    Disabled,
-    Guarded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -163,10 +173,11 @@ pub enum MoonContextCompactionAuthority {
 pub struct MoonContextConfig {
     pub window_mode: MoonContextWindowMode,
     pub window_tokens: Option<u64>,
-    pub prune_mode: MoonContextPruneMode,
     pub compaction_authority: MoonContextCompactionAuthority,
-    pub compaction_start_ratio: f64,
-    pub compaction_emergency_ratio: f64,
+    #[serde(alias = "compaction_start_ratio")]
+    pub cleanse_trigger_ratio: f64,
+    #[serde(alias = "compaction_emergency_ratio")]
+    pub cleanse_emergency_ratio: f64,
     pub compaction_recover_ratio: f64,
 }
 
@@ -175,12 +186,11 @@ impl Default for MoonContextConfig {
         Self {
             window_mode: MoonContextWindowMode::Inherit,
             window_tokens: None,
-            prune_mode: MoonContextPruneMode::Disabled,
             compaction_authority: MoonContextCompactionAuthority::Moon,
-            compaction_start_ratio: 0.50,
-            compaction_emergency_ratio: 0.90,
-            // Legacy field retained for backward compatibility; compaction
-            // trigger logic no longer depends on recover ratio.
+            cleanse_trigger_ratio: 0.50,
+            cleanse_emergency_ratio: 0.90,
+            // Reserved for future policy extensions; current trigger logic
+            // does not depend on recover ratio.
             compaction_recover_ratio: 0.0,
         }
     }
@@ -190,10 +200,9 @@ impl Default for MoonContextConfig {
 pub struct MoonConfig {
     pub thresholds: MoonThresholds,
     pub watcher: MoonWatcherConfig,
-    pub inbound_watch: MoonInboundWatchConfig,
     pub distill: MoonDistillConfig,
-    pub retention: MoonRetentionConfig,
     pub embed: MoonEmbedConfig,
+    pub hot_collection: MoonHotCollectionConfig,
     pub context: Option<MoonContextConfig>,
 }
 
@@ -201,10 +210,9 @@ pub struct MoonConfig {
 struct PartialMoonConfig {
     thresholds: Option<PartialMoonThresholds>,
     watcher: Option<MoonWatcherConfig>,
-    inbound_watch: Option<MoonInboundWatchConfig>,
     distill: Option<MoonDistillConfig>,
-    retention: Option<MoonRetentionConfig>,
     embed: Option<MoonEmbedConfig>,
+    hot_collection: Option<MoonHotCollectionConfig>,
     context: Option<MoonContextConfig>,
 }
 
@@ -261,33 +269,30 @@ fn env_or_string(var: &str, fallback: &str) -> String {
     }
 }
 
-fn env_or_csv_paths(var: &str, fallback: &[String]) -> Vec<String> {
-    match env::var(var) {
-        Ok(v) => {
-            let out = v
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            if out.is_empty() {
-                fallback.to_vec()
-            } else {
-                out
-            }
-        }
-        Err(_) => fallback.to_vec(),
-    }
-}
-
 fn normalize_embed_mode(raw: &str) -> String {
-    if raw.eq_ignore_ascii_case("auto")
-        || raw.eq_ignore_ascii_case("idle")
-        || raw.eq_ignore_ascii_case("manual")
-    {
+    if raw.eq_ignore_ascii_case("auto") {
         "auto".to_string()
     } else {
         raw.trim().to_string()
+    }
+}
+
+pub fn resolve_hot_collection_lifecycle_policy_for_diagnostics() -> (
+    MoonHotCollectionLifecycleMode,
+    MoonHotCollectionLifecycleCommandMode,
+    Option<String>,
+) {
+    match load_config() {
+        Ok(cfg) => (
+            cfg.hot_collection.lifecycle_mode,
+            cfg.hot_collection.lifecycle_command_mode,
+            None,
+        ),
+        Err(err) => (
+            MoonHotCollectionLifecycleMode::Degrade,
+            MoonHotCollectionLifecycleCommandMode::Primary,
+            Some(format!("config-load-failed err={err:#}")),
+        ),
     }
 }
 
@@ -300,9 +305,6 @@ fn validate(cfg: &MoonConfig) -> Result<()> {
         return Err(anyhow!(
             "invalid watcher poll interval: must be >= 1 second"
         ));
-    }
-    if cfg.inbound_watch.event_mode.trim().is_empty() {
-        return Err(anyhow!("invalid inbound event mode: cannot be empty"));
     }
     if cfg.distill.max_per_cycle == 0 {
         return Err(anyhow!("invalid distill max per cycle: must be >= 1"));
@@ -323,23 +325,8 @@ fn validate(cfg: &MoonConfig) -> Result<()> {
             ));
         }
     }
-    if cfg.retention.active_days == 0 {
-        return Err(anyhow!("invalid retention active days: must be >= 1"));
-    }
-    if cfg.retention.warm_days < cfg.retention.active_days {
-        return Err(anyhow!(
-            "invalid retention windows: require active_days <= warm_days"
-        ));
-    }
-    if cfg.retention.cold_days <= cfg.retention.warm_days {
-        return Err(anyhow!(
-            "invalid retention windows: require warm_days < cold_days"
-        ));
-    }
     if cfg.embed.mode != "auto" {
-        return Err(anyhow!(
-            "invalid embed mode: use `auto` (legacy aliases: `idle`, `manual`)"
-        ));
+        return Err(anyhow!("invalid embed mode: use `auto`"));
     }
     if cfg.embed.cooldown_secs == 0 {
         return Err(anyhow!("invalid embed cooldown secs: must be >= 1"));
@@ -366,15 +353,14 @@ fn validate(cfg: &MoonConfig) -> Result<()> {
                 ));
             }
         }
-        if !(context.compaction_start_ratio > 0.0 && context.compaction_start_ratio <= 1.0) {
+        if !(context.cleanse_trigger_ratio > 0.0 && context.cleanse_trigger_ratio <= 1.0) {
             return Err(anyhow!(
-                "invalid context config: require 0 < compaction_start_ratio <= 1.0"
+                "invalid context config: require 0 < cleanse_trigger_ratio <= 1.0"
             ));
         }
-        if !(context.compaction_emergency_ratio > 0.0 && context.compaction_emergency_ratio <= 1.0)
-        {
+        if !(context.cleanse_emergency_ratio > 0.0 && context.cleanse_emergency_ratio <= 1.0) {
             return Err(anyhow!(
-                "invalid context config: require 0 < compaction_emergency_ratio <= 1.0"
+                "invalid context config: require 0 < cleanse_emergency_ratio <= 1.0"
             ));
         }
         if !(context.compaction_recover_ratio >= 0.0 && context.compaction_recover_ratio < 1.0) {
@@ -382,71 +368,96 @@ fn validate(cfg: &MoonConfig) -> Result<()> {
                 "invalid context config: require 0 <= compaction_recover_ratio < 1.0"
             ));
         }
-        if context.compaction_start_ratio > context.compaction_emergency_ratio {
+        if context.cleanse_trigger_ratio > context.cleanse_emergency_ratio {
             return Err(anyhow!(
-                "invalid context config: require compaction_start_ratio <= compaction_emergency_ratio"
+                "invalid context config: require cleanse_trigger_ratio <= cleanse_emergency_ratio"
             ));
         }
     }
     Ok(())
 }
 
+fn config_path_candidates(
+    moon_config_path: Option<PathBuf>,
+    moon_home: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    if let Some(path) = moon_config_path {
+        return vec![path];
+    }
+
+    if let Some(home) = moon_home {
+        return vec![home.join("moon.toml")];
+    }
+
+    let Some(home) = home_dir else {
+        return Vec::new();
+    };
+    vec![home.join(".moon").join("moon.toml")]
+}
+
+fn resolve_config_paths() -> Vec<PathBuf> {
+    let moon_config_path = env::var("MOON_CONFIG_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let moon_home = env::var("MOON_HOME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    config_path_candidates(moon_config_path, moon_home, dirs::home_dir())
+}
+
 pub fn resolve_config_path() -> Option<PathBuf> {
-    if let Ok(custom) = env::var("MOON_CONFIG_PATH") {
-        let trimmed = custom.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
-        }
+    let candidates = resolve_config_paths();
+    if let Some(existing) = candidates.iter().find(|path| path.exists()) {
+        return Some(existing.clone());
     }
-
-    if let Ok(home_override) = env::var("MOON_HOME") {
-        let trimmed = home_override.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join("moon").join("moon.toml"));
-        }
-    }
-
-    let home = dirs::home_dir()?;
-    Some(home.join("moon").join("moon.toml"))
+    candidates.into_iter().next()
 }
 
 fn merge_file_config(base: &mut MoonConfig) -> Result<()> {
-    let Some(path) = resolve_config_path() else {
-        return Ok(());
-    };
-    if !path.exists() {
+    let paths = resolve_config_paths();
+    if paths.is_empty() {
         return Ok(());
     }
 
-    let raw = fs::read_to_string(&path)?;
-    let parsed: PartialMoonConfig = toml::from_str(&raw)
-        .map_err(|err| anyhow!("failed to parse moon config {}: {err}", path.display()))?;
-    if let Some(thresholds) = parsed.thresholds
-        && let Some(trigger_ratio) = thresholds
-            .trigger_ratio
-            .or(thresholds.compaction_ratio)
-            .or(thresholds.archive_ratio)
-    {
-        base.thresholds.trigger_ratio = trigger_ratio;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+
+        let raw = fs::read_to_string(&path)?;
+        let parsed: PartialMoonConfig = toml::from_str(&raw)
+            .map_err(|err| anyhow!("failed to parse moon config {}: {err}", path.display()))?;
+        if let Some(thresholds) = parsed.thresholds
+            && let Some(trigger_ratio) = thresholds
+                .trigger_ratio
+                .or(thresholds.compaction_ratio)
+                .or(thresholds.archive_ratio)
+        {
+            base.thresholds.trigger_ratio = trigger_ratio;
+        }
+        if let Some(watcher) = parsed.watcher {
+            base.watcher = watcher;
+        }
+        if let Some(distill) = parsed.distill {
+            base.distill = distill;
+        }
+        if let Some(embed) = parsed.embed {
+            base.embed = embed;
+        }
+        if let Some(hot_collection) = parsed.hot_collection {
+            base.hot_collection = hot_collection;
+        }
+        if let Some(context) = parsed.context {
+            base.context = Some(context);
+        }
+        break;
     }
-    if let Some(watcher) = parsed.watcher {
-        base.watcher = watcher;
-    }
-    if let Some(inbound_watch) = parsed.inbound_watch {
-        base.inbound_watch = inbound_watch;
-    }
-    if let Some(distill) = parsed.distill {
-        base.distill = distill;
-    }
-    if let Some(retention) = parsed.retention {
-        base.retention = retention;
-    }
-    if let Some(embed) = parsed.embed {
-        base.embed = embed;
-    }
-    if let Some(context) = parsed.context {
-        base.context = Some(context);
-    }
+
     Ok(())
 }
 
@@ -454,37 +465,18 @@ pub fn load_config() -> Result<MoonConfig> {
     let mut cfg = MoonConfig::default();
     merge_file_config(&mut cfg)?;
 
-    cfg.thresholds.trigger_ratio = env_or_f64_first(
-        &[
-            "MOON_TRIGGER_RATIO",
-            "MOON_THRESHOLD_COMPACTION_RATIO",
-            "MOON_THRESHOLD_PRUNE_RATIO",
-            "MOON_THRESHOLD_ARCHIVE_RATIO",
-        ],
-        cfg.thresholds.trigger_ratio,
-    );
+    cfg.thresholds.trigger_ratio =
+        env_or_f64_first(&["MOON_TRIGGER_RATIO"], cfg.thresholds.trigger_ratio);
     cfg.watcher.poll_interval_secs =
         env_or_u64("MOON_POLL_INTERVAL_SECS", cfg.watcher.poll_interval_secs);
     cfg.watcher.cooldown_secs = env_or_u64("MOON_COOLDOWN_SECS", cfg.watcher.cooldown_secs);
-    cfg.inbound_watch.enabled =
-        env_or_bool("MOON_INBOUND_WATCH_ENABLED", cfg.inbound_watch.enabled);
-    cfg.inbound_watch.recursive =
-        env_or_bool("MOON_INBOUND_RECURSIVE", cfg.inbound_watch.recursive);
-    cfg.inbound_watch.event_mode =
-        env_or_string("MOON_INBOUND_EVENT_MODE", &cfg.inbound_watch.event_mode);
-    cfg.inbound_watch.watch_paths =
-        env_or_csv_paths("MOON_INBOUND_WATCH_PATHS", &cfg.inbound_watch.watch_paths);
     cfg.distill.max_per_cycle = env_or_u64("MOON_DISTILL_MAX_PER_CYCLE", cfg.distill.max_per_cycle);
     cfg.distill.residential_timezone = env_or_string(
         "MOON_RESIDENTIAL_TIMEZONE",
         &cfg.distill.residential_timezone,
     );
     cfg.distill.topic_discovery = env_or_bool("MOON_TOPIC_DISCOVERY", cfg.distill.topic_discovery);
-    cfg.retention.active_days = env_or_u64("MOON_RETENTION_ACTIVE_DAYS", cfg.retention.active_days);
-    cfg.retention.warm_days = env_or_u64("MOON_RETENTION_WARM_DAYS", cfg.retention.warm_days);
-    cfg.retention.cold_days = env_or_u64("MOON_RETENTION_COLD_DAYS", cfg.retention.cold_days);
     cfg.embed.mode = env_or_string("MOON_EMBED_MODE", &cfg.embed.mode);
-    cfg.embed.idle_secs = env_or_u64("MOON_EMBED_IDLE_SECS", cfg.embed.idle_secs);
     cfg.embed.cooldown_secs = env_or_u64("MOON_EMBED_COOLDOWN_SECS", cfg.embed.cooldown_secs);
     cfg.embed.max_docs_per_cycle = env_or_u64(
         "MOON_EMBED_MAX_DOCS_PER_CYCLE",
@@ -609,7 +601,41 @@ pub fn load_context_policy_if_explicit_env() -> Result<Option<MoonContextConfig>
 
 #[cfg(test)]
 mod tests {
-    use super::mask_secret;
+    use super::{config_path_candidates, load_config, mask_secret};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                unsafe {
+                    std::env::set_var(self.key, previous);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn mask_secret_unset_and_short_values() {
@@ -620,5 +646,118 @@ mod tests {
     #[test]
     fn mask_secret_keeps_prefix_and_suffix() {
         assert_eq!(mask_secret("sk-1234567890abcdef"), "sk-...cdef");
+    }
+
+    #[test]
+    fn config_path_prefers_explicit_moon_config_path() {
+        let got = config_path_candidates(
+            Some(PathBuf::from("/tmp/custom.toml")),
+            Some(PathBuf::from("/workspace")),
+            Some(PathBuf::from("/home/alice")),
+        );
+        assert_eq!(got, vec![PathBuf::from("/tmp/custom.toml")]);
+    }
+
+    #[test]
+    fn config_path_uses_moon_home_when_set() {
+        let got = config_path_candidates(
+            None,
+            Some(PathBuf::from("/workspace")),
+            Some(PathBuf::from("/home/alice")),
+        );
+        assert_eq!(got, vec![PathBuf::from("/workspace/moon.toml")]);
+    }
+
+    #[test]
+    fn config_path_defaults_to_dot_moon_home() {
+        let got = config_path_candidates(None, None, Some(PathBuf::from("/home/alice")));
+        assert_eq!(got, vec![PathBuf::from("/home/alice/.moon/moon.toml"),]);
+    }
+
+    #[test]
+    fn moon_toml_overrides_hot_collection_lifecycle_policy() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[hot_collection]
+lifecycle_mode = "strict"
+lifecycle_command_mode = "fallback"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let cfg = load_config().expect("load config");
+        assert_eq!(
+            cfg.hot_collection.lifecycle_mode,
+            super::MoonHotCollectionLifecycleMode::Strict
+        );
+        assert_eq!(
+            cfg.hot_collection.lifecycle_command_mode,
+            super::MoonHotCollectionLifecycleCommandMode::Fallback
+        );
+    }
+
+    #[test]
+    fn moon_toml_accepts_disabled_hot_collection_lifecycle_mode() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[hot_collection]
+lifecycle_mode = "disabled"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let cfg = load_config().expect("load config");
+        assert_eq!(
+            cfg.hot_collection.lifecycle_mode,
+            super::MoonHotCollectionLifecycleMode::Disabled
+        );
+    }
+
+    #[test]
+    fn invalid_hot_collection_lifecycle_mode_is_rejected() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[hot_collection]
+lifecycle_mode = "invalid-mode"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let err = load_config().expect_err("invalid mode should fail");
+        assert!(format!("{err:#}").contains("invalid-mode"), "{err:#}");
+    }
+
+    #[test]
+    fn invalid_hot_collection_lifecycle_command_mode_is_rejected() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[hot_collection]
+lifecycle_command_mode = "broken"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let err = load_config().expect_err("invalid command mode should fail");
+        assert!(format!("{err:#}").contains("broken"), "{err:#}");
     }
 }

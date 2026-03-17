@@ -1,59 +1,108 @@
 # M.O.O.N.
+
 > **Strategic Memory Augmentation & Context Distillation System**
 
 ### <span style="font-family:'Orbitron','Bank Gothic','Eurostile',sans-serif;"><font color="#dd0000">M</font>emory</span>
+
 ### <span style="font-family:'Orbitron','Bank Gothic','Eurostile',sans-serif;"><font color="#dd0000">O</font>ptimisation</span>
+
 ### <span style="font-family:'Orbitron','Bank Gothic','Eurostile',sans-serif;"><font color="#dd0000">O</font>rganisation</span>
+
 ### <span style="font-family:'Orbitron','Bank Gothic','Eurostile',sans-serif;"><font color="#dd0000">N</font>ode</span>
 
 ---
 
 ## Tactical Overview
-**M.O.O.N.** is a high-performance, background-active memory optimiser designed to enhance AI systems with autonomous memory management. Like a tactical drone deployed in the heat of battle, it monitors, archives, and distills overwhelming context streams into high-signal structural intelligence.
 
-It optimizes the **OpenClaw** context window by minimizing token usage while ensuring the agent retains seamless retrieval of historical knowledge.
+**M.O.O.N.** is a high-performance, background-active memory optimiser designed
+to enhance AI systems with autonomous memory management. It records active
+context, compacts pressure-heavy sessions, projects searchable documents, and
+distills durable memory from overwhelming context streams.
+
+Moon v1 centers on `moon-context-engine` as the normal-path controller for
+active context preparation. The watcher remains a separate long-running
+maintenance worker, and OpenClaw remains a bootstrap shell plus explicit
+fallback path rather than the owner of normal-path context decisions.
+The repo is ready for real OpenClaw integration testing of the primary flow,
+but should still be treated as integration-test ready rather than
+production-stable.
 
 ## Core Features
 
-1.  **Automated Lifecycle Watcher**: Monitors OpenClaw session and context size in real-time. Upon reaching defined thresholds, it triggers archiving, indexing, and compaction to prevent prompt overflow and minimize API costs.
-    * During compaction, moon writes a deterministic `[MOON_ARCHIVE_INDEX]` note into the active session so agents can locate pre-compaction archives.
-2.  **Semantic Context Retrieval**: moon writes a structured v2 markdown projection (`archives/mlib/*.md`) for each raw session archive (`archives/raw/*.jsonl`). Projections include:
-    * Timeline table with UTC + local timestamps
-    * Conversation summaries (user queries / assistant responses)
-    * Tool activity with contextual stitching (`toolUse -> toolResult` coupling)
-    * Pre-emptive noise filtering (`NO_REPLY`, process poll chatter, repetitive status echoes)
-    * Keywords, topics, and compaction anchors
-    * Natural language time markers for improved semantic recall
-    * Side-effect priority classification for tool entries
-3.  **Two-Layer Memory Pipeline**:
-    *   **L1 Normalisation (`distill -mode norm`)**: deterministic filtering/normalisation from projection markdown (`archives/mlib/*.md`) into daily logs (`memory/YYYY-MM-DD.md`) without LLM summarisation.
-    *   **L2 Synthesis (`distill -mode syns`)**: model-driven synthesis that rewrites `memory.md` from selected source files.
-    *   **Source control for synthesis**: default is `today + memory.md`; explicit `-file` inputs synthesize only those files.
-4.  **Embed Lifecycle Management**:
-    * Manual command: `moon embed --name history --max-docs 25`
-    * Capability negotiation against installed QMD (`bounded` required; otherwise treated as missing/degraded)
-    * Single-flight lock (`$MOON_LOGS_DIR/moon-embed.lock`) to avoid overlapping embed workers
-    * Watcher embed runs automatically after compaction/L1 stages and before daily `syns`, then continues on cooldown-driven cycles
-    * Bounded-only execution (`--max-docs`): no unbounded fallback path
+1. **Primary MOON Context Control**: MOON uses `moon-context-engine` as the
+   normal-path controller, with `record`, `cleanse`, and `assemble` as the
+   defining runtime boundaries. `project` is deterministic and lane-based:
+   hot lane (`raw -> mds`) for trigger-coupled active-window support and
+   library lane (`raw -> mlib`) for watcher maintenance and `distill --mode norm`.
+2. **Search And Retrieval**: `moon recall` is the user-facing search command for
+   Moon-managed content. `moon embed` is the public search-maintenance command
+   that refreshes embeddings for the searchable corpus. Moon v1 does not keep a
+   separate public `index` command.
+3. **Two-Layer Memory Pipeline**:
+   - **L1 Normalisation (`distill -mode norm`)**: deterministic
+     filtering/normalisation into daily logs (`memory/YYYY-MM-DD.md`) without
+     high-reasoning synthesis.
+   - **L2 Synthesis (`distill -mode syns`)**: model-driven synthesis that
+     rewrites durable memory from selected source files.
+   - **Source control for synthesis**: default is `today + memory.md`; explicit
+     `-file` inputs synthesize only those files.
+4. **Execution Model**:
+   - `moon-context-engine` is short-lived and runs when OpenClaw needs the
+     active context window prepared.
+   - `record` runs unconditionally at stable checkpoints and journals raw
+     session state.
+   - `cleanse` runs only when context pressure requires compaction.
+   - `assemble` injects the latest cleanse summary into the next active context
+     window with compact memory anchors (hot high-attention, library
+     low-attention availability).
+   - When the native `moon` context-engine plugin owns compaction, same-turn
+     overflow recovery appends MOON compaction summaries into the OpenClaw
+     session transcript on success; on configured fallback triggers, ownership
+     hands back to OpenClaw compaction.
+   - At cleanse trigger, `project --lane hot` runs first, marks hot embed
+     pending, then `mce` runs immediate hot `embed` and `cleanse` in the same
+     checkpoint window.
+   - Watcher runs maintenance on raw deltas:
+     `project --lane library -> embed(history_lib) -> distill --mode norm`.
+   - `mce` and watcher run in parallel. `mce` hot-lane project/embed is
+     immediate and is not governed by watcher cooldown or cycle timing.
+5. **Admin And Bootstrap Shell**:
+   - `install`, `verify`, `repair`, `status`, `config`, and `health` remain as
+     admin/bootstrap commands around the evolving `moon-context-engine` runtime.
+   - `watch`, `stop`, and `restart` remain transitional commands while the
+     watcher is still part of the migration shell.
 
 ## Recommended Agent Integration
 
-To ensure reliable long-term memory and optimal token hygiene, it is recommended to explicitly define the boundary between the **M.O.O.N.** (automated) and the **Agent** (strategic) within your workspace rules (e.g., `AGENTS.md`):
+To ensure reliable long-term memory and optimal token hygiene, it is recommended
+to explicitly define the boundary between the **M.O.O.N.** (automated) and the
+**Agent** (strategic) within your workspace rules (e.g., `AGENTS.md`):
 
-*   **M.O.O.N. (Automated Lifecycle)**: Handles token compaction, short-term session state maintenance, L1 Normalisation to daily memory, and L2 Synthesis to `memory.md`.
-*   **Agent (Strategic Review)**: Audits memory quality, adjusts prompts/rules, and curates long-term memory direction.
+- **M.O.O.N. (Automated Lifecycle)**: Handles record/project flow, token
+  compaction via `cleanse`, L1 Normalisation to daily memory, and L2 Synthesis
+  to `memory.md`.
+- **Agent (Strategic Review)**: Audits memory quality, adjusts prompts/rules,
+  and curates long-term memory direction.
 
-This modular architecture prevents the Agent from being overwhelmed by raw session data while ensuring that distilled knowledge is persisted with high signal-to-noise ratios.
+This modular architecture prevents the Agent from being overwhelmed by raw
+session data while ensuring that distilled knowledge is persisted with high
+signal-to-noise ratios.
 
 ### Skill Placement (Admin vs Sub-agent)
 
 Keep both skill source files in this repo root:
 
-1. `SKILL.md` for admin/operator tasks (`install`, `verify`, `repair`, watcher lifecycle).
-2. `SKILL_SUBAGENT.md` for least-privilege sub-agent tasks (`recall`, `distill`, bounded `embed`).
+1. `SKILL.md` for admin/operator tasks (`install`, `verify`, `repair`, `status`,
+   `config`, `health`, and Moon runtime operations).
+2. `SKILL_SUBAGENT.md` for least-privilege sub-agent tasks (`recall`, `distill`,
+   bounded `embed`).
 
-If your runtime expects installed skills at `$CODEX_HOME/skills/<name>/SKILL.md`,
-copy them as:
+After `moon install`, Moon exports runtime-owned operator docs into
+`$MOON_HOME` and exports role-scoped skills into the OpenClaw skills tree under
+`$OPENCLAW_STATE_DIR/skills/`.
+
+If you are running from source before install, or you want to copy the skills
+manually into another runtime, use:
 
 ```bash
 MOON_REPO="/absolute/path/to/moon"
@@ -71,52 +120,83 @@ Recommended role split:
 
 ### AGENTS.md Recall Policy Template
 
-Add this block to your workspace `AGENTS.md` (adjust the repo path if different):
+Add this block to your workspace `AGENTS.md` (adjust the repo path if
+different):
 
 ```md
-### moon Archive Recall Policy (Required)
+### moon History Recall Policy (Required)
 
-1. History search backend is QMD collection `history`, rooted at `$MOON_ARCHIVES_DIR`, mask `mlib/**/*.md` (archive projections in `$MOON_ARCHIVES_DIR/mlib/*.md`).
-2. Default history retrieval command is `moon recall --name history --query "<user-intent-query>"`. (If running from source instead of a compiled binary, use `cargo run --manifest-path /path/to/moon/Cargo.toml -- recall --name history --query "<user-intent-query>"`).
-3. Run history retrieval before answering when any condition is true: user references past sessions, pre-compaction context, prior decisions, or current-session context is insufficient.
-4. Retrieval procedure is strict: run one primary query, run one fallback query if no hits, and use top 3 hits only; include `archive_path` in reasoning when available.
-5. If finer detail is required, read the projection frontmatter field `archive_jsonl_path` and fetch only the minimal raw JSONL segment needed.
-6. If both primary and fallback queries return no relevant hit, explicitly reply `HISTORY_NOT_FOUND` (cannot find in archives).
-7. Never fabricate prior-session facts when `recall` returns no relevant match.
+1. Library history search backend is QMD collection `history_lib` over Moon
+   projected library documents (`$MOON_HOME/mlib/*.md`).
+2. Default history retrieval command is
+   `moon recall --name history_lib --query "<user-intent-query>"`. (If running from
+   source instead of a compiled binary, use
+   `cargo run --manifest-path /path/to/moon/Cargo.toml -- recall --name history_lib --query "<user-intent-query>"`).
+3. For same-session pre-cleanse recall, use hot collection
+   `history_hot_<session_id>` (or fallback `history_hot`) when needed. The
+   matching hot projection lives under `$MOON_HOME/mds/<collection>/`.
+4. Run history retrieval before answering when any condition is true: user
+   references past sessions, pre-compaction context, prior decisions, or
+   current-session context is insufficient.
+5. Retrieval procedure is strict: run one primary query, run one fallback query
+   if no hits, and use top 3 hits only; include source/path metadata in
+   reasoning when available.
+6. If finer detail is required, fetch only the minimal raw or markdown source
+   segment needed from the Moon-managed corpus.
+7. If both primary and fallback queries return no relevant hit, explicitly reply
+   `HISTORY_NOT_FOUND` (cannot find in Moon-managed history).
+8. Never fabricate prior-session facts when `recall` returns no relevant match.
 ```
 
 Query semantics:
 
 1. Primary query: direct user intent in natural language.
-2. Fallback query: broader keywords from the same intent when primary has no relevant match.
+2. Fallback query: broader keywords from the same intent when primary has no
+   relevant match.
 3. Top 3 hits: highest-score results returned by `recall`.
 
 ## Agent bootstrap checklist
 
-1. Set `.env` (at minimum: ensure `openclaw` is on `PATH`; optional: set `OPENCLAW_BIN`; recommended: explicit path block below).
-2. Apply plugin install + provenance self-heal:
-   `moon install` (or `cargo run -- install`)
-   - On macOS (installed binary), this also enables a `launchd` watcher service with auto-start + auto-restart.
-   - On Windows/Linux, autostart wiring is skipped; run `moon restart` (or `moon watch --daemon`) manually.
-3. Validate environment and plugin wiring:
-   `moon verify --strict` (or `cargo run -- verify --strict`)
-4. Check moon runtime paths:
-   `moon status` (or `cargo run -- status`)
-5. Check daemon/state health:
-   `moon health` (or `cargo run -- health`)
-6. Inspect resolved runtime config:
-   `moon config --show` (or `cargo run -- config --show`)
-7. Run one watcher cycle:
+1. Set runtime `.env` at `$MOON_HOME/.env` (at minimum: ensure `openclaw` is on
+   `PATH`; optional: set `OPENCLAW_BIN`; recommended: explicit path block
+   below).
+2. Apply plugin install + provenance self-heal: `moon install` (or
+   `cargo run -- install`)
+   - This also provisions the MOON runtime root directories under `$MOON_HOME`.
+   - It exports runtime docs into `$MOON_HOME` (`README.md`, `BOOTSTRAP.md`,
+     `.env.example`, `moon.toml.example`) and troubleshooting docs into
+     `$MOON_HOME/docs/`.
+   - It exports `SKILL.md` and `SKILL_SUBAGENT.md` into the OpenClaw skills tree
+     under `$OPENCLAW_STATE_DIR/skills/`.
+   - It selects `plugins.slots.contextEngine = "moon"` and writes the managed
+     `moonPath` / `moonHome` plugin config needed for native MCE handoff.
+   - On macOS (installed binary), this also enables a `launchd` watcher
+     maintenance service with auto-start + auto-restart.
+   - On Windows/Linux, autostart wiring is skipped; run `moon restart` (or
+     `moon watch --daemon`) manually.
+3. Validate environment and plugin wiring: `moon verify --strict` (or
+   `cargo run -- verify --strict`)
+4. Check moon runtime paths: `moon status` (or `cargo run -- status`)
+5. Check daemon/state health: `moon health` (or `cargo run -- health`)
+6. Inspect resolved runtime config: `moon config --show` (or
+   `cargo run -- config --show`)
+7. Run the current transitional maintenance watcher cycle when needed:
    `moon watch --once` (or `cargo run -- watch --once`)
-8. On macOS, `moon install` already wires daemon auto-start via `launchd`; use `moon restart` after config/binary updates.
-9. Install role-scoped skills (`moon-admin`, `moon-subagent`) if your runtime uses `$CODEX_HOME/skills`.
+8. On macOS, `moon install` already wires transitional watcher auto-start via
+   `launchd`; use `moon restart` after config/binary updates when the
+   maintenance worker is still in use.
+9. Install role-scoped skills (`moon-admin`, `moon-subagent`) if your runtime
+   uses `$CODEX_HOME/skills`.
 
 ## Quick start
 
 ```bash
-cp .env.example .env
-cp moon.toml.example moon.toml
-$EDITOR .env
+export MOON_HOME="${MOON_HOME:-$HOME/.moon}"
+mkdir -p "$MOON_HOME"
+cp .env.example "$MOON_HOME/.env"
+cp moon.toml.example "$MOON_HOME/moon.toml"
+$EDITOR "$MOON_HOME/.env"
+$EDITOR "$MOON_HOME/moon.toml"
 cargo install --path .
 moon install
 moon verify --strict
@@ -125,36 +205,59 @@ moon health
 moon config --show
 ```
 
+Recommended first real OpenClaw smoke test:
+
+```bash
+moon install
+moon status
+moon health
+moon config --show
+moon watch --once
+```
+
+Then verify:
+
+1. OpenClaw config contains `moonHome`, `memoryDir`, and `memoryFile` under
+   `plugins.entries.moon.config`.
+2. A real OpenClaw turn triggers `moon-context-engine` and writes to
+   `$MOON_HOME/raw` and `$MOON_HOME/mce`.
+3. When pressure crosses the configured trigger, hot-lane artifacts also appear
+   under `$MOON_HOME/mds` and `$MOON_HOME/cleanse`.
+4. Watcher maintenance writes library projections to `$MOON_HOME/mlib` and
+   daily memory to `$MOON_HOME/memory/YYYY-MM-DD.md`.
+
 `.env.example` and `moon.toml.example` are templates. Keep them generic; put
-machine-specific values in `.env` and local `moon.toml` only.
+machine-specific values in `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`
+only.
 
 Workspace model (agent-facing):
 
-1. `MOON_HOME` is the workspace root for moon runtime data.
-2. When `MOON_HOME` is unset, moon defaults workspace root to `$HOME`.
-3. Recommended explicit setting: `MOON_HOME=$HOME` (so home is the workspace root).
-4. Repo path should be `MOON_HOME/moon`.
-5. Daily memory path is `MOON_HOME/memory/YYYY-MM-DD.md`.
+1. `MOON_HOME` is the moon runtime root.
+2. When `MOON_HOME` is unset, moon defaults to `$HOME/.moon`.
+3. Recommended explicit setting: `MOON_HOME=$HOME/.moon` (or another dedicated
+   runtime root).
+4. Repo path is separate from `MOON_HOME`; do not assume the repo lives inside
+   the runtime root.
+5. Daily memory path is `$MOON_HOME/memory/YYYY-MM-DD.md`.
 
-`.env` autoload precedence:
+`.env` loading is strict:
 
-1. Standard dotenv search from current working directory upward.
-2. Deterministic moon repo fallback:
-   - `MOON_HOME/moon/.env`
-   - if `MOON_HOME` is unset: `$HOME/moon/.env`
+1. Moon only loads environment from `$MOON_HOME/.env`.
+2. `MOON_HOME` must be set and non-empty.
+3. If `$MOON_HOME/.env` is missing or unreadable, moon exits with an error.
 
-This makes daemon runs resilient when started outside the moon repo working
-directory.
-
-Agent check: ensure `.env` exists in the moon repo folder (`moon/.env`).
-If `.env` is missing at startup, moon logs a warning and continues in
-non-distill/non-embed mode.
+Agent check: always export `MOON_HOME` and ensure `$MOON_HOME/.env` exists
+before running any moon command.
 
 Workspace boundary safety:
 
-1. Mutating commands validate CWD against the daemon-recorded workspace (or explicit `MOON_HOME` when no daemon lock is present).
-2. Diagnostic commands (`status`, `health`, `verify`, `config`) are always allowed from any directory.
+1. Mutating commands validate CWD against the daemon-recorded workspace (or
+   explicit `MOON_HOME` when no daemon lock is present).
+2. Diagnostic commands (`status`, `health`, `verify`, `config`) are always
+   allowed from any directory.
 3. Escape hatch: pass global `--allow-out-of-bounds` to bypass CWD enforcement.
+4. Env-gated bypass: set `MOON_ALLOW_OUT_OF_BOUNDS=1` to enable the same bypass
+   by default for the current process environment.
 
 OpenClaw binary resolution:
 
@@ -164,22 +267,27 @@ OpenClaw binary resolution:
 OPENCLAW_BIN=/absolute/path/to/openclaw
 ```
 
-Default path profile (already set in `.env.example`):
+Runtime-root profile (recommended):
 
 ```bash
 # Binaries
 # QMD is an external dependency (separate repo/project). moon only calls its CLI.
-QMD_BIN=$HOME/.bun/bin/qmd
-QMD_DB=$HOME/.cache/qmd/index.sqlite
+# Set this to your real qmd path (for macOS/Homebrew commonly /opt/homebrew/bin/qmd).
+QMD_BIN=/opt/homebrew/bin/qmd
 
 # moon runtime paths
-MOON_HOME=$HOME
-MOON_ARCHIVES_DIR=$MOON_HOME/archives
+MOON_HOME=$HOME/.moon
+MOON_RAW_DIR=$MOON_HOME/raw
+MOON_MDS_DIR=$MOON_HOME/mds
+MOON_MLIB_DIR=$MOON_HOME/mlib
+MOON_CLEANSE_DIR=$MOON_HOME/cleanse
 MOON_MEMORY_DIR=$MOON_HOME/memory
 MOON_MEMORY_FILE=$MOON_HOME/MEMORY.md
-MOON_LOGS_DIR=$MOON_HOME/moon/logs
-MOON_CONFIG_PATH=$MOON_HOME/moon/moon.toml
-MOON_STATE_FILE=$MOON_HOME/moon/state/moon_state.json
+MOON_LOGS_DIR=$MOON_HOME/logs
+MOON_CONFIG_PATH=$MOON_HOME/moon.toml
+MOON_STATE_FILE=$MOON_HOME/state/moon_state.json
+QMD_DB=$MOON_HOME/qmd/index.sqlite
+QMD_CONFIG_DIR=$MOON_HOME/qmd/config
 
 # OpenClaw session source
 OPENCLAW_STATE_DIR=$HOME/.openclaw
@@ -187,40 +295,33 @@ OPENCLAW_CONFIG_PATH=$OPENCLAW_STATE_DIR/openclaw.json
 OPENCLAW_SESSIONS_DIR=$HOME/.openclaw/agents/main/sessions
 ```
 
-Workspace-root path profile (optional):
-
-Use this if your workspace root is not `$HOME`.
-
-```bash
-MOON_HOME=/path/to/workspace
-MOON_ARCHIVES_DIR=$MOON_HOME/archives
-MOON_MEMORY_DIR=$MOON_HOME/memory
-MOON_MEMORY_FILE=$MOON_HOME/MEMORY.md
-MOON_LOGS_DIR=$MOON_HOME/moon/logs
-MOON_CONFIG_PATH=$MOON_HOME/moon/moon.toml
-MOON_STATE_FILE=$MOON_HOME/moon/state/moon_state.json
-```
-
 `moon.toml` is optional. If `MOON_CONFIG_PATH` points to a missing file, moon
 continues with built-in defaults plus `.env` overrides.
+
+`moon.toml` resolve order:
+
+1. `MOON_CONFIG_PATH` (exact file path)
+2. `$MOON_HOME/moon.toml`
+3. default fallback when `MOON_HOME` is unset: `$HOME/.moon/moon.toml`
 
 State path override precedence:
 
 1. `MOON_STATE_FILE` (exact file path)
 2. `MOON_STATE_DIR` (directory; file becomes `moon_state.json`)
-3. fallback: `$MOON_HOME/moon/state/moon_state.json`
+3. fallback: `$MOON_HOME/state/moon_state.json`
 
 Recommended split:
 
 1. `.env`: paths, binaries, provider/model/API keys, and env-only runtime knobs.
-2. `moon.toml`: tuning in `[context]`, `[watcher]`, `[distill]`, `[retention]`, `[embed]`, `[inbound_watch]` (and optional legacy `[thresholds]`).
+2. `moon.toml`: tuning in `[context]`, `[watcher]`, `[distill]`, `[embed]`,
+   `[hot_collection]` (and optional `[thresholds]`).
 
 If the same tuning key appears in both places, `.env` wins.
 
 Create a local config file:
 
 ```bash
-cp moon.toml.example moon.toml
+cp moon.toml.example "$MOON_HOME/moon.toml"
 ```
 
 Context policy (optional but recommended when moon owns compaction):
@@ -229,26 +330,47 @@ Context policy (optional but recommended when moon owns compaction):
 [context]
 window_mode = "fixed"
 window_tokens = 200000
-prune_mode = "disabled"            # "disabled" or "guarded"
 compaction_authority = "moon"      # "moon" or "openclaw"
-compaction_start_ratio = 0.50
-compaction_emergency_ratio = 0.90
+cleanse_trigger_ratio = 0.50
+cleanse_emergency_ratio = 0.90
 ```
+
+With the example values above:
+
+1. `cleanse_trigger_tokens = 100000`
+2. `cleanse_emergency_tokens = 180000`
 
 When `compaction_authority = "moon"`:
 
-1. `moon install` / `moon repair` enforce OpenClaw compaction mode to `default` (valid on current OpenClaw builds).
-2. moon watcher is the primary trigger for `/compact` based on `[context]` ratios.
-3. Simplified compaction loop: if usage is still `>= compaction_start_ratio` after cooldown, moon can compact again on the next eligible cycle.
-4. Emergency ratio can bypass cooldown (`usage >= compaction_emergency_ratio`).
-5. OpenClaw may still auto-compact as a fallback on overflow/threshold paths.
-6. `moon status` reports a policy violation (`ok=false`) if OpenClaw config drifts from the expected mode for the selected authority.
+1. MOON owns the decision to compact the active context in the target
+   architecture.
+2. `record` remains unconditional; `cleanse` is the conditional pressure-relief
+   step.
+3. Current ratio-based knobs remain transitional compatibility controls while
+   automatic `moon-context-engine` triggering is being completed.
+4. OpenClaw compaction behavior should remain a fallback path only.
+5. `moon status` should report policy drift when fallback shell config conflicts
+   with MOON-owned compaction policy.
+
+Current config rules:
+
+1. Do not use `prune_mode`; it has been removed.
+2. Do not use `[retention]`; it is suspended for the current stage.
+3. Do not use `[inbound_watch]`; it is suspended for the current stage.
+4. Do not use `MOON_HOT_COLLECTION_LIFECYCLE_MODE` or
+   `MOON_HOT_COLLECTION_LIFECYCLE_COMMAND_MODE`; hot lifecycle policy belongs in
+   `$MOON_HOME/moon.toml`.
 
 Synthesis model profile (recommended for the agent):
 
 ```bash
 # `norm` uses no LLM.
-# LLM calls are used only by `syns`.
+# `project` uses no LLM.
+# `cleanse` uses its own compaction model.
+# `syns` uses a separate higher-reasoning model.
+MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_API_KEY=...
+
 # Recommend a high-reasoning model for better durable memory quality.
 MOON_WISDOM_PROVIDER=openai
 MOON_WISDOM_MODEL=gpt-4.1
@@ -268,10 +390,9 @@ Distill safety guardrails (recommended):
 [context]
 window_mode = "fixed"
 window_tokens = 200000
-prune_mode = "disabled"
 compaction_authority = "moon"
-compaction_start_ratio = 0.50
-compaction_emergency_ratio = 0.90
+cleanse_trigger_ratio = 0.50
+cleanse_emergency_ratio = 0.90
 
 [watcher]
 poll_interval_secs = 30
@@ -286,27 +407,24 @@ topic_discovery = true
 # max_chunks = 128
 # model_context_tokens = 200000
 
-[retention]
-active_days = 7
-warm_days = 30
-cold_days = 60
-
 [embed]
 mode = "auto"
 cooldown_secs = 60
 max_docs_per_cycle = 3
 min_pending_docs = 1
 max_cycle_secs = 300
+
+[hot_collection]
+lifecycle_mode = "degrade"
+lifecycle_command_mode = "primary"
 ```
 
 Optional env overrides (keep these in `.env` only when needed):
 
 ```bash
-
 # Optional explicit context-window hints for `syns` large-file chunk planning.
 # If unset, moon auto-detects/infers context window per provider/model.
 # MOON_WISDOM_CONTEXT_TOKENS=200000
-
 ```
 
 Cheapest possible mode (zero API cost, local-only synthesis):
@@ -315,7 +433,8 @@ Cheapest possible mode (zero API cost, local-only synthesis):
 MOON_WISDOM_PROVIDER=local
 ```
 
-Run a few basics (assuming `moon` is installed in `$PATH`, otherwise prefix with `cargo run -- `):
+Run a few basics (assuming `moon` is installed in `$PATH`, otherwise prefix with
+`cargo run --`):
 
 ```bash
 moon status
@@ -329,11 +448,19 @@ moon status
 
 Binary name: `moon`
 
-It is strongly recommended to install the binary to your `$PATH` using `cargo install --path .` rather than relying on `cargo run -- <command>` in production scenarios. You only need to run `cargo install --path .` again if you modify the Rust source code or plugin assets.
+This section describes the intended Moon v1 CLI surface. During migration, the
+compiled binary may temporarily lag behind the target command set documented
+here.
+
+It is strongly recommended to install the binary to your `$PATH` using
+`cargo install --path .` rather than relying on `cargo run -- <command>` in
+production scenarios. You only need to run `cargo install --path .` again if you
+modify the Rust source code or plugin assets.
 
 ### Binary Rebuild Guide
 
-Use this when you changed Rust code or plugin assets and want the installed `moon` binary to pick up changes.
+Use this when you changed Rust code or plugin assets and want the installed
+`moon` binary to pick up changes.
 
 1. Rebuild and reinstall the binary.
 2. Re-apply plugin/runtime wiring.
@@ -354,32 +481,76 @@ moon <command> [flags]
 Global flag:
 
 1. `--json` outputs machine-readable `CommandReport`
-2. `--allow-out-of-bounds` bypasses workspace CWD lock checks for mutating commands
+2. `--allow-out-of-bounds` bypasses workspace CWD lock checks for mutating
+   commands
+3. `MOON_ALLOW_OUT_OF_BOUNDS=1` enables the same bypass as an environment
+   default (truthy values: `1`, `true`, `yes`, `on`)
 
 Commands:
 
 1. `install [--force] [--dry-run] [--apply true|false]`
-   - macOS default behavior: writes/refreshes `~/Library/LaunchAgents/com.moon.watch.plist`, then bootstraps and kickstarts the watcher service.
-   - Windows/Linux behavior: service autostart wiring is not managed by `moon install` yet.
-   - Safety guard: when running from development binaries (`target/debug` or `target/release`), autostart setup is skipped and a hint is printed.
+   - wires the current MOON bootstrap shell, provenance state, and runtime-root
+     directories
+   - macOS default behavior: writes/refreshes
+     `~/Library/LaunchAgents/com.moon.watch.plist`, then bootstraps and
+     kickstarts the transitional maintenance watcher service.
+   - Windows/Linux behavior: service autostart wiring is not managed by
+     `moon install` yet.
+   - Safety guard: when running from development binaries (`target/debug` or
+     `target/release`), autostart setup is skipped and a hint is printed.
 2. `verify [--strict]`
+   - verifies runtime shell wiring, provenance, dependencies, and health
 3. `repair [--force]`
+   - repairs runtime shell and provenance drift
 4. `status`
-5. `stop`
-6. `restart`
-7. `snapshot [--source <path>] [--dry-run]`
-8. `index [--name <collection>] [--dry-run]`
-9. `watch [--once|--daemon] [--dry-run]`
-10. `embed [--name <collection>] [--max-docs <N>] [--dry-run] [--watcher-trigger]`
+   - reports resolved runtime paths, dependency visibility, and runtime shell
+     state
+5. `record`
+   - captures active context into Moon-owned raw state under `$MOON_HOME/raw/`
+6. `project`
+   - converts raw session documents into projection markdown with explicit lanes:
+     hot lane writes to `$MOON_HOME/mds/<collection>/`; library lane writes to
+     `$MOON_HOME/mlib/`
+7. `cleanse`
+   - runs true LLM-backed context compaction and writes recovery summaries under
+     `$MOON_HOME/cleanse/`
+8. `assemble`
+   - composes the next MOON-owned dispatch context and writes it under
+     `$MOON_HOME/mce/`
+9. `context-engine [--source <path>] [--session-id <id>] [--used-tokens <N>] [--max-tokens <N>] [--force-cleanse]`
+   - runs the primary checkpoint flow: `record`, conditional `cleanse`, and
+     `assemble`
+10. `distill -mode <norm|syns> [-archive <path>] [-session-id <id>] [-file <path> ...] [-dry-run]`
+
+- `-mode norm` (default): L1 Normalisation into daily memory
+- `-mode syns`: L2 Synthesis rewrites durable memory
+
 11. `recall --query <text> [--name <collection>]`
-12. `distill -mode <norm|syns> [-archive <path>] [-session-id <id>] [-file <path> ...] [-dry-run]`
-    - `-mode norm` (default): L1 Normalisation for one projection file (`archives/mlib/*.md`) into daily memory
-    - `-mode norm` requires explicit `-archive <path>` and that file must be pending in ledger/state; lock contention or no pending match returns an error
-    - `-mode syns`: L2 Synthesis rewrites the whole `memory.md` from synthesis output
-    - `-mode syns` default sources (manual CLI): today's daily memory + current `memory.md`
-    - `-mode syns -file <path> ...`: distill only those files together; `memory.md` participates only if explicitly included as a `-file`
+
+- searches Moon-managed content
+- default collection is `history_lib`
+
+12. `embed [--name <collection>] [--max-docs <N>] [--dry-run] [--watcher-trigger]`
+
+- refreshes search embeddings for Moon-managed documents
+- default collection is `history_lib`; hot collections must be named explicitly
+- on qmd builds without collection-bounded embed, Moon uses global
+  `qmd embed --max-docs-per-batch <n>` against Moon-owned qmd state under
+  `$MOON_HOME/qmd/`
+
 13. `config [--show]`
 14. `health`
+15. `watch [--once|--daemon] [--dry-run]`
+
+- long-running maintenance only; not the active-window controller
+
+16. `stop`
+
+- transitional only
+
+17. `restart`
+
+- transitional only
 
 Exit codes:
 
@@ -389,18 +560,29 @@ Exit codes:
 
 ## Provenance Behavior (Agent-critical)
 
-1. `moon install` always normalizes `plugins.installs.moon` (`source`, `sourcePath`, `installPath`) to the managed plugin directory.
-2. `moon verify --strict` treats OpenClaw runtime diagnostics from `openclaw plugins list --json` as the authoritative provenance signal.
-3. If runtime diagnostics report `loaded without install/load-path provenance`, `verify --strict` fails hard.
-4. If `plugins.installs.moon` is missing or path-mismatched but runtime diagnostics are clean, `verify` prints a non-fatal `provenance repair hint`.
-5. First-time bootstrap and upgrade routine should always include `moon install` before `moon verify --strict`.
+1. `moon install` always normalizes `plugins.installs.moon` (`source`,
+   `sourcePath`, `installPath`) to the managed plugin directory.
+2. `moon verify --strict` treats OpenClaw runtime diagnostics from
+   `openclaw plugins list --json` as the authoritative provenance signal.
+3. If runtime diagnostics report `loaded without install/load-path provenance`,
+   `verify --strict` fails hard.
+4. If `plugins.installs.moon` is missing or path-mismatched but runtime
+   diagnostics are clean, `verify` prints a non-fatal `provenance repair hint`.
+5. First-time bootstrap and upgrade routine should always include `moon install`
+   before `moon verify --strict`.
 
 ### Local Development & Testing
-If you are actively developing the moon codebase or writing an AI agent that needs to run tests:
 
-Running the background watcher daemon (`watch --daemon`) via `cargo run` is explicitly blocked. This is a safety feature to prevent file-locking starvation and CPU spikes loop issues if the daemon restarts.
+If you are actively developing the moon codebase or writing an AI agent that
+needs to run tests:
 
-To test the daemon with unreleased local changes, you must compile the binary first and execute it directly:
+Running the background watcher daemon (`watch --daemon`) via `cargo run` is
+explicitly blocked. This is a safety feature to prevent file-locking starvation
+and CPU spikes loop issues if the daemon restarts.
+
+To test the daemon with unreleased local changes, you must compile the binary
+first and execute it directly:
+
 ```bash
 cargo build
 ./target/debug/moon watch --daemon
@@ -423,32 +605,58 @@ launchctl list | rg -i "moon|moon.*system" || true
 ls "$HOME/Library/LaunchAgents" | rg -i "com\\.moon\\.(watch|agent)|moon.*system" || true
 ```
 
-Archive and index latest session:
-
-```bash
-moon snapshot
-moon index --name history
-```
-
-`index` also normalizes older archive layout into `archives/raw/` and backfills missing projection markdown files before running QMD sync.
-
 Run manual embed sprint:
 
 ```bash
-moon embed --name history --max-docs 25
+moon embed --name history_lib --max-docs 25
 ```
 
 Recall prior context:
 
 ```bash
-moon recall --name history --query "your query"
+moon recall --name history_lib --query "your query"
 ```
+
+Manual Moon v1 active-window control:
+
+```bash
+moon context-engine --used-tokens 65000 --max-tokens 200000
+```
+
+Primary-flow contracts when you need to run stages explicitly:
+
+```bash
+moon record
+moon cleanse
+moon assemble
+moon project
+moon embed --name history_lib --max-docs 25
+moon distill -mode norm
+moon distill -mode syns
+```
+
+Execution notes:
+
+1. `moon context-engine` is the normal-path short-lived controller for active
+   context preparation.
+2. `record` is the stable-checkpoint step and should run even when compaction is
+   not needed.
+3. `cleanse` is conditional and should run only when context pressure requires
+   compaction.
+4. `assemble` is the pre-dispatch context boundary.
+5. `project` and `embed` are background/deferred work derived from recorded raw
+   state.
+6. `distill -mode norm` continues to consume projected markdown from
+   `$MOON_HOME/mlib/`.
 
 Run one watcher cycle:
 
 ```bash
 moon watch --once
 ```
+
+`watch` remains a separate long-running maintenance worker. It is transitional
+infrastructure and not the active-window controller.
 
 Dry-run watcher planning cycle (no mutation/state writes):
 
@@ -468,57 +676,95 @@ Health probe:
 moon health
 ```
 
+Troubleshooting & Maintenance:
+
+If the daemon/runtime looks inconsistent, use this clean recovery sequence:
+
+1. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
+2. `pkill -f "moon watch --daemon" 2>/dev/null || true`
+3. `pkill -f "moon restart" 2>/dev/null || true`
+4. `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock" "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
+5. `moon install`
+6. `moon verify --strict`
+7. `moon health`
+
+Important:
+
+1. Installed Moon runtime operations should not depend on the repo checkout.
+2. On macOS, `moon install` now writes launchd autostart with
+   `WorkingDirectory=$MOON_HOME` rather than the caller CWD.
+
 L1 auto trigger behavior:
 
 1. Watcher L1 path is auto: `watch` checks L1 every cycle.
 2. Cooldown must pass (`watcher.cooldown_secs`).
-3. Pending source must exist in `archives/mlib/*.md` (projection markdown only).
+3. Pending source must exist in `$MOON_HOME/mds/<collection>/*.md` (projection
+   markdown only).
 4. Selection is deterministic and bounded by `distill.max_per_cycle`.
-5. L1 runs under a non-blocking lock; if busy, watcher degrades/skips and retries next cycle.
+5. L1 runs under a non-blocking lock; if busy, watcher degrades/skips and
+   retries next cycle.
 
 Daily `syns` schedule:
 
-1. Watcher attempts `syns` once per residential day (`distill.residential_timezone`) on the first cycle after local midnight.
-2. Auto `syns` sources are yesterday's daily file (`memory/YYYY-MM-DD.md`) plus current `memory.md` (when present).
+1. Watcher attempts `syns` once per residential day
+   (`distill.residential_timezone`) on the first cycle after local midnight.
+2. Auto `syns` sources are yesterday's daily file (`memory/YYYY-MM-DD.md`) plus
+   current `memory.md` (when present).
 3. Agents can run `moon distill -mode syns` directly at any time.
-4. `moon watch --once` remains the manual trigger for one immediate L1 queue processing cycle.
+4. `moon watch --once` remains the manual trigger for one immediate L1 queue
+   processing cycle.
 
 Retention lifecycle windows:
 
-1. Active (`<= active_days`): keep archives for fast debug/resume.
+1. Active (`<= active_days`): keep recorded session artifacts available for fast
+   debug/resume.
 2. Warm (`active_days < age <= warm_days`): retained and indexed.
 3. Cold candidate (`>= cold_days`): deleted only when a distill marker exists.
 
 Embed lifecycle windows:
 
-1. Watcher embed is always auto (legacy `embed.mode` values normalize to `auto`).
-2. Watcher attempts embed after compaction/L1 stages and before daily `syns` when `syns` is due.
-3. Watcher execution is gated by `embed.cooldown_secs` and `embed.min_pending_docs`.
+1. Watcher embed mode is fixed to `auto`.
+2. Watcher attempts embed after compaction/L1 stages and before daily `syns`
+   when `syns` is due.
+3. Watcher execution is gated by `embed.cooldown_secs` and
+   `embed.min_pending_docs`.
 4. Manual `embed` runs immediately and bypasses watcher cooldown gating.
 5. Manual `embed` does not reset the watcher cooldown clock.
-6. QMD must support bounded embed (`--max-docs`); otherwise watcher degrades and manual embed returns capability-missing.
-7. `embed.idle_secs` is retained only for compatibility and does not gate watcher embed execution.
-8. Lock behavior is non-blocking: watcher embed skips current cycle when lock is busy; manual embed returns lock error (no wait queue).
+6. If qmd supports bounded embed (`--max-docs`), Moon uses collection-scoped
+   embed. Otherwise, if qmd supports only global embed, Moon uses
+   `qmd embed --max-docs-per-batch <n>` against Moon-owned qmd state; if embed
+   capability is missing entirely, watcher degrades and manual embed returns
+   capability-missing.
+7. There is no idle gate for embed execution.
+8. Lock behavior is non-blocking: watcher embed skips current cycle when lock is
+   busy; manual embed returns lock error (no wait queue).
 
-Archive layout:
+Runtime layout:
 
-1. `archives/ledger.jsonl`: archive ledger metadata.
-2. `archives/raw/*.jsonl`: raw snapshot copy (full fidelity).
-3. `archives/mlib/*.md`: noise-reduced projection indexed by QMD.
+1. `$MOON_HOME/raw/*.jsonl`: raw snapshot copy (full fidelity).
+2. `$MOON_HOME/mds/<collection>/*.md`: deterministic hot-session projection
+   markdown.
+3. `$MOON_HOME/cleanse/*.md`: LLM compaction summaries.
 
 ## Configuration
 
-The CLI autoloads `.env` on startup when available. If no `.env` is found, moon
-logs a warning and continues with defaults/explicit env vars.
+`.env` loading is strict. Moon only loads runtime env from `$MOON_HOME/.env`.
+If `$MOON_HOME` is unset/empty or `$MOON_HOME/.env` is missing, moon exits
+with an error.
 
 Start from:
 
 1. `.env.example`
 2. `moon.toml.example`
 
+Recommended location:
+
+1. `$MOON_HOME/.env`
+
 Most-used `.env` variables:
 
-1. `OPENCLAW_BIN` (optional override; `openclaw` is auto-resolved from `PATH` when unset)
+1. `OPENCLAW_BIN` (optional override; `openclaw` is auto-resolved from `PATH`
+   when unset)
 2. `QMD_BIN`
 3. `MOON_HOME`
 4. `MOON_CONFIG_PATH`
@@ -526,45 +772,59 @@ Most-used `.env` variables:
 6. `OPENCLAW_SESSIONS_DIR`
 7. `MOON_WISDOM_PROVIDER` (primary provider selector for `distill -mode syns`)
 8. `MOON_WISDOM_MODEL` (primary model selector for `syns`)
-9. `MOON_WISDOM_CONTEXT_TOKENS` (optional context-window hint for large-file chunk planning in `syns`)
-10. `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AI_API_KEY` (for `syns`)
+9. `MOON_WISDOM_CONTEXT_TOKENS` (optional context-window hint for large-file
+   chunk planning in `syns`)
+10. `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AI_API_KEY`
+    (for `syns`)
 11. `MOON_ENABLE_COMPACTION_WRITE`
 12. `MOON_ENABLE_SESSION_ROLLOVER`
-13. `MOON_EMBED_MODE` (`auto`; legacy aliases `idle` and `manual` normalize to `auto`)
-14. `MOON_EMBED_IDLE_SECS` (legacy compatibility knob; no watcher gate effect)
-15. `MOON_EMBED_COOLDOWN_SECS`
-16. `MOON_EMBED_MAX_DOCS_PER_CYCLE`
-17. `MOON_EMBED_MIN_PENDING_DOCS`
-18. `MOON_EMBED_MAX_CYCLE_SECS`
-19. `MOON_HEALTH_MAX_CYCLE_AGE_SECS` (health freshness threshold; default `600`)
+13. `MOON_EMBED_MODE` (`auto` only)
+14. `MOON_EMBED_COOLDOWN_SECS`
+15. `MOON_EMBED_MAX_DOCS_PER_CYCLE`
+16. `MOON_EMBED_MIN_PENDING_DOCS`
+17. `MOON_EMBED_MAX_CYCLE_SECS`
+18. `MOON_HEALTH_MAX_CYCLE_AGE_SECS` (health freshness threshold; default `600`)
+
+Most-used plugin runtime config keys (`plugins.entries.moon.config` in OpenClaw config):
+
+1. `moonPath`
+2. `moonHome`
+3. `memoryDir`
+4. `memoryFile`
+5. `contextEngineTimeoutMs`
+6. `maxAssemblyChars`
+7. `syncAfterTurn`
+8. `fallbackMode` (`openclaw` or `disabled`)
+9. `compactFallbackOnSkip` (`true` or `false`)
 
 Config hardening behaviors:
 
-1. Unknown `MOON_*` variables are warned on startup, with typo suggestions when close matches exist (allowlist is generated from source at build time).
-2. `moon config --show` prints fully resolved config values (defaults -> `moon.toml` -> env overrides).
+1. Unknown `MOON_*` variables are warned on startup, with typo suggestions when
+   close matches exist (allowlist is generated from source at build time).
+2. `moon config --show` prints fully resolved config values (defaults ->
+   `moon.toml` -> env overrides).
 3. Secret env values are masked in diagnostics (`status`, `config --show`).
 
 Primary tuning belongs in `moon.toml`:
 
-1. `[context] window_mode`, `window_tokens`, `prune_mode`, `compaction_authority`, `compaction_start_ratio`, `compaction_emergency_ratio`
+1. `[context] window_mode`, `window_tokens`, `compaction_authority`, `cleanse_trigger_ratio`,
+   `cleanse_emergency_ratio`
 2. `[watcher] poll_interval_secs`, `cooldown_secs`
-3. `[distill] max_per_cycle`, `residential_timezone`, `topic_discovery`, `chunk_bytes`, `max_chunks`, `model_context_tokens`
-4. `[retention] active_days`, `warm_days`, `cold_days`
-5. `[embed] mode` (fixed `auto`; legacy aliases normalize), `idle_secs` (legacy compatibility), `cooldown_secs`, `max_docs_per_cycle`, `min_pending_docs`, `max_cycle_secs`
-6. `[inbound_watch] enabled`, `recursive`, `watch_paths`, `event_mode`
-7. `[thresholds] trigger_ratio` (legacy/fallback path when context policy is not active)
-
-Legacy compatibility: `MOON_THRESHOLD_COMPACTION_RATIO`,
-`MOON_THRESHOLD_ARCHIVE_RATIO`, and `MOON_THRESHOLD_PRUNE_RATIO` are still read
-as fallback inputs for `MOON_TRIGGER_RATIO`.
+3. `[distill] max_per_cycle`, `residential_timezone`, `topic_discovery`,
+   `chunk_bytes`, `max_chunks`, `model_context_tokens`
+4. `[embed] mode` (`auto`), `cooldown_secs`, `max_docs_per_cycle`,
+   `min_pending_docs`, `max_cycle_secs`
+5. `[hot_collection] lifecycle_mode`, `lifecycle_command_mode`
+6. `[thresholds] trigger_ratio` (fallback path when context policy is not active)
 
 ## Repository map
 
 1. `src/cli.rs`: argument parsing + command dispatch
 2. `src/commands/*.rs`: top-level command handlers
 3. `src/openclaw/*.rs`: OpenClaw config/plugin/gateway operations
-4. `src/moon/*.rs`: snapshot/index/recall/distill/watch logic
-   - `src/moon/util.rs`: shared utilities (`now_epoch_secs`, `truncate_with_ellipsis`)
+4. `src/moon/*.rs`: recall/distill/embed/watch logic and Moon runtime subsystems
+   - `src/moon/util.rs`: shared utilities (`now_epoch_secs`,
+     `truncate_with_ellipsis`)
 5. `assets/plugin/*`: plugin files embedded and installed by `install`
 6. `tests/*.rs`: regression tests
 7. `docs/*`: deeper operational docs
@@ -576,6 +836,10 @@ as fallback inputs for `MOON_TRIGGER_RATIO`.
 2. `docs/contracts.md`
 3. `docs/failure_policy.md`
 4. `docs/security_checklist.md`
+5. `CHANGELOG.md`
+6. `RELEASE.md`
+7. `SUPPORT.md`
+8. `GOVERNANCE.md`
 
 ## Uninstall (quick)
 
@@ -583,9 +847,8 @@ This removes moon services/plugin/runtime files and keeps user assets intact.
 
 User assets that are preserved:
 
-1. `$MOON_ARCHIVES_DIR` (archives)
-2. `$MOON_MEMORY_DIR` (daily memory)
-3. `$MOON_MEMORY_FILE` (long-term memory)
+1. `$MOON_MEMORY_DIR` (daily memory)
+2. `$MOON_MEMORY_FILE` (long-term memory)
 
 Use trash-first cleanup (preferred):
 
@@ -624,21 +887,21 @@ OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_STATE_DIR/openclaw.json}
 openclaw plugins uninstall moon 2>/dev/null || true
 trash_path "$OPENCLAW_STATE_DIR/extensions/moon"
 
-MOON_HOME="${MOON_HOME:-$HOME}"
-# Remove moon-owned runtime artifacts only (keep archives/memory/MEMORY.md)
+MOON_HOME="${MOON_HOME:-$HOME/.moon}"
+# Remove moon-owned runtime artifacts only (keep memory/MEMORY.md)
 trash_path "$MOON_HOME/continuity"
-trash_path "$MOON_HOME/moon/state"
-trash_path "$MOON_HOME/state"                # legacy state location
-trash_path "$MOON_HOME/moon/logs"
+trash_path "$MOON_HOME/state"
+trash_path "$MOON_HOME/logs"
 [ -n "${MOON_LOGS_DIR:-}" ] && trash_path "$MOON_LOGS_DIR"
 [ -n "${MOON_STATE_FILE:-}" ] && trash_path "$MOON_STATE_FILE"
 [ -n "${MOON_STATE_DIR:-}" ] && trash_path "$MOON_STATE_DIR"
 
 # Optional: remove persisted moon config if you created one
-trash_path "$MOON_HOME/moon/moon.toml"
+trash_path "$MOON_HOME/moon.toml"
 ```
 
 Note: uninstalling the plugin does not automatically restore custom OpenClaw
 config values previously written under `plugins.entries.moon` or
 `agents.defaults.*`. Remove or revert those keys manually in
-`$OPENCLAW_CONFIG_PATH` (default: `$OPENCLAW_STATE_DIR/openclaw.json`) if you want a full config rollback.
+`$OPENCLAW_CONFIG_PATH` (default: `$OPENCLAW_STATE_DIR/openclaw.json`) if you
+want a full config rollback.

@@ -1,10 +1,11 @@
 use anyhow::Result;
 use serde_json::Value;
+use std::env;
+use std::fs;
 
 use crate::commands::CommandReport;
 use crate::moon::config::{
-    MoonContextCompactionAuthority, MoonContextPruneMode, MoonContextWindowMode,
-    load_context_policy_if_explicit_env,
+    MoonContextCompactionAuthority, MoonContextWindowMode, load_context_policy_if_explicit_env,
 };
 use crate::openclaw::config;
 use crate::openclaw::gateway;
@@ -14,8 +15,12 @@ use crate::openclaw::plugin_verify;
 #[derive(Debug, Clone, Default)]
 pub struct StatusSnapshot {
     pub plugin_enabled: bool,
-    pub context_pruning_mode: bool,
-    pub context_pruning_soft_trim: bool,
+    pub context_engine_slot_selected: bool,
+    pub context_pruning_present: bool,
+    pub plugin_moon_path: bool,
+    pub plugin_moon_home: bool,
+    pub plugin_memory_dir: bool,
+    pub plugin_memory_file: bool,
     pub plugin_max_tokens: bool,
     pub plugin_max_chars: bool,
     pub plugin_max_retained_bytes: bool,
@@ -76,16 +81,25 @@ pub fn config_snapshot(root: &Value, plugin_id: &str) -> StatusSnapshot {
             .and_then(|v| v.get("enabled"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        context_pruning_mode: path_exists(root, &["agents", "defaults", "contextPruning", "mode"]),
-        context_pruning_soft_trim: path_exists(
+        context_engine_slot_selected: path_string(root, &["plugins", "slots", "contextEngine"])
+            .as_deref()
+            == Some(plugin_id),
+        context_pruning_present: path_exists(root, &["agents", "defaults", "contextPruning"]),
+        plugin_moon_path: path_exists(
             root,
-            &[
-                "agents",
-                "defaults",
-                "contextPruning",
-                "softTrim",
-                "maxChars",
-            ],
+            &["plugins", "entries", plugin_id, "config", "moonPath"],
+        ),
+        plugin_moon_home: path_exists(
+            root,
+            &["plugins", "entries", plugin_id, "config", "moonHome"],
+        ),
+        plugin_memory_dir: path_exists(
+            root,
+            &["plugins", "entries", plugin_id, "config", "memoryDir"],
+        ),
+        plugin_memory_file: path_exists(
+            root,
+            &["plugins", "entries", plugin_id, "config", "memoryFile"],
         ),
         plugin_max_tokens: path_exists(
             root,
@@ -122,6 +136,7 @@ pub fn config_snapshot(root: &Value, plugin_id: &str) -> StatusSnapshot {
 
 pub fn run() -> Result<CommandReport> {
     let paths = resolve_paths()?;
+    let moon_paths = crate::moon::paths::resolve_paths()?;
     let mut report = CommandReport::new("status");
 
     let cfg = config::read_config_value(&paths)?;
@@ -137,6 +152,7 @@ pub fn run() -> Result<CommandReport> {
     report.detail(format!("state_dir={}", state_dir_disp.trim()));
     report.detail(format!("config_path={}", config_path_disp.trim()));
     report.detail(format!("plugin_dir={}", plugin_dir_disp.trim()));
+    report_launchd_working_directory(&moon_paths, &mut report);
 
     report.detail(format!("plugin_present_on_disk={}", verify.present_on_disk));
     report.detail(format!(
@@ -152,6 +168,12 @@ pub fn run() -> Result<CommandReport> {
         verify.assets_match_local
     ));
     report.detail(format!("plugin_enabled={}", snapshot.plugin_enabled));
+    if let Some(slot) = path_value(&cfg, &["plugins", "slots", "contextEngine"]) {
+        report.detail(format!(
+            "plugins.slots.contextEngine={}",
+            slot.to_string().trim()
+        ));
+    }
 
     if let Some(s) = &install_snapshot.source {
         report.detail(format!("install_record.source={}", s.trim()));
@@ -163,6 +185,42 @@ pub fn run() -> Result<CommandReport> {
         report.detail(format!("install_record.installPath={}", s.trim()));
     }
 
+    if let Some(v) = path_value(
+        &cfg,
+        &["plugins", "entries", &paths.plugin_id, "config", "moonPath"],
+    ) {
+        report.detail(format!("plugin_config.moonPath={}", v.to_string().trim()));
+    }
+    if let Some(v) = path_value(
+        &cfg,
+        &["plugins", "entries", &paths.plugin_id, "config", "moonHome"],
+    ) {
+        report.detail(format!("plugin_config.moonHome={}", v.to_string().trim()));
+    }
+    if let Some(v) = path_value(
+        &cfg,
+        &[
+            "plugins",
+            "entries",
+            &paths.plugin_id,
+            "config",
+            "memoryDir",
+        ],
+    ) {
+        report.detail(format!("plugin_config.memoryDir={}", v.to_string().trim()));
+    }
+    if let Some(v) = path_value(
+        &cfg,
+        &[
+            "plugins",
+            "entries",
+            &paths.plugin_id,
+            "config",
+            "memoryFile",
+        ],
+    ) {
+        report.detail(format!("plugin_config.memoryFile={}", v.to_string().trim()));
+    }
     if let Some(v) = path_value(
         &cfg,
         &[
@@ -210,43 +268,29 @@ pub fn run() -> Result<CommandReport> {
     }
     if let Some(policy) = &context_policy {
         report.detail(format!(
-            "context.policy=window_mode={:?} prune_mode={:?} compaction_authority={:?} start_ratio={} emergency_ratio={} recover_ratio={}",
+            "context.policy=window_mode={:?} compaction_authority={:?} cleanse_trigger_ratio={} cleanse_emergency_ratio={} recover_ratio={}",
             policy.window_mode,
-            policy.prune_mode,
             policy.compaction_authority,
-            policy.compaction_start_ratio,
-            policy.compaction_emergency_ratio,
+            policy.cleanse_trigger_ratio,
+            policy.cleanse_emergency_ratio,
             policy.compaction_recover_ratio
         ));
     } else {
         report.detail(
-            "context.policy=legacy (no explicit MOON_CONFIG_PATH/MOON_HOME context section)"
+            "context.policy=default (no explicit MOON_CONFIG_PATH/MOON_HOME context section)"
                 .to_string(),
         );
     }
 
     let context_tokens = path_u64(&cfg, &["agents", "defaults", "contextTokens"]);
     let compaction_mode = path_string(&cfg, &["agents", "defaults", "compaction", "mode"]);
+    if snapshot.context_pruning_present {
+        report.issue(
+            "context policy drift: agents.defaults.contextPruning must be absent in primary flow"
+                .to_string(),
+        );
+    }
     if let Some(policy) = &context_policy {
-        match policy.prune_mode {
-            MoonContextPruneMode::Disabled => {
-                if snapshot.context_pruning_mode {
-                    report.issue(
-                        "context policy drift: agents.defaults.contextPruning must be disabled"
-                            .to_string(),
-                    );
-                }
-            }
-            MoonContextPruneMode::Guarded => {
-                if !snapshot.context_pruning_mode {
-                    report.issue("missing agents.defaults.contextPruning.mode");
-                }
-                if !snapshot.context_pruning_soft_trim {
-                    report.issue("missing agents.defaults.contextPruning.softTrim.maxChars");
-                }
-            }
-        }
-
         match policy.window_mode {
             MoonContextWindowMode::Inherit => {
                 if context_tokens.is_some() {
@@ -291,12 +335,6 @@ pub fn run() -> Result<CommandReport> {
             ));
         }
     } else {
-        if !snapshot.context_pruning_mode {
-            report.issue("missing agents.defaults.contextPruning.mode");
-        }
-        if !snapshot.context_pruning_soft_trim {
-            report.issue("missing agents.defaults.contextPruning.softTrim.maxChars");
-        }
         if context_tokens.is_none() {
             report.detail(
                 "agents.defaults.contextTokens not set (using OpenClaw/model default)".to_string(),
@@ -313,6 +351,21 @@ pub fn run() -> Result<CommandReport> {
 
     if !snapshot.plugin_max_tokens {
         report.issue("missing plugins.entries.moon.config.maxTokens");
+    }
+    if !snapshot.context_engine_slot_selected {
+        report.issue("plugins.slots.contextEngine must select moon");
+    }
+    if !snapshot.plugin_moon_path {
+        report.issue("missing plugins.entries.moon.config.moonPath");
+    }
+    if !snapshot.plugin_moon_home {
+        report.issue("missing plugins.entries.moon.config.moonHome");
+    }
+    if !snapshot.plugin_memory_dir {
+        report.issue("missing plugins.entries.moon.config.memoryDir");
+    }
+    if !snapshot.plugin_memory_file {
+        report.issue("missing plugins.entries.moon.config.memoryFile");
     }
     if !snapshot.plugin_max_chars {
         report.issue("missing plugins.entries.moon.config.maxChars");
@@ -390,4 +443,61 @@ pub fn run() -> Result<CommandReport> {
     }
 
     Ok(report)
+}
+
+#[cfg(target_os = "macos")]
+fn report_launchd_working_directory(
+    moon_paths: &crate::moon::paths::MoonPaths,
+    report: &mut CommandReport,
+) {
+    let Ok(current_exe) = env::current_exe() else {
+        return;
+    };
+    if is_dev_build_path(&current_exe) {
+        return;
+    }
+    let Some(home_dir) = dirs::home_dir() else {
+        return;
+    };
+    let plist_path = home_dir
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.moon.watch.plist");
+    let Ok(plist) = fs::read_to_string(&plist_path) else {
+        return;
+    };
+    let Some(working_dir) = extract_launchd_working_directory(&plist) else {
+        return;
+    };
+    report.detail(format!("autostart.launchd.working_dir={working_dir}"));
+    let expected = moon_paths.moon_home.display().to_string();
+    if working_dir != expected {
+        report.issue(format!(
+            "launchd working directory drift: expected {expected}, found {working_dir}; rerun `moon install`"
+        ));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn report_launchd_working_directory(
+    _moon_paths: &crate::moon::paths::MoonPaths,
+    _report: &mut CommandReport,
+) {
+}
+
+#[cfg(target_os = "macos")]
+fn extract_launchd_working_directory(plist: &str) -> Option<String> {
+    let marker = "<key>WorkingDirectory</key><string>";
+    let start = plist.find(marker)? + marker.len();
+    let end = plist[start..].find("</string>")?;
+    Some(plist[start..start + end].to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn is_dev_build_path(path: &std::path::Path) -> bool {
+    let normalized = path.display().to_string();
+    normalized.contains("target/debug")
+        || normalized.contains("target/release")
+        || normalized.contains("target\\debug")
+        || normalized.contains("target\\release")
 }

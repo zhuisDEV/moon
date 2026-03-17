@@ -1,147 +1,178 @@
 # M.O.O.N. Runbook
 
-## Start One Cycle
+## Bootstrap
+
+Minimal setup:
 
 ```bash
-moon watch --once
-```
-
-Bootstrap sequence (minimal setup):
-
-```bash
-cp .env.example .env
-cp moon.toml.example moon.toml
+export MOON_HOME="${MOON_HOME:-$HOME/.moon}"
+mkdir -p "$MOON_HOME"
+cp .env.example "$MOON_HOME/.env"
+cp moon.toml.example "$MOON_HOME/moon.toml"
 moon install
 moon verify --strict
 moon status
 moon health
 moon config --show
-moon watch --once
 ```
 
-Distill trigger behavior:
+Admin/bootstrap commands:
 
-1. Watcher L1 normalisation is always auto-check, gated by `watcher.cooldown_secs`.
-2. Auto L1 source is projection markdown only: `archives/mlib/*.md` (never raw JSONL).
-3. Auto L1 selects pending projections deterministically and applies `distill.max_per_cycle`.
-4. Auto L1 uses a non-blocking lock; lock contention degrades/skips this cycle.
-5. Auto `syns` runs once per residential day on the first watcher cycle after local midnight.
-6. Auto `syns` blends yesterday's daily memory file (`memory/YYYY-MM-DD.md`) with current `memory.md` (when present), then rewrites `memory.md`.
-7. Start with `max_per_cycle=1` in test stage, then increase after stable runs.
-8. When `distill.topic_discovery = true`, daily memory files maintain a top `Entity Anchors` block with discovered topic tags.
+1. `moon install`: wire the current MOON runtime shell, provision the `$MOON_HOME` runtime root, and write OpenClaw config pointers for `moonHome`, `memory/`, and `MEMORY.md`
+2. `moon verify --strict`: verify runtime shell wiring, provenance, dependencies, and health
+3. `moon status`: inspect resolved runtime paths and runtime shell state
+4. `moon config --show`: inspect resolved config
+5. `moon health`: inspect overall runtime health
 
-Retention windows:
+## Core Flow
 
-1. Active (`<= active_days`), warm (`<= warm_days`), cold candidate (`>= cold_days`).
-2. Cold deletion requires a distill marker in state for that archive.
-
-## Start Daemon
+Record active context:
 
 ```bash
-moon install
+moon record
 ```
 
-On macOS, `moon install` registers and starts a `launchd` watcher service
-(`com.moon.watch`) with auto-restart enabled.
+Execution note:
 
-On Windows/Linux, autostart is not wired by `moon install`; start daemon
-manually with:
+1. `record` is the stable-checkpoint step and should run even when `cleanse` does not trigger.
 
-Manual foreground daemon start is still available when needed:
+Project raw into MDS:
 
 ```bash
-moon watch --daemon
+moon project
 ```
 
-## Health Probe
+Execution note:
+
+1. `project` is deterministic background/deferred work derived from recorded raw state.
+
+Apply pressure relief compaction:
 
 ```bash
-moon health
+moon cleanse
 ```
 
-## Manual Distill
+Execution note:
+
+1. `cleanse` is the conditional pressure-relief step.
+2. Its summary should feed the next active context window through `assemble`.
+
+Assemble the next active context window:
 
 ```bash
-moon distill -mode norm -archive $MOON_ARCHIVES_DIR/mlib/<file>.md -session-id <id>
+moon assemble
 ```
 
-Rules:
-1. `-archive` is required and must point to a readable `archives/mlib/*.md` file.
-2. The file must be pending (indexed and not yet normalised in state ledger).
-3. Manual norm is immediate and bypasses watcher cooldown, but still requires L1 lock availability.
+Execution note:
 
-Manual Layer-2 distillation:
+1. `assemble` is the explicit pre-dispatch boundary and writes to `$MOON_HOME/mce/`.
+
+Run the integrated checkpoint controller:
+
+```bash
+moon context-engine --used-tokens 65000 --max-tokens 200000
+```
+
+Execution note:
+
+1. `context-engine` is the short-lived normal-path controller for active context preparation.
+2. It runs `record` first, triggers `cleanse` only when policy requires it, and persists the assembled context window.
+3. Native OpenClaw takeover now depends on the plugin slot selecting `moon` (`plugins.slots.contextEngine = "moon"`), which `moon install` writes automatically.
+
+Run L1 normalisation:
+
+```bash
+moon distill -mode norm
+```
+
+Run L2 synthesis:
 
 ```bash
 moon distill -mode syns
 ```
 
-Recommended `syns` model config (high reasoning quality):
+Recommended model config:
 
 ```bash
+MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_API_KEY=...
+
 MOON_WISDOM_PROVIDER=openai
 MOON_WISDOM_MODEL=gpt-4.1
 OPENAI_API_KEY=...
 ```
 
-Default `syns` sources are today's `memory/YYYY-MM-DD.md` plus current `memory.md`.
+## Search
 
-Layer-2 distillation from explicit file set only:
+Recall prior content:
 
 ```bash
-moon distill -mode syns -file $MOON_MEMORY_DIR/2026-03-01.md -file $MOON_MEMORY_DIR/2026-03-02.md
+moon recall --query "keyword" --name history_lib
 ```
 
-When `-file` is provided, only the listed files participate. `memory.md` is included only if explicitly listed.
+Refresh search embeddings:
 
-Manual L1 queue trigger (same selection logic as watcher):
+```bash
+moon embed --name history_lib --max-docs 25
+```
+
+Rules:
+
+1. `recall` is the user-facing search command.
+2. `embed` is the public search-maintenance command.
+3. Moon v1 does not keep a separate public `index` command.
+4. `embed` should remain bounded via `--max-docs`.
+5. Only a minimal indexing anchor, if any, should enter the next active context window; full embed receipts should stay out of prompt assembly.
+
+## Transitional Watcher
+
+The watcher is the separate long-running maintenance worker. It remains transitional infrastructure and does not own the active context window.
+
+Run one watcher cycle:
 
 ```bash
 moon watch --once
 ```
 
-Dry-run watcher cycle (no state/archive mutations):
+Dry-run watcher cycle:
 
 ```bash
 moon watch --once --dry-run
 ```
 
-## Recall
+Start transitional daemon:
 
 ```bash
-moon recall --query "keyword" --name history
+moon watch --daemon
 ```
 
-Rebuild history index + normalize archive layout:
+Stop transitional daemon:
 
 ```bash
-moon index --name history
+moon stop
+```
+
+Restart transitional daemon:
+
+```bash
+moon restart
 ```
 
 ## Key Paths
 
-1. State file: `$MOON_STATE_FILE` (default: `$MOON_HOME/moon/state/moon_state.json`; `MOON_STATE_DIR` is supported as directory override)
-2. Archives root: `$MOON_ARCHIVES_DIR` (default: `$MOON_HOME/archives`)
-3. Raw session snapshots: `$MOON_ARCHIVES_DIR/raw/*.jsonl`
-4. Archive projections for retrieval: `$MOON_ARCHIVES_DIR/mlib/*.md`
-5. Archive ledger: `$MOON_ARCHIVES_DIR/ledger.jsonl`
-6. Daily memory: `$MOON_MEMORY_DIR/YYYY-MM-DD.md` (default: `$MOON_HOME/memory/YYYY-MM-DD.md`)
-7. Audit log: `$MOON_LOGS_DIR/audit.log` (default: `$MOON_HOME/moon/logs/audit.log`)
-8. Daemon lock: `$MOON_LOGS_DIR/moon-watch.daemon.lock` (JSON payload includes `pid`, `started_at_epoch_secs`, `build_uuid`, `moon_home`)
+1. Runtime root: `$MOON_HOME`
+2. Raw documents: `$MOON_HOME/raw/`
+3. Projection markdown: `$MOON_HOME/mds/`
+4. Cleanse summaries: `$MOON_HOME/cleanse/`
+5. Daily memory: `$MOON_MEMORY_DIR/YYYY-MM-DD.md`
+6. Durable memory: `$MOON_MEMORY_FILE`
+7. Logs: `$MOON_LOGS_DIR`
 
 ## Troubleshooting
 
-1. No usage data:
-- verify `openclaw` is available on `PATH` (`command -v openclaw`)
-- optionally set `OPENCLAW_BIN` to a specific `openclaw` binary path
-2. QMD indexing/search fails:
-- set `QMD_BIN`
-- verify `qmd collection add` and `qmd search` work manually
-3. `syns` not using remote reasoning model:
-- set one provider API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` or `AI_API_KEY`)
-- set `MOON_WISDOM_PROVIDER` and `MOON_WISDOM_MODEL`
-4. Session rollover fails:
-- set `MOON_SESSION_ROLLOVER_CMD` to your environment-specific command
-- continuity map still persists with `rollover_ok=false`
-5. Mutating command fails with out-of-bounds error:
-- run from your workspace tree, or use global escape hatch `--allow-out-of-bounds`
+1. If `verify` or `status` reports provenance drift, run `moon install` and then `moon verify --strict`.
+2. If search maintenance fails, verify `QMD_BIN` and re-run bounded `moon embed --max-docs <N>`.
+3. If `syns` is unavailable, confirm provider API keys and `MOON_WISDOM_PROVIDER` / `MOON_WISDOM_MODEL`.
+4. If a mutating command fails with an out-of-bounds error, run from your workspace tree or use `--allow-out-of-bounds`.
+5. Optional env default: set `MOON_ALLOW_OUT_OF_BOUNDS=1` (truthy: `1`, `true`, `yes`, `on`) to apply the same bypass for that process environment.
+6. If OpenClaw cannot find Moon memory paths, run `moon install`, then `moon verify --strict`, and check `plugins.entries.moon.config.memoryDir` / `memoryFile`.

@@ -1,22 +1,30 @@
-use crate::moon::config::load_config;
+use crate::moon::config::{
+    MoonHotCollectionLifecycleCommandMode, MoonHotCollectionLifecycleMode, load_config,
+};
 use crate::moon::daemon_lock::{DaemonLockPayload, daemon_lock_path};
 use crate::moon::distill::{
     DistillInput, DistillOutput, WisdomDistillInput, run_distillation, run_wisdom_distillation,
 };
+use crate::moon::embed::{self, EmbedCaller, EmbedRunOptions};
+use crate::moon::files::{file_epoch_secs, gather_files_with_extension};
 use crate::moon::paths::{MoonPaths, resolve_paths};
-use crate::moon::state::{load, save, state_file_path};
+use crate::moon::project::{self, ProjectLane, ProjectRunOptions};
+use crate::moon::qmd;
+use crate::moon::state::{RawSessionCursor, is_hot_embed_collection, load, save, state_file_path};
 use anyhow::{Context, Result};
 use chrono::{LocalResult, TimeZone, Timelike};
 use chrono_tz::Tz;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 const BUILD_UUID: &str = env!("BUILD_UUID");
+const HOT_COLLECTION_LIFECYCLE_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WatchRunOptions {
@@ -30,17 +38,58 @@ pub struct WatchCycleOutcome {
     pub heartbeat_epoch_secs: u64,
     pub poll_interval_secs: u64,
     pub distill_max_per_cycle: u64,
-    pub pending_mds_docs: usize,
+    pub pending_raw_sessions: usize,
+    pub projected_sessions: usize,
+    pub pending_mlib_docs: usize,
     pub distill_runs: usize,
+    pub pending_embed_collections: usize,
+    pub embed_runs: usize,
+    pub embed_last_summary: Option<String>,
+    pub hot_collection_lifecycle_mode: String,
+    pub hot_collection_lifecycle_command_mode: String,
     pub syns_due: bool,
     pub distill: Option<DistillOutput>,
     pub syns_result: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct MdsDoc {
+struct ProjectionDoc {
     path: PathBuf,
     mtime_epoch_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RawSessionDoc {
+    session_id: String,
+    source_path: PathBuf,
+    mtime_epoch_secs: u64,
+    bytes: u64,
+    lines: u64,
+}
+
+fn hot_collection_lifecycle_summary(
+    mode: MoonHotCollectionLifecycleMode,
+    command_mode: MoonHotCollectionLifecycleCommandMode,
+    probe: &qmd::CollectionLifecycleCapabilityProbe,
+) -> Option<String> {
+    match mode {
+        MoonHotCollectionLifecycleMode::Disabled => Some(format!(
+            "hot_lifecycle=disabled capability={} note={}",
+            probe.capability.as_str(),
+            probe.note
+        )),
+        MoonHotCollectionLifecycleMode::Degrade
+            if probe.capability == qmd::CollectionLifecycleCapability::Missing =>
+        {
+            Some(format!(
+                "hot_lifecycle=degraded reason=lifecycle-capability-missing command_mode={} capability={} note={}",
+                command_mode.as_str(),
+                probe.capability.as_str(),
+                probe.note
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn now_epoch_secs() -> Result<u64> {
@@ -55,52 +104,28 @@ fn now_epoch_secs() -> Result<u64> {
     crate::moon::util::now_epoch_secs()
 }
 
-fn mds_dir(paths: &MoonPaths) -> PathBuf {
-    paths.moon_home.join("mds")
+fn session_byte_line_stats(path: &Path) -> Result<(u64, u64)> {
+    let bytes = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let content = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let line_breaks = content.iter().filter(|byte| **byte == b'\n').count() as u64;
+    let lines = if content.is_empty() {
+        0
+    } else if content.last() == Some(&b'\n') {
+        line_breaks
+    } else {
+        line_breaks + 1
+    };
+    Ok((bytes, lines))
 }
 
-fn path_epoch_secs(path: &Path) -> u64 {
-    let Ok(metadata) = fs::metadata(path) else {
-        return 0;
-    };
-    let Ok(modified) = metadata.modified() else {
-        return 0;
-    };
-    let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
-        return 0;
-    };
-    duration.as_secs()
-}
-
-fn gather_mds_docs(root: &Path, out: &mut Vec<MdsDoc>) -> Result<()> {
-    if !root.exists() {
-        return Ok(());
-    }
-
-    for entry in
-        fs::read_dir(root).with_context(|| format!("failed to read mds dir {}", root.display()))?
-    {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", root.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to stat {}", path.display()))?;
-        if file_type.is_dir() {
-            gather_mds_docs(&path, out)?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
-        {
-            continue;
-        }
-        out.push(MdsDoc {
-            mtime_epoch_secs: path_epoch_secs(&path),
+fn gather_projection_docs(root: &Path, out: &mut Vec<ProjectionDoc>) -> Result<()> {
+    let mut paths = Vec::new();
+    gather_files_with_extension(root, "md", true, &mut paths)?;
+    for path in paths {
+        out.push(ProjectionDoc {
+            mtime_epoch_secs: file_epoch_secs(&path),
             path,
         });
     }
@@ -108,9 +133,9 @@ fn gather_mds_docs(root: &Path, out: &mut Vec<MdsDoc>) -> Result<()> {
     Ok(())
 }
 
-fn list_mds_docs(paths: &MoonPaths) -> Result<Vec<MdsDoc>> {
+fn list_mlib_docs(paths: &MoonPaths) -> Result<Vec<ProjectionDoc>> {
     let mut docs = Vec::new();
-    gather_mds_docs(&mds_dir(paths), &mut docs)?;
+    gather_projection_docs(&paths.mlib_dir, &mut docs)?;
     docs.sort_by(|a, b| {
         a.mtime_epoch_secs
             .cmp(&b.mtime_epoch_secs)
@@ -119,11 +144,11 @@ fn list_mds_docs(paths: &MoonPaths) -> Result<Vec<MdsDoc>> {
     Ok(docs)
 }
 
-fn pending_mds_docs(
+fn pending_mlib_docs(
     paths: &MoonPaths,
     state: &crate::moon::state::MoonState,
-) -> Result<Vec<MdsDoc>> {
-    Ok(list_mds_docs(paths)?
+) -> Result<Vec<ProjectionDoc>> {
+    Ok(list_mlib_docs(paths)?
         .into_iter()
         .filter(|doc| {
             let key = doc.path.display().to_string();
@@ -133,6 +158,112 @@ fn pending_mds_docs(
             }
         })
         .collect())
+}
+
+fn gather_raw_sessions(root: &Path, out: &mut Vec<RawSessionDoc>) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for entry in
+        fs::read_dir(root).with_context(|| format!("failed to read raw dir {}", root.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", root.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        if file_type.is_dir() {
+            gather_raw_sessions(&path, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("jsonl"))
+        {
+            continue;
+        }
+
+        let session_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("session")
+            .to_string();
+        let (bytes, lines) = session_byte_line_stats(&path)?;
+
+        out.push(RawSessionDoc {
+            session_id,
+            source_path: path.clone(),
+            mtime_epoch_secs: file_epoch_secs(&path),
+            bytes,
+            lines,
+        });
+    }
+
+    Ok(())
+}
+
+fn list_raw_sessions(paths: &MoonPaths) -> Result<Vec<RawSessionDoc>> {
+    let mut docs = Vec::new();
+    gather_raw_sessions(&paths.raw_dir, &mut docs)?;
+
+    // Keep the latest doc per session id if duplicates exist.
+    let mut by_session = BTreeMap::<String, RawSessionDoc>::new();
+    for doc in docs {
+        match by_session.get(&doc.session_id) {
+            None => {
+                by_session.insert(doc.session_id.clone(), doc);
+            }
+            Some(existing)
+                if doc.mtime_epoch_secs > existing.mtime_epoch_secs
+                    || (doc.mtime_epoch_secs == existing.mtime_epoch_secs
+                        && doc.source_path > existing.source_path) =>
+            {
+                by_session.insert(doc.session_id.clone(), doc);
+            }
+            Some(_) => {}
+        }
+    }
+
+    let mut out = by_session.into_values().collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        a.mtime_epoch_secs
+            .cmp(&b.mtime_epoch_secs)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    Ok(out)
+}
+
+fn pending_raw_sessions(
+    paths: &MoonPaths,
+    state: &crate::moon::state::MoonState,
+) -> Result<Vec<RawSessionDoc>> {
+    Ok(list_raw_sessions(paths)?
+        .into_iter()
+        .filter(|doc| match state.raw_session_cursors.get(&doc.session_id) {
+            None => true,
+            Some(cursor) => cursor.bytes != doc.bytes || cursor.lines != doc.lines,
+        })
+        .collect())
+}
+
+fn pending_embed_collections(state: &crate::moon::state::MoonState) -> Vec<String> {
+    let mut queued = state
+        .pending_embed_collections
+        .iter()
+        .map(|(collection, epoch)| (*epoch, collection.clone()))
+        .collect::<Vec<_>>();
+    queued.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    queued
+        .into_iter()
+        .map(|(_, collection)| collection)
+        .collect()
 }
 
 fn residential_tz_name(cfg: &crate::moon::config::MoonConfig) -> String {
@@ -219,12 +350,133 @@ pub fn run_once() -> Result<WatchCycleOutcome> {
 
 pub fn run_once_with_options(run_opts: WatchRunOptions) -> Result<WatchCycleOutcome> {
     let paths = resolve_paths()?;
+    qmd::install_runtime_env(&paths);
     let cfg = load_config()?;
     let mut state = load(&paths)?;
     let now_epoch = now_epoch_secs()?;
     let tz = parse_residential_tz(&cfg);
 
-    let pending_docs = pending_mds_docs(&paths, &state)?;
+    let pending_raw = pending_raw_sessions(&paths, &state)?;
+    let pending_raw_count = pending_raw.len();
+    let mut projected_sessions = 0usize;
+    if !run_opts.dry_run {
+        for raw in pending_raw
+            .into_iter()
+            .take(cfg.distill.max_per_cycle as usize)
+        {
+            let source_path = raw.source_path.display().to_string();
+            project::run_and_mark_embed_pending(
+                &paths,
+                &mut state,
+                &ProjectRunOptions {
+                    source_path: Some(source_path),
+                    session_id: Some(raw.session_id.clone()),
+                    lane: ProjectLane::Library,
+                    dry_run: false,
+                },
+            )
+            .with_context(|| {
+                format!(
+                    "watcher project failed for session `{}` from {}",
+                    raw.session_id,
+                    raw.source_path.display()
+                )
+            })?;
+            state.raw_session_cursors.insert(
+                raw.session_id,
+                RawSessionCursor {
+                    bytes: raw.bytes,
+                    lines: raw.lines,
+                },
+            );
+            projected_sessions += 1;
+        }
+    }
+
+    let pending_embed_count = state.pending_embed_collections.len();
+    let mut embed_runs = 0usize;
+    let mut embed_last_summary = None;
+    let hot_lifecycle_mode = cfg.hot_collection.lifecycle_mode;
+    let hot_lifecycle_command_mode = cfg.hot_collection.lifecycle_command_mode;
+    if !run_opts.dry_run {
+        for collection_name in pending_embed_collections(&state) {
+            let lifecycle_summary = if is_hot_embed_collection(&collection_name) {
+                match ensure_hot_collection_lifecycle(
+                    &paths,
+                    &collection_name,
+                    hot_lifecycle_mode,
+                    hot_lifecycle_command_mode,
+                ) {
+                    Ok(detail) => {
+                        if detail.starts_with("hot_lifecycle=ok") {
+                            state
+                                .managed_hot_collections
+                                .insert(collection_name.clone(), now_epoch);
+                        }
+                        detail
+                    }
+                    Err(err) if hot_lifecycle_mode == MoonHotCollectionLifecycleMode::Strict => {
+                        return Err(anyhow::anyhow!(
+                            "watcher strict mode hot collection lifecycle failed for `{}`: {err:#}",
+                            collection_name
+                        ));
+                    }
+                    Err(err) => format!(
+                        "hot_lifecycle=degraded error={}",
+                        crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 200)
+                    ),
+                }
+            } else {
+                "hot_lifecycle=not-applicable".to_string()
+            };
+
+            let summary = embed::run(
+                &paths,
+                &mut state,
+                &cfg.embed,
+                &EmbedRunOptions {
+                    collection_name: collection_name.clone(),
+                    max_docs: cfg.embed.max_docs_per_cycle as usize,
+                    dry_run: false,
+                    caller: EmbedCaller::Watcher,
+                    max_cycle_secs: Some(cfg.embed.max_cycle_secs),
+                },
+            )
+            .map_err(|err| anyhow::anyhow!("watcher embed failed: {err}"))?;
+            if hot_lifecycle_mode == MoonHotCollectionLifecycleMode::Strict
+                && is_hot_embed_collection(&collection_name)
+                && summary.degraded
+            {
+                return Err(anyhow::anyhow!(
+                    "watcher strict mode rejects degraded embed result for `{}`: skip_reason={} capability={} pending_before={} pending_after={}",
+                    summary.collection,
+                    summary.skip_reason,
+                    summary.capability,
+                    summary.pending_before,
+                    summary.pending_after
+                ));
+            }
+            embed_runs += 1;
+            embed_last_summary = Some(format!(
+                "collection={} embedded_docs={} pending_before={} pending_after={} skip_reason={} degraded={} {}",
+                summary.collection,
+                summary.embedded_docs,
+                summary.pending_before,
+                summary.pending_after,
+                summary.skip_reason,
+                summary.degraded,
+                lifecycle_summary
+            ));
+
+            if summary.pending_after == 0
+                || (summary.pending_before == 0 && summary.selected_docs == 0)
+            {
+                state.pending_embed_collections.remove(&collection_name);
+            }
+        }
+    }
+
+    let pending_docs = pending_mlib_docs(&paths, &state)?;
     let pending_count = pending_docs.len();
     let mut last_distill = None;
     let mut distill_runs = 0usize;
@@ -310,12 +562,47 @@ pub fn run_once_with_options(run_opts: WatchRunOptions) -> Result<WatchCycleOutc
         heartbeat_epoch_secs: now_epoch,
         poll_interval_secs: cfg.watcher.poll_interval_secs,
         distill_max_per_cycle: cfg.distill.max_per_cycle,
-        pending_mds_docs: pending_count,
+        pending_raw_sessions: pending_raw_count,
+        projected_sessions,
+        pending_mlib_docs: pending_count,
         distill_runs,
+        pending_embed_collections: pending_embed_count,
+        embed_runs,
+        embed_last_summary,
+        hot_collection_lifecycle_mode: hot_lifecycle_mode.as_str().to_string(),
+        hot_collection_lifecycle_command_mode: hot_lifecycle_command_mode.as_str().to_string(),
         syns_due,
         distill: last_distill,
         syns_result,
     })
+}
+
+fn ensure_hot_collection_lifecycle(
+    paths: &MoonPaths,
+    collection_name: &str,
+    lifecycle_mode: MoonHotCollectionLifecycleMode,
+    command_mode: MoonHotCollectionLifecycleCommandMode,
+) -> Result<String> {
+    let probe = qmd::probe_collection_lifecycle_capability(&paths.qmd_bin, command_mode);
+    if let Some(summary) = hot_collection_lifecycle_summary(lifecycle_mode, command_mode, &probe) {
+        return Ok(summary);
+    }
+
+    let collection_dir = crate::moon::state::hot_projection_dir_for_collection(paths, collection_name);
+    let create = qmd::collection_create(
+        &paths.qmd_bin,
+        collection_name,
+        &collection_dir,
+        command_mode,
+        Some(HOT_COLLECTION_LIFECYCLE_TIMEOUT_SECS),
+    )?;
+    Ok(format!(
+        "hot_lifecycle=ok capability={} note={} register_cmd=`{}` register_fallback={}",
+        probe.capability.as_str(),
+        probe.note,
+        create.command,
+        create.used_fallback,
+    ))
 }
 
 pub fn run_daemon() -> Result<()> {

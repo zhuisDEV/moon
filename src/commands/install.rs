@@ -1,9 +1,5 @@
-#[cfg(target_os = "macos")]
-use anyhow::Context;
-use anyhow::Result;
-#[cfg(target_os = "macos")]
+use anyhow::{Context, Result};
 use std::env;
-#[cfg(target_os = "macos")]
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::ErrorKind;
@@ -14,10 +10,12 @@ use std::process::Command;
 
 use crate::commands::CommandReport;
 use crate::commands::moon_stop;
+use crate::assets::{write_runtime_docs, write_runtime_skills};
 use crate::moon::config::load_context_policy_if_explicit_env;
+use crate::moon::state::state_file_path;
 use crate::openclaw::config::{
     ConfigPatchOptions, apply_config_patches, ensure_plugin_enabled, ensure_plugin_install_record,
-    read_config_value, write_config_atomic,
+    ensure_plugin_runtime_config, ensure_plugin_slot, read_config_value, write_config_atomic,
 };
 use crate::openclaw::paths::resolve_paths;
 use crate::openclaw::plugin_install;
@@ -29,11 +27,38 @@ pub struct InstallOptions {
     pub apply: bool,
 }
 
+const DEFAULT_RUNTIME_ENV_TEMPLATE: &str = "\
+# MOON runtime environment
+# Loaded by moon from $MOON_HOME/.env
+#
+# Minimal cleanse profile (required for remote compaction):
+# MOON_CLEANSE_PROVIDER=gemini
+# MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
+# GEMINI_API_KEY=...
+#
+# Optional synthesis profile:
+# MOON_WISDOM_PROVIDER=openai
+# MOON_WISDOM_MODEL=gpt-4.1
+# OPENAI_API_KEY=...
+#
+# Optional path overrides:
+# MOON_MDS_DIR=$MOON_HOME/mds
+# MOON_MLIB_DIR=$MOON_HOME/mlib
+";
+
 pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     let paths = resolve_paths()?;
+    let moon_paths = crate::moon::paths::resolve_paths()?;
+    let current_exe = env::current_exe().context("failed to resolve current executable path")?;
     let mut report = CommandReport::new("install");
 
-    report.detail("preflight: stopping watcher daemon and clearing lock".to_string());
+    report.detail("runtime.controller=moon-context-engine".to_string());
+    report.detail("runtime.watcher_role=transitional-shell".to_string());
+    report.detail(format!("runtime.root={}", moon_paths.moon_home.display()));
+    report.detail(format!("runtime.moon_path={}", current_exe.display()));
+    report.detail(format!("runtime.context_engine_slot={}", paths.plugin_id));
+
+    report.detail("preflight: stopping transitional watcher daemon and clearing lock".to_string());
     report.merge(moon_stop::run()?);
 
     let plugin = plugin_install::install_plugin(&paths, opts.dry_run)?;
@@ -44,12 +69,12 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     let context_policy = load_context_policy_if_explicit_env()?;
     if let Some(policy) = &context_policy {
         report.detail(format!(
-            "context.policy=window_mode={:?} prune_mode={:?} compaction_authority={:?}",
-            policy.window_mode, policy.prune_mode, policy.compaction_authority
+            "context.policy=window_mode={:?} compaction_authority={:?}",
+            policy.window_mode, policy.compaction_authority
         ));
     } else {
         report.detail(
-            "context.policy=legacy (no explicit MOON_CONFIG_PATH/MOON_HOME context section)"
+            "context.policy=default (no explicit MOON_CONFIG_PATH/MOON_HOME context section)"
                 .to_string(),
         );
     }
@@ -64,6 +89,13 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     let plugin_patch = ensure_plugin_enabled(&mut cfg, &paths.plugin_id);
     let install_record_patch =
         ensure_plugin_install_record(&mut cfg, &paths.plugin_id, &paths.plugin_dir);
+    let slot_patch = ensure_plugin_slot(&mut cfg, "contextEngine", &paths.plugin_id);
+    let runtime_patch = ensure_plugin_runtime_config(
+        &mut cfg,
+        &paths.plugin_id,
+        &current_exe,
+        &moon_paths.moon_home,
+    );
 
     for key in patch.inserted_paths {
         report.detail(format!("inserted {key}"));
@@ -86,9 +118,25 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     for key in install_record_patch.forced_paths {
         report.detail(format!("forced {key}"));
     }
+    for key in slot_patch.inserted_paths {
+        report.detail(format!("inserted {key}"));
+    }
+    for key in slot_patch.forced_paths {
+        report.detail(format!("forced {key}"));
+    }
+    for key in runtime_patch.inserted_paths {
+        report.detail(format!("inserted {key}"));
+    }
+    for key in runtime_patch.forced_paths {
+        report.detail(format!("forced {key}"));
+    }
 
-    let changed =
-        patch.changed || plugin_patch.changed || install_record_patch.changed || plugin.changed;
+    let changed = patch.changed
+        || plugin_patch.changed
+        || install_record_patch.changed
+        || slot_patch.changed
+        || runtime_patch.changed
+        || plugin.changed;
     if changed && opts.apply && !opts.dry_run {
         let path_written = write_config_atomic(&paths, &cfg)?;
         report.detail(format!("updated config: {path_written}"));
@@ -98,11 +146,155 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
         report.detail("config already satisfied".to_string());
     }
 
+    ensure_runtime_root_layout(&moon_paths, opts, &mut report)?;
+    ensure_runtime_docs_and_skills(&paths, &moon_paths, opts, &mut report)?;
+
     if let Err(err) = ensure_default_autostart(opts, &mut report) {
         report.issue(format!("autostart setup failed: {err:#}"));
     }
 
     Ok(report)
+}
+
+fn ensure_runtime_root_layout(
+    paths: &crate::moon::paths::MoonPaths,
+    opts: &InstallOptions,
+    report: &mut CommandReport,
+) -> Result<()> {
+    let state_dir = state_file_path(paths)
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| paths.moon_home.join("state"));
+
+    let directories = [
+        paths.moon_home.clone(),
+        paths.raw_dir.clone(),
+        paths.mds_dir.clone(),
+        paths.mlib_dir.clone(),
+        paths.cleanse_dir.clone(),
+        paths.archives_dir.clone(),
+        paths.memory_dir.clone(),
+        paths.logs_dir.clone(),
+        paths.context_engine_dir.clone(),
+        paths.qmd_config_dir.clone(),
+        state_dir,
+    ];
+
+    let qmd_db_dir = paths
+        .qmd_db
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| paths.moon_home.join("qmd"));
+
+    if opts.dry_run {
+        for dir in &directories {
+            report.detail(format!("runtime.plan.mkdir={}", dir.display()));
+        }
+        report.detail(format!("runtime.plan.mkdir={}", qmd_db_dir.display()));
+        let runtime_env_path = paths.moon_home.join(".env");
+        if !runtime_env_path.exists() {
+            report.detail(format!("runtime.plan.touch={}", runtime_env_path.display()));
+        }
+        if !paths.memory_file.exists() {
+            report.detail(format!(
+                "runtime.plan.touch={}",
+                paths.memory_file.display()
+            ));
+        }
+        report.detail("runtime.bootstrap=dry-run".to_string());
+        return Ok(());
+    }
+
+    for dir in &directories {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create runtime dir {}", dir.display()))?;
+        report.detail(format!("runtime.dir.ready={}", dir.display()));
+    }
+    fs::create_dir_all(&qmd_db_dir)
+        .with_context(|| format!("failed to create runtime dir {}", qmd_db_dir.display()))?;
+    report.detail(format!("runtime.dir.ready={}", qmd_db_dir.display()));
+
+    if !paths.memory_file.exists() {
+        fs::write(&paths.memory_file, "# MOON Memory\n")
+            .with_context(|| format!("failed to write {}", paths.memory_file.display()))?;
+        report.detail(format!(
+            "runtime.file.created={}",
+            paths.memory_file.display()
+        ));
+    } else {
+        report.detail(format!(
+            "runtime.file.ready={}",
+            paths.memory_file.display()
+        ));
+    }
+
+    let runtime_env_path = paths.moon_home.join(".env");
+    if !runtime_env_path.exists() {
+        fs::write(&runtime_env_path, DEFAULT_RUNTIME_ENV_TEMPLATE)
+            .with_context(|| format!("failed to write {}", runtime_env_path.display()))?;
+        report.detail(format!(
+            "runtime.env.created={}",
+            runtime_env_path.display()
+        ));
+    } else {
+        report.detail(format!("runtime.env.ready={}", runtime_env_path.display()));
+    }
+
+    report.detail("runtime.bootstrap=ready".to_string());
+    Ok(())
+}
+
+fn ensure_runtime_docs_and_skills(
+    openclaw_paths: &crate::openclaw::paths::OpenClawPaths,
+    moon_paths: &crate::moon::paths::MoonPaths,
+    opts: &InstallOptions,
+    report: &mut CommandReport,
+) -> Result<()> {
+    let skills_root = openclaw_paths.state_dir.join("skills");
+
+    if opts.dry_run {
+        for (rel, _) in crate::assets::runtime_doc_asset_contents() {
+            report.detail(format!(
+                "runtime.plan.write={}",
+                moon_paths.moon_home.join(rel).display()
+            ));
+        }
+        for (rel, _) in crate::assets::runtime_skill_asset_contents() {
+            report.detail(format!(
+                "runtime.plan.write={}",
+                skills_root.join(rel).display()
+            ));
+        }
+        return Ok(());
+    }
+
+    write_runtime_docs(&moon_paths.moon_home).with_context(|| {
+        format!(
+            "failed to export runtime docs into {}",
+            moon_paths.moon_home.display()
+        )
+    })?;
+    for (rel, _) in crate::assets::runtime_doc_asset_contents() {
+        report.detail(format!(
+            "runtime.doc.ready={}",
+            moon_paths.moon_home.join(rel).display()
+        ));
+    }
+
+    write_runtime_skills(&skills_root).with_context(|| {
+        format!(
+            "failed to export runtime skills into {}",
+            skills_root.display()
+        )
+    })?;
+    for (rel, _) in crate::assets::runtime_skill_asset_contents() {
+        report.detail(format!(
+            "runtime.skill.ready={}",
+            skills_root.join(rel).display()
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -140,14 +332,12 @@ fn ensure_default_autostart(opts: &InstallOptions, report: &mut CommandReport) -
     let plist_path = launch_agents_dir.join(LAUNCHD_PLIST_NAME);
     let stdout_path = moon_paths.logs_dir.join("launchd.stdout.log");
     let stderr_path = moon_paths.logs_dir.join("launchd.stderr.log");
-    let working_dir =
-        env::current_dir().context("failed to resolve current working directory for launchd")?;
     let moon_config_path = crate::moon::config::resolve_config_path();
     let path_value = default_launchd_path(&home_dir, current_exe.parent());
     let plist_payload = render_launchd_plist(
         LAUNCHD_LABEL,
         &current_exe,
-        &working_dir,
+        &moon_paths.moon_home,
         &moon_paths.moon_home,
         &moon_paths.logs_dir,
         &stdout_path,
@@ -161,6 +351,10 @@ fn ensure_default_autostart(opts: &InstallOptions, report: &mut CommandReport) -
         "autostart.launchd.binary={}",
         current_exe.display()
     ));
+    report.detail(format!(
+        "autostart.launchd.working_dir={}",
+        moon_paths.moon_home.display()
+    ));
     report.detail(format!("autostart.launchd.plist={}", plist_path.display()));
     if opts.dry_run {
         report.detail("autostart.launchd.mode=dry-run (no launchctl changes)".to_string());
@@ -172,8 +366,12 @@ fn ensure_default_autostart(opts: &InstallOptions, report: &mut CommandReport) -
     fs::create_dir_all(&moon_paths.logs_dir)
         .with_context(|| format!("failed to create {}", moon_paths.logs_dir.display()))?;
 
+    let mut previous_working_dir = None::<String>;
     let plist_changed = match fs::read_to_string(&plist_path) {
-        Ok(existing) => existing != plist_payload,
+        Ok(existing) => {
+            previous_working_dir = extract_launchd_working_directory(&existing);
+            existing != plist_payload
+        }
         Err(err) if err.kind() == ErrorKind::NotFound => true,
         Err(err) => {
             return Err(err).with_context(|| format!("failed to read {}", plist_path.display()));
@@ -184,6 +382,15 @@ fn ensure_default_autostart(opts: &InstallOptions, report: &mut CommandReport) -
             .with_context(|| format!("failed to write {}", plist_path.display()))?;
     }
     report.detail(format!("autostart.launchd.plist_changed={plist_changed}"));
+    if let Some(previous) = previous_working_dir {
+        let expected = moon_paths.moon_home.display().to_string();
+        if previous != expected {
+            report.detail(format!(
+                "autostart.launchd.repair=working_directory_wrong previous={} fixed={}",
+                previous, expected
+            ));
+        }
+    }
 
     let uid = resolve_uid()?;
     let domain = format!("gui/{uid}");
@@ -372,4 +579,57 @@ fn render_launchd_plist(
         xml_escape(&stdout_path.display().to_string()),
         xml_escape(&stderr_path.display().to_string()),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn extract_launchd_working_directory(plist: &str) -> Option<String> {
+    let marker = "<key>WorkingDirectory</key><string>";
+    let start = plist.find(marker)? + marker.len();
+    let end = plist[start..].find("</string>")?;
+    Some(plist[start..start + end].to_string())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{extract_launchd_working_directory, render_launchd_plist};
+    use std::path::Path;
+
+    #[test]
+    fn launchd_plist_uses_moon_home_as_working_directory() {
+        let plist = render_launchd_plist(
+            "com.moon.watch",
+            Path::new("/Users/test/.cargo/bin/moon"),
+            Path::new("/Users/test/.moon"),
+            Path::new("/Users/test/.moon"),
+            Path::new("/Users/test/.moon/logs"),
+            Path::new("/Users/test/.moon/logs/launchd.stdout.log"),
+            Path::new("/Users/test/.moon/logs/launchd.stderr.log"),
+            Path::new("/Users/test"),
+            "/Users/test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            Some(Path::new("/Users/test/.moon/moon.toml")),
+        );
+
+        assert!(plist.contains("<key>WorkingDirectory</key><string>/Users/test/.moon</string>"));
+    }
+
+    #[test]
+    fn extract_launchd_working_directory_reads_plist_value() {
+        let plist = render_launchd_plist(
+            "com.moon.watch",
+            Path::new("/Users/test/.cargo/bin/moon"),
+            Path::new("/Users/test/.moon"),
+            Path::new("/Users/test/.moon"),
+            Path::new("/Users/test/.moon/logs"),
+            Path::new("/Users/test/.moon/logs/launchd.stdout.log"),
+            Path::new("/Users/test/.moon/logs/launchd.stderr.log"),
+            Path::new("/Users/test"),
+            "/Users/test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            Some(Path::new("/Users/test/.moon/moon.toml")),
+        );
+
+        assert_eq!(
+            extract_launchd_working_directory(&plist).as_deref(),
+            Some("/Users/test/.moon")
+        );
+    }
 }

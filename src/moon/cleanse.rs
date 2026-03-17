@@ -1,0 +1,497 @@
+use anyhow::{Context, Result};
+use reqwest::blocking::Client;
+use serde_json::Value;
+use std::env;
+
+use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
+
+const DEFAULT_CLEANSE_MODEL: &str = "gemini-3.1-flash-lite-preview";
+const REQUEST_TIMEOUT_SECS: u64 = 45;
+const MAX_SUMMARY_CHARS: usize = 16_000;
+const MAX_MODEL_LINES: usize = 120;
+const MIN_BULLET_LINES: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct CleanseInput {
+    pub session_id: String,
+    pub source_path: String,
+    pub source_excerpt: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanseOutput {
+    pub provider: String,
+    pub model: String,
+    pub summary: String,
+    pub created_at_epoch_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteProvider {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    OpenAiCompatible,
+}
+
+impl RemoteProvider {
+    fn label(self) -> &'static str {
+        match self {
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CleanseModelConfig {
+    provider: RemoteProvider,
+    model: String,
+    api_key: String,
+    base_url: Option<String>,
+}
+
+pub fn run_cleanse(input: &CleanseInput) -> Result<CleanseOutput> {
+    let config = resolve_cleanse_config()?;
+    let prompt = build_cleanse_prompt(input);
+    let raw_summary = match config.provider {
+        RemoteProvider::OpenAi => call_openai(&config, &prompt)?,
+        RemoteProvider::Anthropic => call_anthropic(&config, &prompt)?,
+        RemoteProvider::Gemini => call_gemini(&config, &prompt)?,
+        RemoteProvider::OpenAiCompatible => call_openai_compatible(&config, &prompt)?,
+    };
+    let summary = sanitize_summary(&raw_summary).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cleanse model produced no usable summary; refine MOON_CLEANSE_MODEL or retry"
+        )
+    })?;
+
+    Ok(CleanseOutput {
+        provider: config.provider.label().to_string(),
+        model: config.model,
+        summary: clamp_summary(&summary),
+        created_at_epoch_secs: now_epoch_secs()?,
+    })
+}
+
+pub fn resolved_cleanse_model_label() -> String {
+    env_non_empty("MOON_CLEANSE_MODEL").unwrap_or_else(|| DEFAULT_CLEANSE_MODEL.to_string())
+}
+
+pub fn render_summary_document(
+    session_id: &str,
+    source_path: &str,
+    provider: &str,
+    model: &str,
+    created_at_epoch_secs: u64,
+    summary: &str,
+) -> String {
+    format!(
+        "---\nmoon_cleanse: 1\nsession_id: {}\nsource_path: {}\nprovider: {}\nmodel: {}\ncreated_at_epoch_secs: {}\n---\n\n{}\n",
+        serde_json::to_string(session_id).unwrap_or_else(|_| "\"session\"".to_string()),
+        serde_json::to_string(source_path).unwrap_or_else(|_| "\"\"".to_string()),
+        serde_json::to_string(provider).unwrap_or_else(|_| "\"\"".to_string()),
+        serde_json::to_string(model).unwrap_or_else(|_| "\"\"".to_string()),
+        created_at_epoch_secs,
+        summary.trim_end()
+    )
+}
+
+fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
+    if env_non_empty("MOON_CLEANSE_PROVIDER")
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("local"))
+    {
+        anyhow::bail!(
+            "MOON_CLEANSE_PROVIDER=local is unsupported; cleanse requires a remote model"
+        );
+    }
+
+    let configured_model =
+        env_non_empty("MOON_CLEANSE_MODEL").unwrap_or_else(|| DEFAULT_CLEANSE_MODEL.to_string());
+    let mut chosen_provider = env_non_empty("MOON_CLEANSE_PROVIDER")
+        .as_deref()
+        .and_then(parse_provider_alias);
+    let (prefixed_provider, mut model) = parse_prefixed_model(&configured_model);
+    if chosen_provider.is_none() {
+        chosen_provider = prefixed_provider.or_else(|| infer_provider_from_model(&model));
+    }
+
+    let provider = chosen_provider.ok_or_else(|| {
+        anyhow::anyhow!(
+            "failed to resolve cleanse provider; set MOON_CLEANSE_PROVIDER or prefix MOON_CLEANSE_MODEL"
+        )
+    })?;
+    if model.trim().is_empty() {
+        model = DEFAULT_CLEANSE_MODEL.to_string();
+    }
+
+    let api_key = resolve_api_key(provider).ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing provider credentials for cleanse; configure the relevant API key for {}",
+            provider.label()
+        )
+    })?;
+    let base_url = match provider {
+        RemoteProvider::OpenAiCompatible => Some(
+            env_non_empty("AI_BASE_URL").unwrap_or_else(|| "https://api.openai.com".to_string()),
+        ),
+        _ => None,
+    };
+
+    Ok(CleanseModelConfig {
+        provider,
+        model,
+        api_key,
+        base_url,
+    })
+}
+
+fn build_cleanse_prompt(input: &CleanseInput) -> String {
+    format!(
+        "You are MOON cleanse. Compress the active context into a compact recovery summary for the moon-context-engine.\n\
+Return markdown only.\n\
+\n\
+Requirements:\n\
+- preserve the current goal, active subproblems, decisions, constraints, blockers, pending tasks, and important tool outcomes\n\
+- remove repetition, pleasantries, decorative phrasing, low-signal chatter, and verbose logs\n\
+- do not emit raw JSON, YAML, XML, code fences, or long verbatim transcripts\n\
+- produce a concise summary suitable for recovering from context pressure near 60k tokens toward a safer working footprint around 40k tokens\n\
+\n\
+Format:\n\
+# Cleanse Summary\n\
+## Current Goal\n\
+- ...\n\
+## Active Context\n\
+- ...\n\
+## Decisions\n\
+- ...\n\
+## Open Tasks\n\
+- ...\n\
+## Risks / Blockers\n\
+- ...\n\
+## Relevant Evidence\n\
+- ...\n\
+\n\
+Session id: {}\n\
+Source path: {}\n\
+\n\
+Context excerpt:\n{}\n",
+        input.session_id, input.source_path, input.source_excerpt
+    )
+}
+
+fn call_gemini(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        config.model, config.api_key
+    );
+    let payload = serde_json::json!({
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
+    });
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let response = client.post(&url).json(&payload).send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "gemini cleanse call failed with status {}",
+            response.status()
+        );
+    }
+
+    let json: Value = response.json()?;
+    json.get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("content"))
+        .and_then(|item| item.get("parts"))
+        .and_then(Value::as_array)
+        .and_then(|parts| parts.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(|text| text.to_string())
+        .context("gemini cleanse response missing text content")
+}
+
+fn call_openai(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
+    let payload = serde_json::json!({
+        "model": config.model,
+        "input": prompt,
+        "temperature": 0.2,
+    });
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(&config.api_key)
+        .json(&payload)
+        .send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "openai cleanse call failed with status {}",
+            response.status()
+        );
+    }
+
+    let json: Value = response.json()?;
+    extract_openai_text(&json).context("openai cleanse response missing text content")
+}
+
+fn call_openai_compatible(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
+    let base = config
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com")
+        .trim_end_matches('/');
+    let url = format!("{base}/v1/chat/completions");
+    let payload = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.2
+    });
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let response = client
+        .post(&url)
+        .bearer_auth(&config.api_key)
+        .json(&payload)
+        .send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "openai-compatible cleanse call failed with status {}",
+            response.status()
+        );
+    }
+
+    let json: Value = response.json()?;
+    extract_openai_compatible_text(&json)
+        .context("openai-compatible cleanse response missing text content")
+}
+
+fn call_anthropic(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
+    let payload = serde_json::json!({
+        "model": config.model,
+        "max_tokens": 1200,
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    });
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", &config.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&payload)
+        .send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "anthropic cleanse call failed with status {}",
+            response.status()
+        );
+    }
+
+    let json: Value = response.json()?;
+    extract_anthropic_text(&json).context("anthropic cleanse response missing text content")
+}
+
+fn sanitize_summary(summary: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut bullet_count = 0usize;
+
+    for raw_line in summary.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if looks_like_structured_fragment(trimmed)
+            || trimmed.contains("<<<EXTERNAL_UNTRUSTED_CONTENT>>>")
+        {
+            continue;
+        }
+
+        let cleaned = clean_candidate_text(trimmed)?;
+        let normalized = if cleaned.starts_with('#') {
+            cleaned
+        } else if cleaned.starts_with("- ") {
+            bullet_count += 1;
+            cleaned
+        } else if cleaned.starts_with("* ") {
+            bullet_count += 1;
+            cleaned.replacen("* ", "- ", 1)
+        } else {
+            bullet_count += 1;
+            format!("- {cleaned}")
+        };
+        lines.push(normalized);
+        if lines.len() >= MAX_MODEL_LINES {
+            break;
+        }
+    }
+
+    if bullet_count < MIN_BULLET_LINES {
+        return None;
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn clamp_summary(summary: &str) -> String {
+    let normalized = summary.trim_end();
+    if normalized.chars().count() <= MAX_SUMMARY_CHARS {
+        return normalized.to_string();
+    }
+    let truncated = truncate_with_ellipsis(normalized, MAX_SUMMARY_CHARS);
+    format!("{truncated}\n\n[summary truncated]")
+}
+
+fn clean_candidate_text(raw: &str) -> Option<String> {
+    let collapsed = raw
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .collect::<String>();
+    let normalized = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn looks_like_structured_fragment(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with("```")
+        || trimmed == "{"
+        || trimmed == "}"
+        || trimmed == "["
+        || trimmed == "]"
+        || trimmed.starts_with("{\"")
+        || trimmed.starts_with("[{")
+        || trimmed.starts_with("</")
+        || trimmed.starts_with("<xml")
+        || trimmed.starts_with("---")
+}
+
+fn env_non_empty(var: &str) -> Option<String> {
+    match env::var(var) {
+        Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        _ => None,
+    }
+}
+
+fn parse_provider_alias(raw: &str) -> Option<RemoteProvider> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "openai" => Some(RemoteProvider::OpenAi),
+        "anthropic" | "claude" => Some(RemoteProvider::Anthropic),
+        "gemini" | "google" => Some(RemoteProvider::Gemini),
+        "openai-compatible" | "compatible" | "deepseek" => Some(RemoteProvider::OpenAiCompatible),
+        _ => None,
+    }
+}
+
+fn parse_prefixed_model(raw: &str) -> (Option<RemoteProvider>, String) {
+    let trimmed = raw.trim();
+    if let Some((prefix, model)) = trimmed.split_once(':')
+        && let Some(provider) = parse_provider_alias(prefix)
+    {
+        return (Some(provider), model.trim().to_string());
+    }
+    (None, trimmed.to_string())
+}
+
+fn infer_provider_from_model(model: &str) -> Option<RemoteProvider> {
+    let lower = model.trim().to_ascii_lowercase();
+    if lower.starts_with("deepseek-") {
+        return Some(RemoteProvider::OpenAiCompatible);
+    }
+    if lower.starts_with("claude-") {
+        return Some(RemoteProvider::Anthropic);
+    }
+    if lower.starts_with("gemini-") {
+        return Some(RemoteProvider::Gemini);
+    }
+    if lower.starts_with("gpt-")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+    {
+        return Some(RemoteProvider::OpenAi);
+    }
+    None
+}
+
+fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
+    match provider {
+        RemoteProvider::OpenAi => {
+            env_non_empty("OPENAI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
+        }
+        RemoteProvider::Anthropic => {
+            env_non_empty("ANTHROPIC_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
+        }
+        RemoteProvider::Gemini => {
+            env_non_empty("GEMINI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
+        }
+        RemoteProvider::OpenAiCompatible => env_non_empty("AI_API_KEY")
+            .or_else(|| env_non_empty("DEEPSEEK_API_KEY"))
+            .or_else(|| env_non_empty("OPENAI_API_KEY")),
+    }
+}
+
+fn extract_openai_text(root: &Value) -> Option<String> {
+    root.get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(|text| text.to_string())
+        .or_else(|| {
+            root.get("output_text")
+                .and_then(Value::as_str)
+                .map(|text| text.to_string())
+        })
+}
+
+fn extract_openai_compatible_text(root: &Value) -> Option<String> {
+    root.get("choices")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("message"))
+        .and_then(|item| item.get("content"))
+        .and_then(Value::as_str)
+        .map(|text| text.to_string())
+}
+
+fn extract_anthropic_text(root: &Value) -> Option<String> {
+    root.get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(|text| text.to_string())
+}

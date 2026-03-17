@@ -22,7 +22,10 @@ fn write_fake_openclaw(bin_path: &Path, log_path: &Path) {
 fn patch_respects_existing_values_unless_forced() {
     let tmp = tempdir().expect("tempdir");
     let state_dir = tmp.path().join("state");
+    let moon_home = tmp.path().join("moon-home");
     fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
     let config_path = state_dir.join("openclaw.json");
 
     fs::write(
@@ -44,6 +47,7 @@ fn patch_respects_existing_values_unless_forced() {
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_CONFIG_PATH", &config_path)
         .env("OPENCLAW_BIN", &fake_openclaw)
@@ -54,6 +58,7 @@ fn patch_respects_existing_values_unless_forced() {
     let cfg_1: Value =
         serde_json::from_str(&fs::read_to_string(&config_path).expect("read config"))
             .expect("parse cfg");
+    let expected_moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon home");
     assert_eq!(
         cfg_1
             .get("agents")
@@ -62,6 +67,34 @@ fn patch_respects_existing_values_unless_forced() {
             .and_then(|v| v.get("reserveTokensFloor"))
             .and_then(Value::as_i64),
         Some(123)
+    );
+    assert_eq!(
+        cfg_1
+            .get("plugins")
+            .and_then(|v| v.get("slots"))
+            .and_then(|v| v.get("contextEngine"))
+            .and_then(Value::as_str),
+        Some("moon")
+    );
+    assert_eq!(
+        cfg_1
+            .get("plugins")
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.get("moon"))
+            .and_then(|v| v.get("config"))
+            .and_then(|v| v.get("moonHome"))
+            .and_then(Value::as_str),
+        Some(expected_moon_home.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        cfg_1
+            .get("plugins")
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.get("moon"))
+            .and_then(|v| v.get("config"))
+            .and_then(|v| v.get("fallbackMode"))
+            .and_then(Value::as_str),
+        Some("disabled")
     );
     assert_eq!(
         cfg_1
@@ -84,6 +117,7 @@ fn patch_respects_existing_values_unless_forced() {
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
         .env("OPENCLAW_STATE_DIR", &state_dir)
         .env("OPENCLAW_CONFIG_PATH", &config_path)
         .env("OPENCLAW_BIN", &fake_openclaw)

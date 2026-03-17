@@ -1,9 +1,45 @@
 {
   "id": "moon",
+  "kind": "context-engine",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "moonPath": {
+        "type": "string"
+      },
+      "moonHome": {
+        "type": "string"
+      },
+      "memoryDir": {
+        "type": "string"
+      },
+      "memoryFile": {
+        "type": "string"
+      },
+      "contextEngineTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      },
+      "maxAssemblyChars": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 200000
+      },
+      "syncAfterTurn": {
+        "type": "boolean"
+      },
+      "fallbackMode": {
+        "type": "string",
+        "enum": [
+          "openclaw",
+          "disabled"
+        ]
+      },
+      "compactFallbackOnSkip": {
+        "type": "boolean"
+      },
       "maxTokens": {
         "type": "integer",
         "minimum": 500,
