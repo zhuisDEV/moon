@@ -594,6 +594,10 @@ Running the background watcher daemon (`watch --daemon`) via `cargo run` is
 explicitly blocked. This is a safety feature to prevent file-locking starvation
 and CPU spikes loop issues if the daemon restarts.
 
+Watcher daemon startup is single-instance per `MOON_HOME`: if another watcher
+already holds the daemon lock, a second `watch --daemon` exits with
+`moon watcher daemon already running pid=...`.
+
 To test the daemon with unreleased local changes, you must compile the binary
 first and execute it directly:
 
@@ -612,7 +616,7 @@ moon verify --strict
 ```
 
 If you upgraded from older builds, clean legacy macOS LaunchAgents to avoid
-duplicate daemons or stale `/tmp/moon*system*.log` logs:
+conflicting watcher services or stale `/tmp/moon*system*.log` logs:
 
 ```bash
 launchctl list | rg -i "moon|moon.*system" || true
@@ -694,13 +698,15 @@ Troubleshooting & Maintenance:
 
 If the daemon/runtime looks inconsistent, use this clean recovery sequence:
 
-1. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
-2. `pkill -f "moon watch --daemon" 2>/dev/null || true`
-3. `pkill -f "moon restart" 2>/dev/null || true`
-4. `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock" "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
-5. `moon install`
-6. `moon verify --strict`
-7. `moon health`
+1. `moon stop`
+2. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
+3. `pkill -f "moon watch --daemon" 2>/dev/null || true`
+4. `pkill -f "moon restart" 2>/dev/null || true`
+5. `rm -f "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
+6. If `moon health` still reports a stale daemon lock, run `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock"`
+7. `moon install`
+8. `moon verify --strict`
+9. `moon health`
 
 Important:
 

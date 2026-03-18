@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.1] - 2026-03-18
+
+### Changed
+
+- Watcher daemon lifecycle now uses a real exclusive process lock for
+  `moon-watch.daemon.lock`, preventing duplicate daemon instances under the
+  same `MOON_HOME`.
+- Daemon startup now fails fast with a clear owner PID message when another
+  watcher already holds the lock.
+- Daemon loop now records watcher cycle failures to `logs/audit.log`
+  (`phase=watcher`, `status=error`) instead of silently swallowing errors.
+
+### Fixed
+
+- Reduced stale-lock drift caused by concurrent `moon watch --daemon` starts.
+- Improved lock cleanup reliability on graceful daemon shutdown.
+
+### Docs
+
+- Updated README, runbook, and troubleshooting guidance for the new
+  single-instance daemon behavior and lock recovery flow.
+
 ## [1.0.0] - 2026-03-16
 
 ### Added

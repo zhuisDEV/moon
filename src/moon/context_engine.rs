@@ -538,7 +538,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::path::PathBuf;
+    use std::path::Path;
     use std::sync::Mutex;
     use std::thread;
     use tempfile::tempdir;
@@ -606,9 +606,9 @@ mod tests {
         (handle, format!("http://{}", addr))
     }
 
-    fn test_paths(root: &PathBuf) -> MoonPaths {
+    fn test_paths(root: &Path) -> MoonPaths {
         MoonPaths {
-            moon_home: root.clone(),
+            moon_home: root.to_path_buf(),
             raw_dir: root.join("raw"),
             mds_dir: root.join("mds"),
             mlib_dir: root.join("mlib"),

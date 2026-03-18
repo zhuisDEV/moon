@@ -384,9 +384,7 @@ fn moon_watch_once_runs_midnight_syns_from_yesterday_and_memory() {
     )
     .expect("write memory file");
 
-    let midnight_state = format!(
-        "{{\n  \"schema_version\": 3,\n  \"last_heartbeat_epoch_secs\": 0,\n  \"last_archive_trigger_epoch_secs\": null,\n  \"last_compaction_trigger_epoch_secs\": null,\n  \"last_distill_trigger_epoch_secs\": null,\n  \"last_syns_trigger_epoch_secs\": null,\n  \"last_embed_trigger_epoch_secs\": null,\n  \"last_session_id\": null,\n  \"last_usage_ratio\": null,\n  \"last_provider\": null,\n  \"distilled_archives\": {{}},\n  \"embedded_projections\": {{}},\n  \"inbound_seen_files\": {{}}\n}}\n"
-    );
+    let midnight_state = "{\n  \"schema_version\": 3,\n  \"last_heartbeat_epoch_secs\": 0,\n  \"last_archive_trigger_epoch_secs\": null,\n  \"last_compaction_trigger_epoch_secs\": null,\n  \"last_distill_trigger_epoch_secs\": null,\n  \"last_syns_trigger_epoch_secs\": null,\n  \"last_embed_trigger_epoch_secs\": null,\n  \"last_session_id\": null,\n  \"last_usage_ratio\": null,\n  \"last_provider\": null,\n  \"distilled_archives\": {},\n  \"embedded_projections\": {},\n  \"inbound_seen_files\": {}\n}\n".to_string();
     fs::write(moon_home.join("state/moon_state.json"), midnight_state).expect("write state");
 
     let fake_midnight_epoch = now_utc

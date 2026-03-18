@@ -96,13 +96,15 @@ Symptoms:
 
 Fix:
 
-1. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
-2. `pkill -f "moon watch --daemon" 2>/dev/null || true`
-3. `pkill -f "moon restart" 2>/dev/null || true`
-4. `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock" "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
-5. `moon install`
-6. `moon verify --strict`
-7. `moon health`
+1. `moon stop`
+2. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
+3. `pkill -f "moon watch --daemon" 2>/dev/null || true`
+4. `pkill -f "moon restart" 2>/dev/null || true`
+5. `rm -f "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
+6. If `moon health` still reports a stale daemon lock, run `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock"`
+7. `moon install`
+8. `moon verify --strict`
+9. `moon health`
 
 Notes:
 

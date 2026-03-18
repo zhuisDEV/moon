@@ -42,13 +42,12 @@ pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
     // Fallback to per-plugin info when list parsing/execution is degraded.
     // This keeps strict verify accurate even when `plugins list --json`
     // output format is noisy or too large for brittle integrations.
-    if !list_state.listed || !list_state.loaded {
-        if let Ok(raw) = gateway::plugins_info_json(&paths.plugin_id) {
-            if let Some(info_state) = parse_plugin_info_state(&raw, &paths.plugin_id) {
-                list_state.listed = info_state.listed;
-                list_state.loaded = info_state.loaded;
-            }
-        }
+    if (!list_state.listed || !list_state.loaded)
+        && let Ok(raw) = gateway::plugins_info_json(&paths.plugin_id)
+        && let Some(info_state) = parse_plugin_info_state(&raw, &paths.plugin_id)
+    {
+        list_state.listed = info_state.listed;
+        list_state.loaded = info_state.loaded;
     }
 
     Ok(PluginVerifyOutcome {

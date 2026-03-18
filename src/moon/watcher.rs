@@ -1,7 +1,8 @@
+use crate::moon::audit;
 use crate::moon::config::{
     MoonHotCollectionLifecycleCommandMode, MoonHotCollectionLifecycleMode, load_config,
 };
-use crate::moon::daemon_lock::{DaemonLockPayload, daemon_lock_path};
+use crate::moon::daemon_lock::{DaemonLockPayload, acquire_daemon_lock};
 use crate::moon::distill::{
     DistillInput, DistillOutput, WisdomDistillInput, run_distillation, run_wisdom_distillation,
 };
@@ -16,7 +17,6 @@ use chrono::{LocalResult, TimeZone, Timelike};
 use chrono_tz::Tz;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -322,26 +322,11 @@ fn lock_payload(paths: &MoonPaths, now_epoch_secs: u64) -> DaemonLockPayload {
     }
 }
 
-fn write_daemon_lock(paths: &MoonPaths, now_epoch_secs: u64) -> Result<PathBuf> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
-    let lock_path = daemon_lock_path(paths);
-    let payload = lock_payload(paths, now_epoch_secs);
-    fs::write(
-        &lock_path,
-        format!("{}\n", serde_json::to_string(&payload)?),
-    )
-    .with_context(|| format!("failed to write {}", lock_path.display()))?;
-    Ok(lock_path)
-}
-
-fn remove_daemon_lock(paths: &MoonPaths) {
-    let lock_path = daemon_lock_path(paths);
-    match fs::remove_file(&lock_path) {
-        Ok(_) => {}
-        Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(_) => {}
-    }
+fn log_daemon_cycle_error(paths: &MoonPaths, err: &anyhow::Error) {
+    let message =
+        crate::moon::util::truncate_with_ellipsis(&format!("cycle_failed error={err:#}"), 500);
+    let _ = audit::append_event(paths, "watcher", "error", &message);
+    eprintln!("MOON_WATCH {message}");
 }
 
 pub fn run_once() -> Result<WatchCycleOutcome> {
@@ -610,7 +595,7 @@ pub fn run_daemon() -> Result<()> {
     let paths = resolve_paths()?;
     let cfg = load_config()?;
     let now_epoch = now_epoch_secs()?;
-    let _lock_path = write_daemon_lock(&paths, now_epoch)?;
+    let daemon_lock = acquire_daemon_lock(&paths, &lock_payload(&paths, now_epoch))?;
 
     let keep_running = Arc::new(AtomicBool::new(true));
     {
@@ -622,7 +607,9 @@ pub fn run_daemon() -> Result<()> {
     }
 
     while keep_running.load(Ordering::SeqCst) {
-        let _ = run_once();
+        if let Err(err) = run_once() {
+            log_daemon_cycle_error(&paths, &err);
+        }
         for _ in 0..cfg.watcher.poll_interval_secs {
             if !keep_running.load(Ordering::SeqCst) {
                 break;
@@ -631,6 +618,6 @@ pub fn run_daemon() -> Result<()> {
         }
     }
 
-    remove_daemon_lock(&paths);
+    daemon_lock.release()?;
     Ok(())
 }

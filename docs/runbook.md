@@ -150,6 +150,9 @@ Start transitional daemon:
 moon watch --daemon
 ```
 
+If another watcher already holds the daemon lock for this `MOON_HOME`, start
+fails fast with `moon watcher daemon already running pid=...`.
+
 Stop transitional daemon:
 
 ```bash

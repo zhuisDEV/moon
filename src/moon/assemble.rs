@@ -325,12 +325,12 @@ mod tests {
     };
     use serde_json::json;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::Path;
     use tempfile::tempdir;
 
-    fn test_paths(root: &PathBuf) -> MoonPaths {
+    fn test_paths(root: &Path) -> MoonPaths {
         MoonPaths {
-            moon_home: root.clone(),
+            moon_home: root.to_path_buf(),
             raw_dir: root.join("raw"),
             mds_dir: root.join("mds"),
             mlib_dir: root.join("mlib"),
@@ -475,8 +475,10 @@ mod tests {
         fs::create_dir_all(projection.parent().expect("projection parent")).expect("mkdir hot dir");
         fs::write(&projection, "# projection\n- stable\n").expect("write projection");
 
-        let mut state = MoonState::default();
-        state.last_embed_trigger_epoch_secs = Some(321);
+        let mut state = MoonState {
+            last_embed_trigger_epoch_secs: Some(321),
+            ..MoonState::default()
+        };
         state
             .embedded_projection_collections
             .entry(hot_embed_collection_for_session("s3"))
