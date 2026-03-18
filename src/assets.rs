@@ -7,7 +7,6 @@ const MANIFEST_JSON: &str = include_str!("../assets/plugin/openclaw.plugin.json"
 const INDEX_JS: &str = include_str!("../assets/plugin/index.js");
 const README_MD: &str = include_str!("../assets/plugin/README.md");
 const RUNTIME_README_MD: &str = include_str!("../README.md");
-const RUNTIME_BOOTSTRAP_MD: &str = include_str!("../BOOTSTRAP.md");
 const RUNTIME_TROUBLESHOOTING_MD: &str = include_str!("../docs/troubleshooting.md");
 const RUNTIME_ENV_EXAMPLE: &str = include_str!("../.env.example");
 const RUNTIME_MOON_TOML_EXAMPLE: &str = include_str!("../moon.toml.example");
@@ -28,10 +27,9 @@ pub fn write_plugin_assets(target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn runtime_doc_asset_contents() -> [(&'static str, &'static str); 5] {
+pub fn runtime_doc_asset_contents() -> [(&'static str, &'static str); 4] {
     [
         ("README.md", RUNTIME_README_MD),
-        ("BOOTSTRAP.md", RUNTIME_BOOTSTRAP_MD),
         ("docs/troubleshooting.md", RUNTIME_TROUBLESHOOTING_MD),
         (".env.example", RUNTIME_ENV_EXAMPLE),
         ("moon.toml.example", RUNTIME_MOON_TOML_EXAMPLE),

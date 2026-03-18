@@ -97,9 +97,13 @@ Keep both skill source files in this repo root:
 2. `SKILL_SUBAGENT.md` for least-privilege sub-agent tasks (`recall`, `distill`,
    bounded `embed`).
 
-After `moon install`, Moon exports runtime-owned operator docs into
-`$MOON_HOME` and exports role-scoped skills into the OpenClaw skills tree under
-`$OPENCLAW_STATE_DIR/skills/`.
+For first-time setup from source, read repo [`BOOTSTRAP.md`](./BOOTSTRAP.md)
+before running `moon install`.
+
+After `moon install`, Moon exports installed-runtime operator docs into
+`$MOON_HOME` (`README.md`, `.env.example`, `moon.toml.example`,
+`docs/troubleshooting.md`) and exports role-scoped skills into the OpenClaw
+skills tree under `$OPENCLAW_STATE_DIR/skills/`.
 
 If you are running from source before install, or you want to copy the skills
 manually into another runtime, use:
@@ -163,9 +167,11 @@ Query semantics:
 2. Apply plugin install + provenance self-heal: `moon install` (or
    `cargo run -- install`)
    - This also provisions the MOON runtime root directories under `$MOON_HOME`.
-   - It exports runtime docs into `$MOON_HOME` (`README.md`, `BOOTSTRAP.md`,
+   - It exports installed-runtime docs into `$MOON_HOME` (`README.md`,
      `.env.example`, `moon.toml.example`) and troubleshooting docs into
      `$MOON_HOME/docs/`.
+   - Repo `BOOTSTRAP.md` remains the pre-install guide and is not copied into
+     `$MOON_HOME`.
    - It exports `SKILL.md` and `SKILL_SUBAGENT.md` into the OpenClaw skills tree
      under `$OPENCLAW_STATE_DIR/skills/`.
    - It selects `plugins.slots.contextEngine = "moon"` and writes the managed
@@ -229,6 +235,14 @@ Then verify:
 `.env.example` and `moon.toml.example` are templates. Keep them generic; put
 machine-specific values in `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`
 only.
+
+Bootstrap/install document split:
+
+1. Repo `BOOTSTRAP.md` is the first-time install guide to read before
+   installation.
+2. Installed `$MOON_HOME/README.md` is the runtime/operator guide after
+   installation.
+3. `moon install` does not copy `BOOTSTRAP.md` into `$MOON_HOME`.
 
 Workspace model (agent-facing):
 

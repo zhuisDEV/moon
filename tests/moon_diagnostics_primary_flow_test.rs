@@ -48,7 +48,6 @@ fn setup_runtime_tree(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, s
         moon_home.join("mds"),
         moon_home.join("mlib"),
         moon_home.join("cleanse"),
-        moon_home.join("archives"),
         moon_home.join("memory"),
         moon_home.join("logs"),
         moon_home.join("mce"),

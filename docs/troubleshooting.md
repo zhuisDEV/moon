@@ -3,6 +3,9 @@
 This guide is written for AI agents and operators fixing Moon/OpenClaw runtime
 failures.
 
+For first-time setup before installation, use repo `BOOTSTRAP.md`. This file is
+for installed-runtime troubleshooting after `moon install`.
+
 ## 1. OpenClaw Cannot See Moon Memory Paths
 
 Symptoms:

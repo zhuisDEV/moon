@@ -86,7 +86,10 @@ fn resolve_qmd_bin(bin: &Path) -> Result<PathBuf> {
         .ok()
         .is_some_and(|value| !value.trim().is_empty())
     {
-        anyhow::bail!("qmd binary not found at explicit QMD_BIN path {}", bin.display());
+        anyhow::bail!(
+            "qmd binary not found at explicit QMD_BIN path {}",
+            bin.display()
+        );
     }
     let found = which::which("qmd").context("qmd binary not found in QMD_BIN or PATH")?;
     Ok(found)
@@ -232,7 +235,8 @@ fn run_collection_lifecycle(
     timeout_secs: Option<u64>,
 ) -> Result<CollectionLifecycleExecResult> {
     let bin = resolve_qmd_bin(qmd_bin)?;
-    let attempts_to_run = lifecycle_attempts(action, collection_name, collection_path, command_mode);
+    let attempts_to_run =
+        lifecycle_attempts(action, collection_name, collection_path, command_mode);
     if attempts_to_run.is_empty() {
         anyhow::bail!(
             "invalid qmd lifecycle action `{}` for collection `{}`",
@@ -324,7 +328,8 @@ pub fn probe_collection_lifecycle_capability(
     if command_mode == MoonHotCollectionLifecycleCommandMode::Primary {
         return match run_help(&["collection", "--help"]) {
             Ok((success, stdout, stderr, _code))
-                if success && output_contains_all_terms(&stdout, &stderr, &["add", "remove", "show"]) =>
+                if success
+                    && output_contains_all_terms(&stdout, &stderr, &["add", "remove", "show"]) =>
             {
                 CollectionLifecycleCapabilityProbe {
                     capability: CollectionLifecycleCapability::Primary,
@@ -352,7 +357,10 @@ pub fn probe_collection_lifecycle_capability(
                 }
                 CollectionLifecycleCapabilityProbe {
                     capability: CollectionLifecycleCapability::Missing,
-                    note: format!("collection-help-missing-verbs missing={}", missing.join(",")),
+                    note: format!(
+                        "collection-help-missing-verbs missing={}",
+                        missing.join(",")
+                    ),
                 }
             }
             Ok(_) => CollectionLifecycleCapabilityProbe {
@@ -451,7 +459,14 @@ pub fn collection_drop(
     command_mode: MoonHotCollectionLifecycleCommandMode,
     timeout_secs: Option<u64>,
 ) -> Result<CollectionLifecycleExecResult> {
-    run_collection_lifecycle(qmd_bin, "drop", collection_name, None, command_mode, timeout_secs)
+    run_collection_lifecycle(
+        qmd_bin,
+        "drop",
+        collection_name,
+        None,
+        command_mode,
+        timeout_secs,
+    )
 }
 
 pub fn probe_embed_capability(qmd_bin: &Path) -> EmbedCapabilityProbe {

@@ -588,7 +588,8 @@ fn ensure_hot_collection_lifecycle(
         return Ok(summary);
     }
 
-    let collection_dir = crate::moon::state::hot_projection_dir_for_collection(paths, collection_name);
+    let collection_dir =
+        crate::moon::state::hot_projection_dir_for_collection(paths, collection_name);
     let create = qmd::collection_create(
         &paths.qmd_bin,
         collection_name,

@@ -613,7 +613,6 @@ mod tests {
             mds_dir: root.join("mds"),
             mlib_dir: root.join("mlib"),
             cleanse_dir: root.join("cleanse"),
-            archives_dir: root.join("archives"),
             memory_dir: root.join("memory"),
             memory_file: root.join("MEMORY.md"),
             logs_dir: root.join("logs"),
@@ -793,9 +792,7 @@ exit 0
                 .contains("## Embedding Index Anchor")
         );
         assert!(std::path::Path::new(&output.assembly_output_path).is_file());
-        assert!(
-            crate::moon::state::hot_projection_path_for_session(&paths, "session-b").is_file()
-        );
+        assert!(crate::moon::state::hot_projection_path_for_session(&paths, "session-b").is_file());
 
         let state = load(&paths).expect("load state");
         assert_eq!(state.last_session_id.as_deref(), Some("session-b"));

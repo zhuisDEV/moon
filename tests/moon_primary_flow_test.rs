@@ -266,7 +266,9 @@ fn moon_cleanse_writes_llm_compaction_summary() {
     assert!(summary.contains("# Cleanse Summary"));
     assert!(summary.contains("Reserve `cleanse` for context compaction."));
     assert!(
-        !moon_home.join("mds/history_hot_session-a/session.md").exists(),
+        !moon_home
+            .join("mds/history_hot_session-a/session.md")
+            .exists(),
         "cleanse should not project into mds"
     );
 }
@@ -496,7 +498,11 @@ fn moon_context_engine_writes_assembly_output() {
     assert!(assembly.contains("## Embedding Index Anchor"));
     assert!(assembly.contains("Keep the primary path MOON-owned."));
     assert!(assembly.contains("Persist assembled context for the runtime entry."));
-    assert!(moon_home.join("mds/history_hot_session-c/session.md").exists());
+    assert!(
+        moon_home
+            .join("mds/history_hot_session-c/session.md")
+            .exists()
+    );
 }
 
 #[test]

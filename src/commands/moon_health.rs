@@ -181,7 +181,6 @@ pub fn run() -> Result<CommandReport> {
         ("mds_dir", &paths.mds_dir),
         ("mlib_dir", &paths.mlib_dir),
         ("cleanse_dir", &paths.cleanse_dir),
-        ("archives_dir", &paths.archives_dir),
         ("logs_dir", &paths.logs_dir),
         ("context_engine_dir", &paths.context_engine_dir),
     ] {

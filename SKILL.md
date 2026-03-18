@@ -12,7 +12,7 @@ This skill covers:
 
 ## Operating Rule
 
-1. Use the installed Moon README at `$MOON_HOME/README.md` as the source of truth for setup, env vars, commands, safety flags, and uninstall. When running from source before install, use the repo `README.md`.
+1. Use repo `BOOTSTRAP.md` for first-time setup before installation. After install, use `$MOON_HOME/README.md` as the source of truth for installed-runtime operations, env vars, commands, safety flags, and uninstall. When running from source after install-related changes, keep the repo `README.md` and installed `$MOON_HOME/README.md` aligned.
 2. Always run from the repo root for source-mode commands. Path model: `MOON_HOME` is the Moon runtime root, the repo path is separate from `MOON_HOME`, and memory path is `$MOON_HOME/memory`. Runtime env loading is strict from `$MOON_HOME/.env` (not repo-local `.env`).
 3. If the `moon` binary is installed in your `$PATH` (e.g. `~/.cargo/bin/moon`), run `moon <command>`. Otherwise, run `cargo run -- <command>` from the repo folder.
 4. If you modify any Rust source code (`src/*.rs`) or plugin assets (`assets/plugin/*`), you MUST run `cargo install --path .` ONCE to compile and apply those changes.
@@ -42,7 +42,7 @@ This skill covers:
 23. Use `moon config --show` to confirm resolved cleanse thresholds. With the example config they are `100000` trigger and `180000` emergency.
 24. Hot session projections live directly under `$MOON_HOME/mds/<collection>/`.
     Do not introduce an extra `mds/hot/` layer.
-25. `moon install` exports runtime-owned docs into `$MOON_HOME` and exports role-scoped skills into `$OPENCLAW_STATE_DIR/skills/`, so installed operation does not depend on the repo checkout remaining on disk.
+25. `moon install` exports installed-runtime docs into `$MOON_HOME` (`README.md`, `.env.example`, `moon.toml.example`, `docs/troubleshooting.md`) and exports role-scoped skills into `$OPENCLAW_STATE_DIR/skills/`. Repo `BOOTSTRAP.md` remains the pre-install guide and is not copied into `$MOON_HOME`.
 
 ## Maintenance
 

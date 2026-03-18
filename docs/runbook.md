@@ -2,6 +2,10 @@
 
 ## Bootstrap
 
+Read repo `BOOTSTRAP.md` before first-time installation. This runbook assumes
+you are either preparing for install from source or operating an already
+installed runtime.
+
 Minimal setup:
 
 ```bash

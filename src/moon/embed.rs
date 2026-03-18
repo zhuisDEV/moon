@@ -3,8 +3,8 @@ use crate::moon::files::{file_epoch_secs, gather_files_with_extension};
 use crate::moon::paths::MoonPaths;
 use crate::moon::qmd;
 use crate::moon::state::{
-    LIBRARY_EMBED_COLLECTION, MoonState, embedded_projection_epoch, hot_projection_dir_for_collection,
-    is_hot_embed_collection, record_embedded_projection,
+    LIBRARY_EMBED_COLLECTION, MoonState, embedded_projection_epoch,
+    hot_projection_dir_for_collection, is_hot_embed_collection, record_embedded_projection,
     retain_embedded_projections_for_collection,
 };
 use crate::moon::util::now_epoch_secs;
@@ -309,7 +309,11 @@ fn reconcile_embedded_projection_state(paths: &MoonPaths, state: &mut MoonState)
     Ok(())
 }
 
-fn mark_global_embed_success(paths: &MoonPaths, state: &mut MoonState, embedded_at: u64) -> Result<usize> {
+fn mark_global_embed_success(
+    paths: &MoonPaths,
+    state: &mut MoonState,
+    embedded_at: u64,
+) -> Result<usize> {
     let docs = all_projection_docs(paths)?;
     let mut recorded = 0usize;
     for doc in docs {
@@ -499,7 +503,9 @@ pub fn run(
     };
 
     let (embedded_docs, exec) = match probe.capability {
-        qmd::EmbedCapability::Bounded => run_bounded_embed_with_backoff(paths, opts, selected_docs)?,
+        qmd::EmbedCapability::Bounded => {
+            run_bounded_embed_with_backoff(paths, opts, selected_docs)?
+        }
         qmd::EmbedCapability::UnboundedOnly => {
             let requested_batch = selected_docs.max(1);
             let exec =

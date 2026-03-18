@@ -1,6 +1,10 @@
-# MOON Bootstrap Guide (First-Time Agent Install)
+# BOOTSTRAP.md
 
-This guide is the first-time install path for operators/agents.
+First-time Moon install guide.
+
+This file is for operators/agents working from the repo before installation.
+It is not exported into `$MOON_HOME` by `moon install`. After installation, use
+`$MOON_HOME/README.md` for installed-runtime operations.
 
 ## 1. Prepare Runtime Root
 
@@ -98,6 +102,8 @@ moon config --show
    `memoryDir`, `memoryFile`, fallback policy).
 4. Provisions MOON runtime directories under `$MOON_HOME`.
 5. On macOS (installed binary), wires launchd for transitional watcher daemon.
+6. Exports installed-runtime operator docs into `$MOON_HOME` (`README.md`,
+   `.env.example`, `moon.toml.example`, `docs/troubleshooting.md`).
 
 ## 4. Verify Core Runtime Signals
 

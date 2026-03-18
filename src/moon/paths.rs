@@ -9,7 +9,6 @@ pub struct MoonPaths {
     pub mds_dir: PathBuf,
     pub mlib_dir: PathBuf,
     pub cleanse_dir: PathBuf,
-    pub archives_dir: PathBuf,
     pub memory_dir: PathBuf,
     pub memory_file: PathBuf,
     pub logs_dir: PathBuf,
@@ -51,7 +50,6 @@ pub fn resolve_paths() -> Result<MoonPaths> {
     let mds_dir = env_or_default_path("MOON_MDS_DIR", moon_home.join("mds"));
     let mlib_dir = env_or_default_path("MOON_MLIB_DIR", moon_home.join("mlib"));
     let cleanse_dir = env_or_default_path("MOON_CLEANSE_DIR", moon_home.join("cleanse"));
-    let archives_dir = env_or_default_path("MOON_ARCHIVES_DIR", moon_home.join("archives"));
     let memory_dir = env_or_default_path("MOON_MEMORY_DIR", moon_home.join("memory"));
     let memory_file = env_or_default_path("MOON_MEMORY_FILE", moon_home.join("MEMORY.md"));
     let logs_dir = env_or_default_path("MOON_LOGS_DIR", moon_home.join("logs"));
@@ -71,7 +69,6 @@ pub fn resolve_paths() -> Result<MoonPaths> {
         mds_dir,
         mlib_dir,
         cleanse_dir,
-        archives_dir,
         memory_dir,
         memory_file,
         logs_dir,

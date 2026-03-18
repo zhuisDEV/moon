@@ -38,10 +38,9 @@ fn moon_restart_runs_stop_before_start_attempt() {
         .assert()
         .failure()
         .stdout(contains(
-            "moon watcher daemon already stopped (lock file not found)",
+            "CRITICAL: Running the background daemon from a development binary is disabled for stability.",
         ))
-        .stdout(contains("starting new watcher daemon"))
         .stdout(contains(
-            "CRITICAL: Running the background daemon via `cargo run` is disabled for stability.",
+            "Please install the binary to your path first: `cargo install --path .`",
         ));
 }

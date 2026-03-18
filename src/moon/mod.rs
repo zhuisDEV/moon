@@ -10,6 +10,7 @@ pub mod daemon_lock;
 pub mod distill;
 pub mod embed;
 pub mod files;
+pub mod launchd;
 pub mod paths;
 pub mod project;
 pub mod qmd;

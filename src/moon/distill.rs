@@ -3711,7 +3711,6 @@ mod tests {
             mds_dir: root.join("moon-home/mds"),
             mlib_dir: root.join("moon-home/mlib"),
             cleanse_dir: root.join("moon-home/cleanse"),
-            archives_dir: root.join("archives"),
             memory_dir: root.join("memory"),
             memory_file: root.join("MEMORY.md"),
             logs_dir: root.join("logs"),

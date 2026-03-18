@@ -8,9 +8,9 @@ use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
+use crate::assets::{write_runtime_docs, write_runtime_skills};
 use crate::commands::CommandReport;
 use crate::commands::moon_stop;
-use crate::assets::{write_runtime_docs, write_runtime_skills};
 use crate::moon::config::load_context_policy_if_explicit_env;
 use crate::moon::state::state_file_path;
 use crate::openclaw::config::{
@@ -148,12 +148,87 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
 
     ensure_runtime_root_layout(&moon_paths, opts, &mut report)?;
     ensure_runtime_docs_and_skills(&paths, &moon_paths, opts, &mut report)?;
+    if let Err(err) = ensure_shell_profile_moon_home(&moon_paths, opts, &mut report) {
+        report.issue(format!("shell profile setup failed: {err:#}"));
+    }
 
     if let Err(err) = ensure_default_autostart(opts, &mut report) {
         report.issue(format!("autostart setup failed: {err:#}"));
     }
 
     Ok(report)
+}
+
+fn ensure_shell_profile_moon_home(
+    moon_paths: &crate::moon::paths::MoonPaths,
+    opts: &InstallOptions,
+    report: &mut CommandReport,
+) -> Result<()> {
+    let Some(home_dir) = dirs::home_dir() else {
+        report.detail("shell.zprofile=skipped reason=home_dir_unavailable".to_string());
+        return Ok(());
+    };
+
+    let zprofile_path = home_dir.join(".zprofile");
+    let existing = match fs::read_to_string(&zprofile_path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", zprofile_path.display()));
+        }
+    };
+
+    let has_moon_home = existing.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("export MOON_HOME=") || trimmed.starts_with("MOON_HOME=")
+    });
+    if has_moon_home {
+        report.detail(format!("shell.zprofile.ready={}", zprofile_path.display()));
+        return Ok(());
+    }
+
+    let default_moon_home = if moon_paths.moon_home == home_dir.join(".moon") {
+        "$HOME/.moon".to_string()
+    } else {
+        shell_escape_double_quoted(&moon_paths.moon_home.display().to_string())
+    };
+    let export_line = format!("export MOON_HOME=\"${{MOON_HOME:-{default_moon_home}}}\"");
+
+    if opts.dry_run {
+        report.detail(format!(
+            "shell.plan.append={} line={}",
+            zprofile_path.display(),
+            export_line
+        ));
+        return Ok(());
+    }
+
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !updated.is_empty() {
+        updated.push('\n');
+    }
+    updated.push_str("# Moon runtime home\n");
+    updated.push_str(&export_line);
+    updated.push('\n');
+
+    fs::write(&zprofile_path, updated)
+        .with_context(|| format!("failed to write {}", zprofile_path.display()))?;
+    report.detail(format!(
+        "shell.zprofile.updated={}",
+        zprofile_path.display()
+    ));
+    Ok(())
+}
+
+fn shell_escape_double_quoted(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
 }
 
 fn ensure_runtime_root_layout(
@@ -172,7 +247,6 @@ fn ensure_runtime_root_layout(
         paths.mds_dir.clone(),
         paths.mlib_dir.clone(),
         paths.cleanse_dir.clone(),
-        paths.archives_dir.clone(),
         paths.memory_dir.clone(),
         paths.logs_dir.clone(),
         paths.context_engine_dir.clone(),
@@ -251,12 +325,19 @@ fn ensure_runtime_docs_and_skills(
     report: &mut CommandReport,
 ) -> Result<()> {
     let skills_root = openclaw_paths.state_dir.join("skills");
+    let legacy_bootstrap_path = moon_paths.moon_home.join("BOOTSTRAP.md");
 
     if opts.dry_run {
         for (rel, _) in crate::assets::runtime_doc_asset_contents() {
             report.detail(format!(
                 "runtime.plan.write={}",
                 moon_paths.moon_home.join(rel).display()
+            ));
+        }
+        if legacy_bootstrap_path.exists() {
+            report.detail(format!(
+                "runtime.plan.remove={}",
+                legacy_bootstrap_path.display()
             ));
         }
         for (rel, _) in crate::assets::runtime_skill_asset_contents() {
@@ -270,7 +351,7 @@ fn ensure_runtime_docs_and_skills(
 
     write_runtime_docs(&moon_paths.moon_home).with_context(|| {
         format!(
-            "failed to export runtime docs into {}",
+            "failed to export installed-runtime docs into {}",
             moon_paths.moon_home.display()
         )
     })?;
@@ -279,6 +360,21 @@ fn ensure_runtime_docs_and_skills(
             "runtime.doc.ready={}",
             moon_paths.moon_home.join(rel).display()
         ));
+    }
+    match fs::remove_file(&legacy_bootstrap_path) {
+        Ok(()) => report.detail(format!(
+            "runtime.doc.removed_legacy={}",
+            legacy_bootstrap_path.display()
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove legacy runtime bootstrap doc {}",
+                    legacy_bootstrap_path.display()
+                )
+            });
+        }
     }
 
     write_runtime_skills(&skills_root).with_context(|| {
@@ -391,6 +487,7 @@ fn ensure_default_autostart(opts: &InstallOptions, report: &mut CommandReport) -
             ));
         }
     }
+    reset_launchd_stream_logs(&stdout_path, &stderr_path, report)?;
 
     let uid = resolve_uid()?;
     let domain = format!("gui/{uid}");
@@ -449,6 +546,19 @@ fn summarize_command_failure(output: &std::process::Output) -> String {
         Some(code) => format!("exit code {code}"),
         None => "terminated by signal".to_string(),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn reset_launchd_stream_logs(
+    stdout_path: &Path,
+    stderr_path: &Path,
+    report: &mut CommandReport,
+) -> Result<()> {
+    for path in [stdout_path, stderr_path] {
+        fs::write(path, b"").with_context(|| format!("failed to reset {}", path.display()))?;
+        report.detail(format!("autostart.launchd.log_reset={}", path.display()));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

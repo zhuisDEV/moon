@@ -119,6 +119,11 @@ pub fn plugins_list_json() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+pub fn plugins_info_json(plugin_id: &str) -> Result<String> {
+    let out = run_openclaw_retry(&["plugins", "info", plugin_id, "--json"], 1)?;
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 pub fn openclaw_available() -> bool {
     resolve_openclaw_bin_path().is_ok()
 }

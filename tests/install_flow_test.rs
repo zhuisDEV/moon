@@ -26,6 +26,8 @@ fn install_creates_plugin_and_stage2_config_entries() {
     fs::create_dir_all(&state_dir).expect("mkdir");
     fs::create_dir_all(&moon_home).expect("mkdir moon home");
     fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
+    fs::write(moon_home.join("BOOTSTRAP.md"), "legacy bootstrap\n")
+        .expect("write legacy runtime bootstrap");
     let config_path = state_dir.join("openclaw.json");
     fs::write(&config_path, "{}\n").expect("write config");
 
@@ -50,7 +52,6 @@ fn install_creates_plugin_and_stage2_config_entries() {
     assert!(moon_home.join("raw").exists());
     assert!(moon_home.join("mds").exists());
     assert!(moon_home.join("cleanse").exists());
-    assert!(moon_home.join("archives").exists());
     assert!(moon_home.join("memory").exists());
     assert!(moon_home.join("logs").exists());
     assert!(moon_home.join("mce").exists());
@@ -58,10 +59,13 @@ fn install_creates_plugin_and_stage2_config_entries() {
     assert!(moon_home.join("MEMORY.md").exists());
     assert!(moon_home.join(".env").exists());
     assert!(moon_home.join("README.md").exists());
-    assert!(moon_home.join("BOOTSTRAP.md").exists());
     assert!(moon_home.join(".env.example").exists());
     assert!(moon_home.join("moon.toml.example").exists());
     assert!(moon_home.join("docs/troubleshooting.md").exists());
+    assert!(
+        !moon_home.join("BOOTSTRAP.md").exists(),
+        "legacy runtime bootstrap doc should be removed"
+    );
     assert!(state_dir.join("skills/moon-admin/SKILL.md").exists());
     assert!(state_dir.join("skills/moon-subagent/SKILL.md").exists());
     let runtime_env = fs::read_to_string(moon_home.join(".env")).expect("read runtime env");

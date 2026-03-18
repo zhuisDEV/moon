@@ -34,10 +34,22 @@ pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
         false
     };
 
-    let list_state = match gateway::plugins_list_json() {
+    let mut list_state = match gateway::plugins_list_json() {
         Ok(raw) => parse_plugins_list_state(&raw, &paths.plugin_id),
         Err(_) => PluginListState::default(),
     };
+
+    // Fallback to per-plugin info when list parsing/execution is degraded.
+    // This keeps strict verify accurate even when `plugins list --json`
+    // output format is noisy or too large for brittle integrations.
+    if !list_state.listed || !list_state.loaded {
+        if let Ok(raw) = gateway::plugins_info_json(&paths.plugin_id) {
+            if let Some(info_state) = parse_plugin_info_state(&raw, &paths.plugin_id) {
+                list_state.listed = info_state.listed;
+                list_state.loaded = info_state.loaded;
+            }
+        }
+    }
 
     Ok(PluginVerifyOutcome {
         present_on_disk,
@@ -45,6 +57,25 @@ pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
         loaded_by_openclaw: list_state.loaded,
         assets_match_local,
         provenance_warning_detected: list_state.provenance_warning_detected,
+    })
+}
+
+fn parse_plugin_info_state(raw: &str, plugin_id: &str) -> Option<PluginListState> {
+    let v = parse_json_value(raw)?;
+    let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
+    if id != plugin_id {
+        return None;
+    }
+    let loaded = v
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|status| status == "loaded")
+        .unwrap_or(true);
+    Some(PluginListState {
+        listed: true,
+        loaded,
+        provenance_warning_detected: false,
+        provenance_diagnostic_messages: Vec::new(),
     })
 }
 
@@ -106,18 +137,21 @@ fn parse_json_value(raw: &str) -> Option<Value> {
         return Some(value);
     }
 
-    let object_start = raw.find('{');
-    let array_start = raw.find('[');
-    let start = match (object_start, array_start) {
-        (Some(obj), Some(arr)) => obj.min(arr),
-        (Some(obj), None) => obj,
-        (None, Some(arr)) => arr,
-        (None, None) => return None,
-    };
+    // `openclaw plugins list --json` can include non-JSON preamble lines.
+    // Instead of assuming the first `{` or `[` is JSON, scan every possible
+    // JSON start and return the first successfully parsed value.
+    for (idx, ch) in raw.char_indices() {
+        if ch != '{' && ch != '[' {
+            continue;
+        }
+        let candidate = &raw[idx..];
+        let mut stream = serde_json::Deserializer::from_str(candidate).into_iter::<Value>();
+        if let Some(Ok(value)) = stream.next() {
+            return Some(value);
+        }
+    }
 
-    let candidate = &raw[start..];
-    let mut stream = serde_json::Deserializer::from_str(candidate).into_iter::<Value>();
-    stream.next().and_then(Result::ok)
+    None
 }
 
 fn parse_provenance_diagnostics(root: &Value, plugin_id: &str) -> Vec<String> {

@@ -41,7 +41,6 @@ pub fn run() -> Result<CommandReport> {
     report.detail(format!("mds_dir={}", paths.mds_dir.display()));
     report.detail(format!("mlib_dir={}", paths.mlib_dir.display()));
     report.detail(format!("cleanse_dir={}", paths.cleanse_dir.display()));
-    report.detail(format!("archives_dir={}", paths.archives_dir.display()));
     report.detail(format!("memory_dir={}", paths.memory_dir.display()));
     report.detail(format!("memory_file={}", paths.memory_file.display()));
     report.detail(format!("logs_dir={}", paths.logs_dir.display()));
@@ -150,12 +149,6 @@ pub fn run() -> Result<CommandReport> {
         report.issue(format!(
             "missing cleanse dir ({})",
             paths.cleanse_dir.display()
-        ));
-    }
-    if !paths.archives_dir.exists() {
-        report.issue(format!(
-            "missing archives dir ({})",
-            paths.archives_dir.display()
         ));
     }
     if !paths.memory_dir.exists() {
