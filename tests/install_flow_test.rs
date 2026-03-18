@@ -49,6 +49,10 @@ fn install_creates_plugin_and_stage2_config_entries() {
     assert!(plugin_dir.join("index.js").exists());
     assert!(plugin_dir.join("openclaw.plugin.json").exists());
     assert!(plugin_dir.join("package.json").exists());
+    assert!(
+        !moon_home.join("moon").exists(),
+        "install should not create a nested moon dir inside MOON_HOME"
+    );
     assert!(moon_home.join("raw").exists());
     assert!(moon_home.join("mds").exists());
     assert!(moon_home.join("cleanse").exists());
@@ -208,5 +212,36 @@ fn install_creates_plugin_and_stage2_config_entries() {
             .and_then(|v| v.get("contextTokens"))
             .and_then(Value::as_i64),
         None
+    );
+}
+
+#[test]
+fn install_does_not_create_nested_moon_dir_under_moon_home() {
+    let tmp = tempdir().expect("tempdir");
+    let state_dir = tmp.path().join("state");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
+    let config_path = state_dir.join("openclaw.json");
+    fs::write(&config_path, "{}\n").expect("write config");
+
+    let fake_openclaw = tmp.path().join("openclaw");
+    let log_path = tmp.path().join("openclaw.log");
+    write_fake_openclaw(&fake_openclaw, &log_path);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_BIN", &fake_openclaw)
+        .arg("install")
+        .assert()
+        .success();
+
+    assert!(
+        !moon_home.join("moon").exists(),
+        "install should never create $MOON_HOME/moon"
     );
 }
