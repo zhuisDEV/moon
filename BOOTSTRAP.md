@@ -13,7 +13,7 @@ Create `$MOON_HOME/.env` before running any `moon` command.
 
 ```bash
 export MOON_HOME="${MOON_HOME:-$HOME/.moon}"
-MOON_REPO="/absolute/path/to/moon"
+MOON_REPO="<path-to-moon-repo>"
 
 mkdir -p "$MOON_HOME"
 cp "$MOON_REPO/.env.example" "$MOON_HOME/.env"
@@ -80,7 +80,7 @@ cd "$MOON_REPO"
 cargo install --path . --force
 ```
 
-If `moon` is not on `PATH`, use `~/.cargo/bin/moon` explicitly.
+If `moon` is not on `PATH`, use `$HOME/.cargo/bin/moon` explicitly.
 
 ## 3. Bootstrap Install Handshake
 
@@ -116,7 +116,7 @@ Check these after install:
 4. `moon health` reports writable state paths and no critical issues.
 5. `moon config --show` confirms hot collection lifecycle policy values and
    computed cleanse token thresholds.
-6. qmd runtime paths resolve under `$MOON_HOME/qmd/`, not `~/.config/qmd` or a
+6. qmd runtime paths resolve under `$MOON_HOME/qmd/`, not `$HOME/.config/qmd` or a
    shared global qmd index.
 
 ## 5. Real OpenClaw Smoke Test
@@ -187,7 +187,7 @@ MOON ships two role-scoped skill files:
 Install to Codex skills home when needed:
 
 ```bash
-MOON_REPO="/absolute/path/to/moon"
+MOON_REPO="<path-to-moon-repo>"
 SKILLS_HOME="${CODEX_HOME:-$HOME/.codex}/skills"
 
 mkdir -p "$SKILLS_HOME/moon-admin" "$SKILLS_HOME/moon-subagent"

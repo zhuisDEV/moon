@@ -109,7 +109,7 @@ If you are running from source before install, or you want to copy the skills
 manually into another runtime, use:
 
 ```bash
-MOON_REPO="/absolute/path/to/moon"
+MOON_REPO="<path-to-moon-repo>"
 SKILLS_HOME="${CODEX_HOME:-$HOME/.codex}/skills"
 
 mkdir -p "$SKILLS_HOME/moon-admin" "$SKILLS_HOME/moon-subagent"
@@ -135,7 +135,7 @@ different):
 2. Default history retrieval command is
    `moon recall --name history_lib --query "<user-intent-query>"`. (If running from
    source instead of a compiled binary, use
-   `cargo run --manifest-path /path/to/moon/Cargo.toml -- recall --name history_lib --query "<user-intent-query>"`).
+   `cargo run --manifest-path "$MOON_REPO/Cargo.toml" -- recall --name history_lib --query "<user-intent-query>"`).
 3. For same-session pre-cleanse recall, use hot collection
    `history_hot_<session_id>` (or fallback `history_hot`) when needed. The
    matching hot projection lives under `$MOON_HOME/mds/<collection>/`.
@@ -278,7 +278,7 @@ OpenClaw binary resolution:
 ```bash
 # Preferred: ensure `openclaw` is available on PATH.
 # Optional override: pin an explicit binary path.
-OPENCLAW_BIN=/absolute/path/to/openclaw
+OPENCLAW_BIN=<path-to-openclaw-binary>
 ```
 
 Runtime-root profile (recommended):
@@ -506,7 +506,7 @@ Commands:
    - wires the current MOON bootstrap shell, provenance state, and runtime-root
      directories
    - macOS default behavior: writes/refreshes
-     `~/Library/LaunchAgents/com.moon.watch.plist`, then bootstraps and
+     `$HOME/Library/LaunchAgents/com.moon.watch.plist`, then bootstraps and
      kickstarts the transitional maintenance watcher service.
    - Windows/Linux behavior: service autostart wiring is not managed by
      `moon install` yet.
@@ -696,17 +696,40 @@ moon health
 
 Troubleshooting & Maintenance:
 
-If the daemon/runtime looks inconsistent, use this clean recovery sequence:
-
-1. `moon stop`
-2. `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
-3. `pkill -f "moon watch --daemon" 2>/dev/null || true`
-4. `pkill -f "moon restart" 2>/dev/null || true`
-5. `rm -f "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
-6. If `moon health` still reports a stale daemon lock, run `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock"`
-7. `moon install`
-8. `moon verify --strict`
-9. `moon health`
+1. OpenClaw cannot see Moon memory paths
+   Symptoms:
+   `moon status` or `moon verify --strict` reports missing `plugins.entries.moon.config.memoryDir` or `memoryFile`.
+   Fix:
+   Run `moon install`, then `moon verify --strict`, and confirm under `plugins.entries.moon.config`:
+   `moonHome = $MOON_HOME`, `memoryDir = $MOON_HOME/memory`, `memoryFile = $MOON_HOME/MEMORY.md`.
+2. Context-engine fails before dispatch
+   Symptoms:
+   context-engine/plugin call exits non-zero, or `moon health` reports missing context-engine output.
+   Fix:
+   Confirm `MOON_HOME`, confirm `$MOON_HOME/.env` exists, run `moon config --show`, `moon status`, and `moon health`.
+   Re-run `moon install` if `moonPath`, `moonHome`, `memoryDir`, or `memoryFile` drifted in OpenClaw config.
+3. Search/embed maintenance does not advance
+   Symptoms:
+   `pending_embed_collections` stays non-zero, or `moon embed` reports capability/failed status.
+   Fix:
+   Verify `QMD_BIN`, run `moon embed --name history_lib --max-docs 25`, and rerun the current checkpoint path if hot-cache embedding needs recreation.
+4. Primary-flow config drift
+   Symptoms:
+   `moon status` reports context policy drift, or compaction/cleanse triggers at the wrong token budget.
+   Fix:
+   Check `$MOON_HOME/moon.toml` `[context]` values (`window_tokens`, `cleanse_trigger_ratio`, `cleanse_emergency_ratio`) and confirm with `moon config --show`.
+5. Minimum recovery sequence
+   If the runtime looks inconsistent and root cause is unclear:
+   `moon install` -> `moon verify --strict` -> `moon status` -> `moon health` -> `moon watch --once`.
+6. Clean restart / lock cleanup
+   If daemon state still looks inconsistent:
+   `moon stop`
+   `launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.moon.watch.plist" 2>/dev/null || true`
+   `pkill -f "moon watch --daemon" 2>/dev/null || true`
+   `pkill -f "moon restart" 2>/dev/null || true`
+   `rm -f "$MOON_HOME/logs/moon-embed.lock" "$MOON_HOME/logs/l1-normalisation.lock"`
+   If `moon health` still reports a stale daemon lock: `rm -f "$MOON_HOME/logs/moon-watch.daemon.lock"`
+   Then run `moon install` -> `moon verify --strict` -> `moon health`.
 
 Important:
 

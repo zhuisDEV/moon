@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.4] - 2026-03-20
+
+### Docs
+
+- Rewrote `SKILL.md` to a minimal runtime CLI guide for agents.
+- Added an explicit runtime-doc handoff to `$MOON_HOME/README.md` from `SKILL.md`.
+- Removed hardcoded absolute/home paths from repo documentation and replaced
+  them with variable-based path forms.
+- Consolidated troubleshooting guidance flow so repo docs remain portable for
+  GitHub publishing.
+
 ## [1.0.3] - 2026-03-20
 
 ### Fixed
