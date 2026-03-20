@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.3] - 2026-03-20
+
+### Fixed
+
+- Resolved strict lint warnings affecting macOS-gated imports and test paths.
+- Kept release metadata aligned so `main`, crate version, and plugin version
+  now ship together as `v1.0.3`.
+
 ## [1.0.2] - 2026-03-20
 
 ### Fixed
