@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.5] - 2026-03-20
+
+### Added
+
+- Added `moon update` command with stable/main channel targeting, plus `--check`
+  and `--dry-run`.
+- `moon update` now preserves existing `$MOON_HOME/.env` and
+  `$MOON_HOME/moon.toml` across upgrade/install flows.
+
+### Fixed
+
+- `moon status` now checks watcher daemon lock runtime health and fails when a
+  stale lock references a dead PID.
+
+### Docs
+
+- Rewrote `README.md` to align with current CLI/runtime behavior and remove
+  stale guidance drift.
+- Updated uninstall guidance for safer plugin/service/runtime cleanup and clear
+  optional full-wipe behavior.
+
 ## [1.0.4] - 2026-03-20
 
 ### Docs

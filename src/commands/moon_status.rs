@@ -1,4 +1,8 @@
 use anyhow::Result;
+#[cfg(target_os = "macos")]
+use std::env;
+#[cfg(target_os = "macos")]
+use std::fs;
 
 use crate::commands::CommandReport;
 use crate::moon::assemble::output_path as assembly_output_path;
@@ -6,6 +10,7 @@ use crate::moon::config::{
     MoonHotCollectionLifecycleMode, SECRET_ENV_KEYS, masked_env_secret,
     resolve_hot_collection_lifecycle_policy_for_diagnostics,
 };
+use crate::moon::daemon_lock::{daemon_lock_path, read_daemon_lock_payload};
 use crate::moon::paths::resolve_paths;
 use crate::moon::qmd;
 use crate::moon::state::{load, state_file_path};
@@ -135,6 +140,7 @@ pub fn run() -> Result<CommandReport> {
     for key in SECRET_ENV_KEYS {
         report.detail(format!("secret.{key}={}", masked_env_secret(key)));
     }
+    report_daemon_runtime(&paths, &mut report);
 
     if !paths.raw_dir.exists() {
         report.issue(format!("missing raw dir ({})", paths.raw_dir.display()));
@@ -194,4 +200,96 @@ pub fn run() -> Result<CommandReport> {
     }
 
     Ok(report)
+}
+
+fn report_daemon_runtime(moon_paths: &crate::moon::paths::MoonPaths, report: &mut CommandReport) {
+    let lock_path = daemon_lock_path(moon_paths);
+    report.detail(format!("daemon.lock_path={}", lock_path.display()));
+
+    let autostart_expected = daemon_autostart_expected_for_workspace(moon_paths);
+    report.detail(format!("daemon.autostart_expected={autostart_expected}"));
+
+    match read_daemon_lock_payload(moon_paths) {
+        Ok(Some(payload)) => {
+            report.detail("daemon.lock=found".to_string());
+            report.detail(format!("daemon.pid={}", payload.pid));
+            if payload.started_at_epoch_secs > 0 {
+                report.detail(format!(
+                    "daemon.started_at_epoch_secs={}",
+                    payload.started_at_epoch_secs
+                ));
+            }
+            if !payload.moon_home.trim().is_empty() {
+                report.detail(format!("daemon.moon_home={}", payload.moon_home.trim()));
+            }
+
+            let alive = crate::moon::util::pid_alive(payload.pid);
+            report.detail(format!("daemon.process_alive={alive}"));
+            if !alive {
+                report.issue(format!(
+                    "daemon lock is stale: pid {} is not running; run `moon restart`",
+                    payload.pid
+                ));
+            }
+        }
+        Ok(None) => {
+            report.detail("daemon.lock=missing".to_string());
+            if autostart_expected {
+                report.issue(
+                    "daemon lock missing while launchd autostart is configured; run `moon restart`"
+                        .to_string(),
+                );
+            }
+        }
+        Err(err) => {
+            report.issue(format!(
+                "failed to inspect daemon lock {}: {err:#}",
+                lock_path.display()
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_autostart_expected_for_workspace(moon_paths: &crate::moon::paths::MoonPaths) -> bool {
+    let Ok(current_exe) = env::current_exe() else {
+        return false;
+    };
+    if is_dev_build_path(&current_exe) {
+        return false;
+    }
+
+    let Ok(plist_path) = crate::moon::launchd::plist_path() else {
+        return false;
+    };
+    let Ok(plist) = fs::read_to_string(&plist_path) else {
+        return false;
+    };
+    let Some(working_dir) = extract_launchd_working_directory(&plist) else {
+        return false;
+    };
+
+    working_dir == moon_paths.moon_home.display().to_string()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn daemon_autostart_expected_for_workspace(_moon_paths: &crate::moon::paths::MoonPaths) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn extract_launchd_working_directory(plist: &str) -> Option<String> {
+    let marker = "<key>WorkingDirectory</key><string>";
+    let start = plist.find(marker)? + marker.len();
+    let end = plist[start..].find("</string>")?;
+    Some(plist[start..start + end].to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn is_dev_build_path(path: &std::path::Path) -> bool {
+    let normalized = path.display().to_string();
+    normalized.contains("target/debug")
+        || normalized.contains("target/release")
+        || normalized.contains("target\\debug")
+        || normalized.contains("target\\release")
 }

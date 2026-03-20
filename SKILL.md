@@ -10,12 +10,15 @@ For full operational details, edge cases, and troubleshooting, use:
 
 1. `MOON_HOME` points to your runtime root (default: `$HOME/.moon`).
 2. Runtime env file is `$MOON_HOME/.env`.
-3. Run `moon install` after binary/plugin updates.
+3. Use `moon update` for normal upgrades; it runs install+verify and preserves
+   `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`.
 
 ## Simple Agent Guide
 
 1. Prepare runtime:
    `moon install`
+   For upgrades:
+   `moon update`
 2. Validate wiring:
    `moon verify --strict`
 3. Confirm health:

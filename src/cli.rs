@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::ffi::OsString;
 
 use crate::commands;
@@ -22,6 +22,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Install(InstallArgs),
+    Update(UpdateArgs),
     Verify(VerifyArgs),
     Repair(RepairArgs),
     Status,
@@ -50,6 +51,22 @@ pub struct InstallArgs {
     pub dry_run: bool,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub apply: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum UpdateChannelArg {
+    Stable,
+    Main,
+}
+
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    #[arg(long)]
+    pub check: bool,
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long, value_enum, default_value_t = UpdateChannelArg::Stable)]
+    pub channel: UpdateChannelArg,
 }
 
 #[derive(Debug, Args, Default)]
@@ -251,7 +268,11 @@ pub fn run() -> Result<()> {
 
     // Every command validates CWD except diagnostics.
     match &cli.command {
-        Command::Status | Command::Health | Command::Verify(_) | Command::Config(_) => {
+        Command::Status
+        | Command::Health
+        | Command::Verify(_)
+        | Command::Config(_)
+        | Command::Update(_) => {
             // Diagnostics are exempt from CWD enforcement.
         }
         _ => {
@@ -264,6 +285,14 @@ pub fn run() -> Result<()> {
             force: args.force,
             dry_run: args.dry_run,
             apply: args.apply,
+        })?,
+        Command::Update(args) => commands::update::run(&commands::update::UpdateOptions {
+            check: args.check,
+            dry_run: args.dry_run,
+            channel: match args.channel {
+                UpdateChannelArg::Stable => commands::update::UpdateChannel::Stable,
+                UpdateChannelArg::Main => commands::update::UpdateChannel::Main,
+            },
         })?,
         Command::Verify(args) => commands::verify::run(&commands::verify::VerifyOptions {
             strict: args.strict,

@@ -15,6 +15,7 @@ pub mod moon_stop;
 pub mod moon_watch;
 pub mod repair;
 pub mod status;
+pub mod update;
 pub mod verify;
 
 use anyhow::{Context, Result};

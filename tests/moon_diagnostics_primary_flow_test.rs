@@ -188,3 +188,39 @@ exit 1
             "hot collection lifecycle strict mode requires qmd lifecycle support",
         ));
 }
+
+#[test]
+#[cfg(not(windows))]
+fn status_fails_when_daemon_lock_pid_is_stale() {
+    let tmp = tempdir().expect("tempdir");
+    let (moon_home, sessions_dir, qmd_bin) = setup_runtime_tree(tmp.path());
+    let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
+    let sessions_dir = fs::canonicalize(&sessions_dir).expect("canonicalize sessions");
+    let qmd_bin = fs::canonicalize(&qmd_bin).expect("canonicalize qmd");
+
+    write_file(
+        &moon_home.join("logs/moon-watch.daemon.lock"),
+        &format!(
+            "{}\n",
+            serde_json::to_string(&json!({
+                "pid": 999999_u32,
+                "started_at_epoch_secs": now_epoch_secs(),
+                "build_uuid": "test",
+                "moon_home": moon_home.display().to_string()
+            }))
+            .expect("serialize lock")
+        ),
+    );
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
+        .env("QMD_BIN", &qmd_bin)
+        .arg("status")
+        .assert()
+        .failure()
+        .stdout(contains(
+            "daemon lock is stale: pid 999999 is not running; run `moon restart`",
+        ));
+}
