@@ -73,6 +73,8 @@ pub struct UpdateArgs {
 pub struct VerifyArgs {
     #[arg(long)]
     pub strict: bool,
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -197,16 +199,32 @@ fn print_report(report: &commands::CommandReport, as_json: bool) -> Result<()> {
 
     println!("command: {}", report.command);
     println!("ok: {}", report.ok);
-    if !report.details.is_empty() {
-        println!("details:");
-        for detail in &report.details {
-            println!("- {detail}");
+    let verify_failures_first = report.command == "verify" && !report.ok;
+    if verify_failures_first {
+        if !report.issues.is_empty() {
+            println!("issues:");
+            for issue in &report.issues {
+                println!("- {issue}");
+            }
         }
-    }
-    if !report.issues.is_empty() {
-        println!("issues:");
-        for issue in &report.issues {
-            println!("- {issue}");
+        if !report.details.is_empty() {
+            println!("details:");
+            for detail in &report.details {
+                println!("- {detail}");
+            }
+        }
+    } else {
+        if !report.details.is_empty() {
+            println!("details:");
+            for detail in &report.details {
+                println!("- {detail}");
+            }
+        }
+        if !report.issues.is_empty() {
+            println!("issues:");
+            for issue in &report.issues {
+                println!("- {issue}");
+            }
         }
     }
     Ok(())
@@ -296,6 +314,7 @@ pub fn run() -> Result<()> {
         })?,
         Command::Verify(args) => commands::verify::run(&commands::verify::VerifyOptions {
             strict: args.strict,
+            verbose: args.verbose,
         })?,
         Command::Repair(args) => {
             commands::repair::run(&commands::repair::RepairOptions { force: args.force })?

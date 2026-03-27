@@ -25,7 +25,10 @@ pub fn run(opts: &RepairOptions) -> Result<CommandReport> {
         apply: true,
     })?);
     restart_gateway_with_fallback(&mut report);
-    report.merge(verify::run(&VerifyOptions { strict: true })?);
+    report.merge(verify::run(&VerifyOptions {
+        strict: true,
+        verbose: false,
+    })?);
 
     Ok(report)
 }

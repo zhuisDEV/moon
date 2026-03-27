@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::Read;
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,16 +58,47 @@ pub fn run_command_with_optional_timeout(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
+    let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
     let started = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(child.wait_with_output()?);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
         if started.elapsed() >= Duration::from_secs(timeout_secs) {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.wait()?;
+            let _ = collect_pipe_output(stdout_reader)?;
+            let _ = collect_pipe_output(stderr_reader)?;
             anyhow::bail!("command timed out after {}s", timeout_secs);
         }
         thread::sleep(Duration::from_millis(50));
-    }
+    };
+    let stdout = collect_pipe_output(stdout_reader)?;
+    let stderr = collect_pipe_output(stderr_reader)?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn collect_pipe_output(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Result<Vec<u8>> {
+    let Some(handle) = handle else {
+        return Ok(Vec::new());
+    };
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to collect command output: reader thread panicked"))
 }

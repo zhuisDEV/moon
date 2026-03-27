@@ -7,6 +7,14 @@ use crate::openclaw::doctor;
 #[derive(Debug, Clone, Default)]
 pub struct VerifyOptions {
     pub strict: bool,
+    pub verbose: bool,
+}
+
+fn detail_value(details: &[String], prefix: &str) -> Option<String> {
+    details
+        .iter()
+        .find(|line| line.starts_with(prefix))
+        .cloned()
 }
 
 pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
@@ -23,7 +31,36 @@ pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
         }
     }
 
-    report.merge(status::run()?);
+    let status_report = status::run()?;
+    if opts.verbose {
+        report.merge(status_report);
+    } else {
+        report.detail(format!(
+            "status.summary={} issues={}",
+            if status_report.ok { "ok" } else { "failed" },
+            status_report.issues.len()
+        ));
+        for prefix in [
+            "state_dir=",
+            "config_path=",
+            "plugin_dir=",
+            "plugin_listed_by_openclaw=",
+            "plugin_loaded_by_openclaw=",
+            "plugin_assets_match_local=",
+            "provenance repair hint:",
+        ] {
+            if let Some(detail) = detail_value(&status_report.details, prefix) {
+                report.detail(detail);
+            }
+        }
+        report.detail(format!(
+            "status.details_suppressed={} (rerun with `moon verify --strict --verbose` for full details)",
+            status_report.details.len()
+        ));
+        for issue in status_report.issues {
+            report.issue(issue);
+        }
+    }
 
     if opts.strict && !report.ok {
         report.issue("strict verify failed");

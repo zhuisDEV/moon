@@ -387,7 +387,7 @@ pub fn run() -> Result<CommandReport> {
     if gateway::openclaw_available() && !verify.listed_by_openclaw {
         report.issue("plugin not listed by `openclaw plugins list --json`");
     }
-    if gateway::openclaw_available() && !verify.loaded_by_openclaw {
+    if gateway::openclaw_available() && verify.listed_by_openclaw && !verify.loaded_by_openclaw {
         report.issue("plugin is listed but not loaded");
     }
     if gateway::openclaw_available() && verify.provenance_warning_detected {

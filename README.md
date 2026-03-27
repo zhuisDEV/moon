@@ -176,7 +176,7 @@ Commands:
 
 1. `install [--force] [--dry-run] [--apply true|false]`
 2. `update [--check] [--dry-run] [--channel stable|main]`
-3. `verify [--strict]`
+3. `verify [--strict] [--verbose]`
 4. `repair [--force]`
 5. `status`
 6. `record [--source <path>] [--session-id <id>] [--dry-run]`
@@ -204,6 +204,7 @@ Exit codes:
 1. `status` now includes daemon lock/runtime checks and can fail when lock is
    stale or autostart state is inconsistent.
 2. `verify --strict` fails hard when runtime/plugin diagnostics are unhealthy.
+3. `verify` defaults to concise summary output; use `--verbose` for full status detail.
 3. `distill --mode norm` auto-selects a pending `$MOON_HOME/mlib/*.md` file if
    `--archive` is omitted.
 4. `watch --daemon` is blocked from development binaries (`target/debug` or

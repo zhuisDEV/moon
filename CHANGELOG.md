@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.8] - 2026-03-28
+
+### Fixed
+
+- `verify` now parses OpenClaw `plugins info` nested schema (`plugin.id`,
+  `plugin.status`) so loaded moon plugins are detected correctly.
+- `verify` now prefers `plugins info` first and only falls back to
+  `plugins list` when needed, reducing large JSON pressure in normal paths.
+- External command timeout handling now drains subprocess stdout/stderr while
+  waiting, preventing pipe-buffer stalls on large outputs.
+- `status` no longer emits “plugin is listed but not loaded” when the plugin is
+  not listed.
+
+### Changed
+
+- `verify` now defaults to concise summary output and supports full detail with
+  `--verbose`.
+- Non-JSON verify output now prints issues before details when verification
+  fails.
+
+### Docs
+
+- Updated CLI docs for `verify [--strict] [--verbose]`.
+
 ## [1.0.7] - 2026-03-28
 
 ### Fixed

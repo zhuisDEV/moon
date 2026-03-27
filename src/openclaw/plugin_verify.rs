@@ -34,20 +34,28 @@ pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
         false
     };
 
-    let mut list_state = match gateway::plugins_list_json() {
-        Ok(raw) => parse_plugins_list_state(&raw, &paths.plugin_id),
+    // Prefer per-plugin info first. This payload is much smaller than
+    // `plugins list --json` and avoids brittle parsing of unrelated entries.
+    let mut list_state = match gateway::plugins_info_json(&paths.plugin_id) {
+        Ok(raw) => parse_plugin_info_state(&raw, &paths.plugin_id).unwrap_or_default(),
         Err(_) => PluginListState::default(),
     };
 
-    // Fallback to per-plugin info when list parsing/execution is degraded.
-    // This keeps strict verify accurate even when `plugins list --json`
-    // output format is noisy or too large for brittle integrations.
-    if (!list_state.listed || !list_state.loaded)
-        && let Ok(raw) = gateway::plugins_info_json(&paths.plugin_id)
-        && let Some(info_state) = parse_plugin_info_state(&raw, &paths.plugin_id)
-    {
-        list_state.listed = info_state.listed;
-        list_state.loaded = info_state.loaded;
+    // Fallback to list only if plugin info is unavailable or incomplete.
+    if !list_state.listed || !list_state.loaded {
+        let fallback_state = match gateway::plugins_list_json() {
+            Ok(raw) => parse_plugins_list_state(&raw, &paths.plugin_id),
+            Err(_) => PluginListState::default(),
+        };
+        if !list_state.listed {
+            list_state.listed = fallback_state.listed;
+        }
+        if !list_state.loaded {
+            list_state.loaded = fallback_state.loaded;
+        }
+        if !list_state.provenance_warning_detected {
+            list_state.provenance_warning_detected = fallback_state.provenance_warning_detected;
+        }
     }
 
     Ok(PluginVerifyOutcome {
@@ -61,20 +69,22 @@ pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
 
 fn parse_plugin_info_state(raw: &str, plugin_id: &str) -> Option<PluginListState> {
     let v = parse_json_value(raw)?;
-    let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
+    let plugin = v.get("plugin").unwrap_or(&v);
+    let id = plugin.get("id").and_then(Value::as_str).unwrap_or_default();
     if id != plugin_id {
         return None;
     }
-    let loaded = v
+    let loaded = plugin
         .get("status")
         .and_then(Value::as_str)
         .map(|status| status == "loaded")
         .unwrap_or(true);
+    let provenance_diagnostic_messages = parse_provenance_diagnostics(&v, plugin_id);
     Some(PluginListState {
         listed: true,
         loaded,
-        provenance_warning_detected: false,
-        provenance_diagnostic_messages: Vec::new(),
+        provenance_warning_detected: !provenance_diagnostic_messages.is_empty(),
+        provenance_diagnostic_messages,
     })
 }
 
@@ -210,7 +220,7 @@ fn is_provenance_warning_message(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_plugins_list_state;
+    use super::{parse_plugin_info_state, parse_plugins_list_state};
 
     #[test]
     fn parse_plugins_list_state_tolerates_preamble_before_json() {
@@ -226,6 +236,22 @@ mod tests {
 }"#;
 
         let state = parse_plugins_list_state(raw, "moon");
+        assert!(state.listed);
+        assert!(state.loaded);
+        assert!(!state.provenance_warning_detected);
+    }
+
+    #[test]
+    fn parse_plugin_info_state_supports_nested_plugin_shape() {
+        let raw = r#"{
+  "plugin": {
+    "id": "moon",
+    "status": "loaded"
+  },
+  "diagnostics": []
+}"#;
+
+        let state = parse_plugin_info_state(raw, "moon").expect("parsed plugin info");
         assert!(state.listed);
         assert!(state.loaded);
         assert!(!state.provenance_warning_detected);
