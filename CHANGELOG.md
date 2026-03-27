@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.7] - 2026-03-28
+
+### Fixed
+
+- `moon install`, `moon update`, and `moon restart` now run an OpenClaw plugin
+  alignment check and attempt registry/load repair when Moon is not listed or
+  loaded.
+- Aligned release metadata so crate + plugin package + plugin runtime ship as
+  `v1.0.7`.
+
+### Docs
+
+- Updated `README.md` to document post-update OpenClaw plugin alignment.
+
 ## [1.0.6] - 2026-03-28
 
 ### Added

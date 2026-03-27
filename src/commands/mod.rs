@@ -79,6 +79,89 @@ pub fn restart_gateway_with_fallback(report: &mut CommandReport) {
         report.detail("gateway restart succeeded");
     }
 }
+
+pub fn align_openclaw_plugin_state(report: &mut CommandReport, caller: &str) {
+    let prefix = "openclaw.plugin_alignment";
+    report.detail(format!("{prefix}.caller={caller}"));
+    if !crate::openclaw::gateway::openclaw_available() {
+        report.detail(format!(
+            "{prefix}.status=skipped reason=openclaw_unavailable"
+        ));
+        return;
+    }
+
+    let paths = match crate::openclaw::paths::resolve_paths() {
+        Ok(paths) => paths,
+        Err(err) => {
+            report.detail(format!(
+                "{prefix}.status=skipped reason=resolve_paths_failed error={}",
+                crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 240)
+            ));
+            return;
+        }
+    };
+
+    let before = match crate::openclaw::plugin_verify::verify_plugin(&paths) {
+        Ok(state) => state,
+        Err(err) => {
+            report.detail(format!(
+                "{prefix}.status=skipped reason=verify_before_failed error={}",
+                crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 240)
+            ));
+            return;
+        }
+    };
+    report.detail(format!(
+        "{prefix}.before listed={} loaded={} present_on_disk={} assets_match_local={}",
+        before.listed_by_openclaw,
+        before.loaded_by_openclaw,
+        before.present_on_disk,
+        before.assets_match_local
+    ));
+
+    let mut install_attempted = false;
+    if !before.listed_by_openclaw {
+        install_attempted = true;
+        match crate::openclaw::gateway::try_plugins_install(&paths.plugin_dir) {
+            Ok(()) => report.detail(format!(
+                "{prefix}.install=ok path={}",
+                paths.plugin_dir.display()
+            )),
+            Err(err) => report.detail(format!(
+                "{prefix}.install=failed error={}",
+                crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 240)
+            )),
+        }
+    }
+
+    if install_attempted || !before.loaded_by_openclaw {
+        restart_gateway_with_fallback(report);
+    }
+
+    let after = match crate::openclaw::plugin_verify::verify_plugin(&paths) {
+        Ok(state) => state,
+        Err(err) => {
+            report.detail(format!(
+                "{prefix}.status=degraded reason=verify_after_failed error={}",
+                crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 240)
+            ));
+            return;
+        }
+    };
+    report.detail(format!(
+        "{prefix}.after listed={} loaded={} present_on_disk={} assets_match_local={}",
+        after.listed_by_openclaw,
+        after.loaded_by_openclaw,
+        after.present_on_disk,
+        after.assets_match_local
+    ));
+    if after.listed_by_openclaw && after.loaded_by_openclaw {
+        report.detail(format!("{prefix}.status=aligned"));
+    } else {
+        report.detail(format!("{prefix}.status=not_aligned"));
+    }
+}
+
 fn canonicalize_or_original(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }

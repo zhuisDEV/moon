@@ -156,6 +156,10 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
         report.issue(format!("autostart setup failed: {err:#}"));
     }
 
+    if opts.apply && !opts.dry_run {
+        crate::commands::align_openclaw_plugin_state(&mut report, "install");
+    }
+
     Ok(report)
 }
 

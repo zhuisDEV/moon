@@ -77,6 +77,8 @@ pub fn run() -> Result<CommandReport> {
         return Ok(report);
     }
 
+    crate::commands::align_openclaw_plugin_state(&mut report, "restart");
+
     report.detail("stopping existing watcher daemon".to_string());
     let stop_report = moon_stop::run()?;
     let stop_ok = stop_report.ok;

@@ -137,6 +137,7 @@ pub fn run(opts: &UpdateOptions) -> Result<CommandReport> {
     )?;
 
     if install_ok {
+        crate::commands::align_openclaw_plugin_state(&mut report, "update");
         let _ = run_moon_subcommand(
             &moon_bin,
             &moon_home,

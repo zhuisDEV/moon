@@ -68,6 +68,8 @@ moon update
 1. Upgrades to latest stable tag by default (`--channel stable`).
 2. Supports `--channel main` for main-branch builds.
 3. Supports `--check` and `--dry-run`.
+4. Attempts OpenClaw plugin registry/load alignment before strict post-update
+   verification.
 4. Runs `moon install` and `moon verify --strict` after install.
 5. Preserves existing `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`.
 
