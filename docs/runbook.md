@@ -23,7 +23,7 @@ moon config --show
 Admin/bootstrap commands:
 
 1. `moon install`: wire the current MOON runtime shell, provision the `$MOON_HOME` runtime root, and write OpenClaw config pointers for `moonHome`, `memory/`, and `MEMORY.md`
-2. `moon verify --strict`: verify runtime shell wiring, provenance, dependencies, and health
+2. `moon verify --strict`: verify runtime shell wiring, provenance, dependencies, and health (concise by default; add `--verbose` for full detail)
 3. `moon status`: inspect resolved runtime paths and runtime shell state
 4. `moon config --show`: inspect resolved config
 5. `moon health`: inspect overall runtime health
@@ -86,13 +86,13 @@ Execution note:
 Run L1 normalisation:
 
 ```bash
-moon distill -mode norm
+moon distill --mode norm
 ```
 
 Run L2 synthesis:
 
 ```bash
-moon distill -mode syns
+moon distill --mode syns
 ```
 
 Recommended model config:

@@ -146,6 +146,7 @@ pub fn run() -> Result<CommandReport> {
     let install_snapshot = install_record_snapshot(&cfg, &paths.plugin_id);
     let context_policy = load_context_policy_if_explicit_env()?;
     let verify = plugin_verify::verify_plugin(&paths)?;
+    let openclaw_available = gateway::openclaw_available();
 
     let state_dir_disp = paths.state_dir.display().to_string();
     let config_path_disp = paths.config_path.display().to_string();
@@ -384,16 +385,14 @@ pub fn run() -> Result<CommandReport> {
     if !verify.assets_match_local {
         report.issue("installed plugin assets drift from local package assets");
     }
-    if gateway::openclaw_available() && !verify.listed_by_openclaw {
-        report.issue("plugin not listed by `openclaw plugins list --json`");
+    if openclaw_available && !verify.listed_by_openclaw {
+        report.issue("plugin not listed by OpenClaw registry (`plugins info`/`plugins list`)");
     }
-    if gateway::openclaw_available() && verify.listed_by_openclaw && !verify.loaded_by_openclaw {
-        report.issue("plugin is listed but not loaded");
+    if openclaw_available && verify.listed_by_openclaw && !verify.loaded_by_openclaw {
+        report.issue("plugin listed but not loaded by OpenClaw");
     }
-    if gateway::openclaw_available() && verify.provenance_warning_detected {
-        report.issue(
-            "plugin loaded without install/load-path provenance per `openclaw plugins list --json` diagnostics",
-        );
+    if openclaw_available && verify.provenance_warning_detected {
+        report.issue("plugin loaded without install/load-path provenance per OpenClaw diagnostics");
     }
 
     let expected_plugin_dir = paths.plugin_dir.display().to_string();

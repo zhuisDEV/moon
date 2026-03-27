@@ -40,6 +40,7 @@ pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
             if status_report.ok { "ok" } else { "failed" },
             status_report.issues.len()
         ));
+        let mut surfaced_details = 0usize;
         for prefix in [
             "state_dir=",
             "config_path=",
@@ -51,11 +52,13 @@ pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
         ] {
             if let Some(detail) = detail_value(&status_report.details, prefix) {
                 report.detail(detail);
+                surfaced_details += 1;
             }
         }
+        let suppressed_details = status_report.details.len().saturating_sub(surfaced_details);
         report.detail(format!(
             "status.details_suppressed={} (rerun with `moon verify --strict --verbose` for full details)",
-            status_report.details.len()
+            suppressed_details
         ));
         for issue in status_report.issues {
             report.issue(issue);

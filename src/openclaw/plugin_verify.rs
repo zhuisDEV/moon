@@ -20,7 +20,6 @@ struct PluginListState {
     listed: bool,
     loaded: bool,
     provenance_warning_detected: bool,
-    provenance_diagnostic_messages: Vec<String>,
 }
 
 pub fn verify_plugin(paths: &OpenClawPaths) -> Result<PluginVerifyOutcome> {
@@ -79,12 +78,11 @@ fn parse_plugin_info_state(raw: &str, plugin_id: &str) -> Option<PluginListState
         .and_then(Value::as_str)
         .map(|status| status == "loaded")
         .unwrap_or(true);
-    let provenance_diagnostic_messages = parse_provenance_diagnostics(&v, plugin_id);
+    let provenance_warning_detected = has_provenance_diagnostics(&v, plugin_id);
     Some(PluginListState {
         listed: true,
         loaded,
-        provenance_warning_detected: !provenance_diagnostic_messages.is_empty(),
-        provenance_diagnostic_messages,
+        provenance_warning_detected,
     })
 }
 
@@ -111,10 +109,9 @@ fn parse_plugins_list_state(raw: &str, plugin_id: &str) -> PluginListState {
         .or_else(|| v.get("plugins").and_then(Value::as_array));
 
     let mut state = PluginListState {
-        provenance_diagnostic_messages: parse_provenance_diagnostics(&v, plugin_id),
+        provenance_warning_detected: has_provenance_diagnostics(&v, plugin_id),
         ..Default::default()
     };
-    state.provenance_warning_detected = !state.provenance_diagnostic_messages.is_empty();
 
     let Some(arr) = arr_opt else {
         return state;
@@ -163,12 +160,11 @@ fn parse_json_value(raw: &str) -> Option<Value> {
     None
 }
 
-fn parse_provenance_diagnostics(root: &Value, plugin_id: &str) -> Vec<String> {
+fn has_provenance_diagnostics(root: &Value, plugin_id: &str) -> bool {
     let Some(diagnostics) = root.get("diagnostics").and_then(Value::as_array) else {
-        return Vec::new();
+        return false;
     };
 
-    let mut matches = Vec::new();
     for diagnostic in diagnostics {
         let Some(message) = diagnostic.get("message").and_then(Value::as_str) else {
             continue;
@@ -179,9 +175,9 @@ fn parse_provenance_diagnostics(root: &Value, plugin_id: &str) -> Vec<String> {
         if !is_provenance_warning_message(message) {
             continue;
         }
-        matches.push(message.to_string());
+        return true;
     }
-    matches
+    false
 }
 
 fn diagnostic_targets_plugin(diagnostic: &Value, plugin_id: &str) -> bool {

@@ -70,8 +70,8 @@ moon update
 3. Supports `--check` and `--dry-run`.
 4. Attempts OpenClaw plugin registry/load alignment before strict post-update
    verification.
-4. Runs `moon install` and `moon verify --strict` after install.
-5. Preserves existing `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`.
+5. Runs `moon install` and `moon verify --strict` after install.
+6. Preserves existing `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`.
 
 Manual source reinstall path:
 
@@ -205,9 +205,9 @@ Exit codes:
    stale or autostart state is inconsistent.
 2. `verify --strict` fails hard when runtime/plugin diagnostics are unhealthy.
 3. `verify` defaults to concise summary output; use `--verbose` for full status detail.
-3. `distill --mode norm` auto-selects a pending `$MOON_HOME/mlib/*.md` file if
+4. `distill --mode norm` auto-selects a pending `$MOON_HOME/mlib/*.md` file if
    `--archive` is omitted.
-4. `watch --daemon` is blocked from development binaries (`target/debug` or
+5. `watch --daemon` is blocked from development binaries (`target/debug` or
    `target/release` path) for safety; use installed binary mode.
 
 ## Common Workflows
@@ -258,8 +258,9 @@ config, including:
 5. token/character defaults (`maxTokens`, `maxChars`, `maxRetainedBytes`,
    tool read limits)
 
-`moon verify --strict` treats `openclaw plugins list --json` diagnostics as
-authoritative.
+`moon verify --strict` uses `openclaw plugins info moon --json` as the primary
+runtime signal and falls back to `openclaw plugins list --json` diagnostics
+when needed.
 
 ## macOS Autostart Notes
 

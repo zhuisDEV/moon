@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- `verify` concise mode now reports the true count of suppressed `status`
+  details (instead of total status details).
+- `status` OpenClaw registry/load issue text now reflects `plugins info` as the
+  primary source with `plugins list` fallback.
+- Simplified plugin verify internals by removing retained-but-unused provenance
+  message collections.
+
+### Docs
+
+- Fixed numbering drift in `README.md` command notes/upgrade sections.
+- Clarified `verify --strict` source preference (`plugins info` primary,
+  `plugins list` fallback).
+
 ## [1.0.8] - 2026-03-28
 
 ### Fixed
