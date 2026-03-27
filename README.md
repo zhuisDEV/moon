@@ -142,6 +142,7 @@ cooldown_secs = 60
 [distill]
 max_per_cycle = 3
 residential_timezone = "UTC"
+syns_trigger_time_local = "00:00"
 topic_discovery = true
 
 [embed]

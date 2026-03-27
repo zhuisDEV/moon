@@ -51,6 +51,8 @@ pub struct MoonDistillConfig {
     pub max_per_cycle: u64,
     #[serde(default = "default_residential_timezone")]
     pub residential_timezone: String,
+    #[serde(default = "default_syns_trigger_time_local")]
+    pub syns_trigger_time_local: String,
     #[serde(default)]
     pub topic_discovery: bool,
     #[serde(default)]
@@ -65,11 +67,16 @@ fn default_residential_timezone() -> String {
     "UTC".to_string()
 }
 
+fn default_syns_trigger_time_local() -> String {
+    "00:00".to_string()
+}
+
 impl Default for MoonDistillConfig {
     fn default() -> Self {
         Self {
             max_per_cycle: 1,
             residential_timezone: "UTC".to_string(),
+            syns_trigger_time_local: default_syns_trigger_time_local(),
             topic_discovery: false,
             chunk_bytes: None,
             max_chunks: None,
@@ -277,6 +284,20 @@ fn normalize_embed_mode(raw: &str) -> String {
     }
 }
 
+pub fn parse_syns_trigger_time_local(raw: &str) -> Option<(u32, u32)> {
+    let trimmed = raw.trim();
+    let (hour_raw, minute_raw) = trimmed.split_once(':')?;
+    if hour_raw.len() != 2 || minute_raw.len() != 2 {
+        return None;
+    }
+    let hour = hour_raw.parse::<u32>().ok()?;
+    let minute = minute_raw.parse::<u32>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some((hour, minute))
+}
+
 pub fn resolve_hot_collection_lifecycle_policy_for_diagnostics() -> (
     MoonHotCollectionLifecycleMode,
     MoonHotCollectionLifecycleCommandMode,
@@ -308,6 +329,11 @@ fn validate(cfg: &MoonConfig) -> Result<()> {
     }
     if cfg.distill.max_per_cycle == 0 {
         return Err(anyhow!("invalid distill max per cycle: must be >= 1"));
+    }
+    if parse_syns_trigger_time_local(&cfg.distill.syns_trigger_time_local).is_none() {
+        return Err(anyhow!(
+            "invalid distill syns_trigger_time_local: use HH:MM in 24-hour format"
+        ));
     }
     if let Some(max_chunks) = cfg.distill.max_chunks
         && max_chunks == 0
@@ -720,6 +746,47 @@ lifecycle_mode = "disabled"
         assert_eq!(
             cfg.hot_collection.lifecycle_mode,
             super::MoonHotCollectionLifecycleMode::Disabled
+        );
+    }
+
+    #[test]
+    fn moon_toml_accepts_distill_syns_trigger_time_local() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[distill]
+syns_trigger_time_local = "09:30"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let cfg = load_config().expect("load config");
+        assert_eq!(cfg.distill.syns_trigger_time_local, "09:30");
+    }
+
+    #[test]
+    fn invalid_distill_syns_trigger_time_local_is_rejected() {
+        let _lock = TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = tempdir().expect("tempdir");
+        let moon_home = tmp.path().join("moon-home");
+        std::fs::create_dir_all(&moon_home).expect("mkdir moon home");
+        let _home = ScopedEnvVar::set("MOON_HOME", &moon_home.display().to_string());
+        std::fs::write(
+            moon_home.join("moon.toml"),
+            r#"[distill]
+syns_trigger_time_local = "24:00"
+"#,
+        )
+        .expect("write moon.toml");
+
+        let err = load_config().expect_err("invalid syns trigger time should fail");
+        assert!(
+            format!("{err:#}").contains("syns_trigger_time_local"),
+            "{err:#}"
         );
     }
 

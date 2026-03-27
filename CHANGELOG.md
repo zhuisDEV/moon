@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [1.0.6] - 2026-03-28
+
+### Added
+
+- Added `distill.syns_trigger_time_local` (`HH:MM`, 24-hour local time) so
+  `moon.toml` can set the daily watcher SYNS trigger time.
+
+### Fixed
+
+- Watcher SYNS scheduling now honors configured local trigger time while
+  preserving once-per-day execution guardrails.
+- `moon config --show` now reports `distill.syns_trigger_time_local`.
+- Aligned release metadata so crate + plugin package + plugin runtime ship as
+  `v1.0.6`.
+
+### Docs
+
+- Updated `moon.toml.example` and `README.md` baseline config with
+  `distill.syns_trigger_time_local`.
+
 ## [1.0.5] - 2026-03-20
 
 ### Added

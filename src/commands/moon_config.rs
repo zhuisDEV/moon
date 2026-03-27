@@ -56,6 +56,10 @@ pub fn run(opts: &MoonConfigOptions) -> Result<CommandReport> {
             cfg.distill.residential_timezone
         ));
         report.detail(format!(
+            "distill.syns_trigger_time_local={}",
+            cfg.distill.syns_trigger_time_local
+        ));
+        report.detail(format!(
             "distill.topic_discovery={}",
             cfg.distill.topic_discovery
         ));

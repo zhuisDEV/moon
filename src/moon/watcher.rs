@@ -1,6 +1,7 @@
 use crate::moon::audit;
 use crate::moon::config::{
     MoonHotCollectionLifecycleCommandMode, MoonHotCollectionLifecycleMode, load_config,
+    parse_syns_trigger_time_local,
 };
 use crate::moon::daemon_lock::{DaemonLockPayload, acquire_daemon_lock};
 use crate::moon::distill::{
@@ -281,6 +282,11 @@ fn parse_residential_tz(cfg: &crate::moon::config::MoonConfig) -> Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+fn syns_trigger_time_local(cfg: &crate::moon::config::MoonConfig) -> (u32, u32) {
+    parse_syns_trigger_time_local(&cfg.distill.syns_trigger_time_local)
+        .expect("validated distill.syns_trigger_time_local")
+}
+
 fn day_key_for_epoch_in_timezone(epoch_secs: u64, tz: Tz) -> String {
     let dt = match tz.timestamp_opt(epoch_secs as i64, 0) {
         LocalResult::Single(v) => v,
@@ -298,12 +304,21 @@ fn previous_day_key_for_epoch_in_timezone(epoch_secs: u64, tz: Tz) -> String {
     previous_day.format("%Y-%m-%d").to_string()
 }
 
-fn syns_due_now(state: &crate::moon::state::MoonState, now_epoch_secs: u64, tz: Tz) -> bool {
+fn syns_due_now(
+    state: &crate::moon::state::MoonState,
+    now_epoch_secs: u64,
+    tz: Tz,
+    trigger_hour: u32,
+    trigger_minute: u32,
+) -> bool {
     let now_local = match tz.timestamp_opt(now_epoch_secs as i64, 0) {
         LocalResult::Single(v) => v,
         _ => return false,
     };
-    if now_local.hour() != 0 {
+    if now_local.hour() != trigger_hour {
+        return false;
+    }
+    if now_local.minute() < trigger_minute {
         return false;
     }
     let today_key = now_local.format("%Y-%m-%d").to_string();
@@ -340,6 +355,7 @@ pub fn run_once_with_options(run_opts: WatchRunOptions) -> Result<WatchCycleOutc
     let mut state = load(&paths)?;
     let now_epoch = now_epoch_secs()?;
     let tz = parse_residential_tz(&cfg);
+    let (syns_trigger_hour, syns_trigger_minute) = syns_trigger_time_local(&cfg);
 
     let pending_raw = pending_raw_sessions(&paths, &state)?;
     let pending_raw_count = pending_raw.len();
@@ -498,7 +514,13 @@ pub fn run_once_with_options(run_opts: WatchRunOptions) -> Result<WatchCycleOutc
         }
     }
 
-    let syns_due = syns_due_now(&state, now_epoch, tz);
+    let syns_due = syns_due_now(
+        &state,
+        now_epoch,
+        tz,
+        syns_trigger_hour,
+        syns_trigger_minute,
+    );
     let mut syns_result = None;
     if syns_due {
         let yesterday_key = previous_day_key_for_epoch_in_timezone(now_epoch, tz);

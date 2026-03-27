@@ -139,7 +139,30 @@ fn write_moon_env(moon_home: &Path) {
 }
 
 fn write_moon_config(moon_home: &Path, lifecycle_mode: &str, lifecycle_command_mode: Option<&str>) {
-    let mut config = format!("[hot_collection]\nlifecycle_mode = \"{lifecycle_mode}\"\n");
+    write_moon_config_with_syns_trigger_time_local(
+        moon_home,
+        lifecycle_mode,
+        lifecycle_command_mode,
+        None,
+    );
+}
+
+fn write_moon_config_with_syns_trigger_time_local(
+    moon_home: &Path,
+    lifecycle_mode: &str,
+    lifecycle_command_mode: Option<&str>,
+    syns_trigger_time_local: Option<&str>,
+) {
+    let mut config = String::new();
+    if let Some(trigger_time_local) = syns_trigger_time_local {
+        config.push_str("[distill]\n");
+        config.push_str(&format!(
+            "syns_trigger_time_local = \"{trigger_time_local}\"\n\n"
+        ));
+    }
+    config.push_str(&format!(
+        "[hot_collection]\nlifecycle_mode = \"{lifecycle_mode}\"\n"
+    ));
     if let Some(command_mode) = lifecycle_command_mode {
         config.push_str(&format!("lifecycle_command_mode = \"{command_mode}\"\n"));
     }
@@ -419,6 +442,120 @@ fn moon_watch_once_runs_midnight_syns_from_yesterday_and_memory() {
     let state_raw =
         fs::read_to_string(moon_home.join("state/moon_state.json")).expect("read state");
     assert!(state_raw.contains("\"last_syns_trigger_epoch_secs\":"));
+}
+
+#[test]
+fn moon_watch_once_runs_syns_at_configured_local_time() {
+    let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon");
+    let sessions_dir = tmp.path().join("sessions");
+    fs::create_dir_all(moon_home.join("memory")).expect("mkdir memory");
+    fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
+    fs::create_dir_all(moon_home.join("state")).expect("mkdir state");
+    fs::create_dir_all(&sessions_dir).expect("mkdir sessions");
+    write_moon_env(&moon_home);
+    write_moon_config_with_syns_trigger_time_local(&moon_home, "strict", None, Some("09:30"));
+
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("epoch")
+        .as_secs();
+    let now_utc = Utc
+        .timestamp_opt(now_epoch as i64, 0)
+        .single()
+        .expect("utc timestamp");
+    let yesterday = (now_utc.date_naive() - ChronoDuration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let yesterday_file = moon_home.join("memory").join(format!("{yesterday}.md"));
+    let memory_file = moon_home.join("MEMORY.md");
+    fs::write(
+        &yesterday_file,
+        "# Daily Memory\n<!-- moon_memory_format: conversation_v1 -->\n\n## Session y1\n**User:** Keep workflow simple.\n**Assistant:** Use one path.\n",
+    )
+    .expect("write yesterday memory");
+    fs::write(
+        &memory_file,
+        "# MEMORY\n\n## Durable\n- Keep summaries concise.\n",
+    )
+    .expect("write memory file");
+
+    let seed_state = "{\n  \"schema_version\": 3,\n  \"last_heartbeat_epoch_secs\": 0,\n  \"last_archive_trigger_epoch_secs\": null,\n  \"last_compaction_trigger_epoch_secs\": null,\n  \"last_distill_trigger_epoch_secs\": null,\n  \"last_syns_trigger_epoch_secs\": null,\n  \"last_embed_trigger_epoch_secs\": null,\n  \"last_session_id\": null,\n  \"last_usage_ratio\": null,\n  \"last_provider\": null,\n  \"distilled_archives\": {},\n  \"embedded_projections\": {},\n  \"inbound_seen_files\": {}\n}\n".to_string();
+    fs::write(moon_home.join("state/moon_state.json"), seed_state).expect("write state");
+
+    let fake_before_epoch = now_utc
+        .date_naive()
+        .and_hms_opt(9, 29, 0)
+        .expect("09:29")
+        .and_utc()
+        .timestamp() as u64;
+
+    let qmd = tmp.path().join("qmd");
+    write_fake_qmd(&qmd);
+    let openclaw = tmp.path().join("openclaw");
+    write_fake_openclaw(&openclaw);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
+        .env("QMD_BIN", &qmd)
+        .env("OPENCLAW_BIN", &openclaw)
+        .env("MOON_RESIDENTIAL_TIMEZONE", "UTC")
+        .env(
+            "MOON_WATCH_FAKE_NOW_EPOCH_SECS",
+            fake_before_epoch.to_string(),
+        )
+        .arg("watch")
+        .arg("--once")
+        .assert()
+        .success()
+        .stdout(contains("syns.due=false"));
+
+    let before_raw =
+        fs::read_to_string(moon_home.join("state/moon_state.json")).expect("read state");
+    let before_state: Value = serde_json::from_str(&before_raw).expect("parse state");
+    assert_eq!(
+        before_state
+            .get("last_syns_trigger_epoch_secs")
+            .and_then(Value::as_u64),
+        None
+    );
+
+    let fake_trigger_epoch = now_utc
+        .date_naive()
+        .and_hms_opt(9, 30, 0)
+        .expect("09:30")
+        .and_utc()
+        .timestamp() as u64;
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
+        .env("QMD_BIN", &qmd)
+        .env("OPENCLAW_BIN", &openclaw)
+        .env("MOON_RESIDENTIAL_TIMEZONE", "UTC")
+        .env("MOON_WISDOM_PROVIDER", "local")
+        .env(
+            "MOON_WATCH_FAKE_NOW_EPOCH_SECS",
+            fake_trigger_epoch.to_string(),
+        )
+        .arg("watch")
+        .arg("--once")
+        .assert()
+        .success()
+        .stdout(contains("syns.due=true"));
+
+    let state_raw =
+        fs::read_to_string(moon_home.join("state/moon_state.json")).expect("read state");
+    let state: Value = serde_json::from_str(&state_raw).expect("parse state");
+    assert!(
+        state
+            .get("last_syns_trigger_epoch_secs")
+            .and_then(Value::as_u64)
+            .is_some()
+    );
 }
 
 #[test]

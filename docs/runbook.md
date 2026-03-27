@@ -138,6 +138,12 @@ Run one watcher cycle:
 moon watch --once
 ```
 
+Scheduling note:
+
+1. Daily watcher SYNS trigger uses local time from
+   `distill.syns_trigger_time_local` (`HH:MM`) in `moon.toml`.
+2. Timezone for that local trigger is `distill.residential_timezone`.
+
 Dry-run watcher cycle:
 
 ```bash
