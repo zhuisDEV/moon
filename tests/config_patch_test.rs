@@ -33,8 +33,13 @@ fn patch_respects_existing_values_unless_forced() {
         r#"{
   "agents": {"defaults": {"compaction": {"reserveTokensFloor": 123}}},
   "plugins": {
+    "slots": {"memory": "memory-core"},
     "entries": {
-      "moon": {"config": {"maxTokens": 999}}
+      "moon": {
+        "config": {
+          "maxTokens": 999
+        }
+      }
     }
   }
 }"#,
@@ -79,6 +84,14 @@ fn patch_respects_existing_values_unless_forced() {
     assert_eq!(
         cfg_1
             .get("plugins")
+            .and_then(|v| v.get("slots"))
+            .and_then(|v| v.get("memory"))
+            .and_then(Value::as_str),
+        Some("none")
+    );
+    assert_eq!(
+        cfg_1
+            .get("plugins")
             .and_then(|v| v.get("entries"))
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("config"))
@@ -110,9 +123,10 @@ fn patch_respects_existing_values_unless_forced() {
         cfg_1
             .get("agents")
             .and_then(|v| v.get("defaults"))
-            .and_then(|v| v.get("contextTokens"))
-            .and_then(Value::as_i64),
-        None
+            .and_then(|v| v.get("memorySearch"))
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
     );
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
@@ -151,8 +165,17 @@ fn patch_respects_existing_values_unless_forced() {
         cfg_2
             .get("agents")
             .and_then(|v| v.get("defaults"))
-            .and_then(|v| v.get("contextTokens"))
-            .and_then(Value::as_i64),
-        None
+            .and_then(|v| v.get("memorySearch"))
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        cfg_2
+            .get("plugins")
+            .and_then(|v| v.get("slots"))
+            .and_then(|v| v.get("memory"))
+            .and_then(Value::as_str),
+        Some("none")
     );
 }

@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 
 use crate::commands::CommandReport;
+use crate::commands::status::report_openclaw_memory_contract;
 use crate::moon::assemble::output_path as assembly_output_path;
 use crate::moon::config::{
     MoonHotCollectionLifecycleMode, SECRET_ENV_KEYS, masked_env_secret,
@@ -14,6 +15,10 @@ use crate::moon::daemon_lock::{daemon_lock_path, read_daemon_lock_payload};
 use crate::moon::paths::resolve_paths;
 use crate::moon::qmd;
 use crate::moon::state::{load, state_file_path};
+use crate::openclaw::config::{
+    inspect_moon_owned_memory_contract, read_config_value as read_openclaw_config_value,
+};
+use crate::openclaw::paths::resolve_paths as resolve_openclaw_paths;
 
 fn optional_text(value: Option<&str>) -> &str {
     value.unwrap_or("none")
@@ -96,6 +101,16 @@ pub fn run() -> Result<CommandReport> {
         "openclaw_sessions_dir={}",
         paths.openclaw_sessions_dir.display()
     ));
+    let openclaw_paths = resolve_openclaw_paths()?;
+    let openclaw_cfg = read_openclaw_config_value(&openclaw_paths)?;
+    report.detail(format!(
+        "openclaw_config_path={}",
+        openclaw_paths.config_path.display()
+    ));
+    report_openclaw_memory_contract(
+        &inspect_moon_owned_memory_contract(&openclaw_cfg),
+        &mut report,
+    );
     report.detail(format!("qmd_bin={}", paths.qmd_bin.display()));
     report.detail(format!("qmd_db={}", paths.qmd_db.display()));
     report.detail(format!(

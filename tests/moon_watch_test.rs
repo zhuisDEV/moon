@@ -188,6 +188,7 @@ fn moon_watch_once_uses_moon_state_file_override() {
     fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
     fs::create_dir_all(&sessions_dir).expect("mkdir sessions");
     write_moon_env(&moon_home);
+    write_moon_config_with_syns_trigger_time_local(&moon_home, "degrade", None, Some("23:59"));
 
     let qmd = tmp.path().join("qmd");
     write_fake_qmd(&qmd);
@@ -203,6 +204,7 @@ fn moon_watch_once_uses_moon_state_file_override() {
         .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
         .env("QMD_BIN", &qmd)
         .env("OPENCLAW_BIN", &openclaw)
+        .env("MOON_WATCH_FAKE_NOW_EPOCH_SECS", "10000")
         .arg("watch")
         .arg("--once")
         .assert()
@@ -258,6 +260,7 @@ fn moon_watch_once_distills_pending_mlib_docs() {
     fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
     fs::create_dir_all(&sessions_dir).expect("mkdir sessions");
     write_moon_env(&moon_home);
+    write_moon_config_with_syns_trigger_time_local(&moon_home, "degrade", None, Some("23:59"));
 
     fs::write(
         mlib_dir.join("fresh.md"),
@@ -278,6 +281,7 @@ fn moon_watch_once_distills_pending_mlib_docs() {
         .env("OPENCLAW_BIN", &openclaw)
         .env("MOON_DISTILL_PROVIDER", "local")
         .env("MOON_DISTILL_MAX_PER_CYCLE", "1")
+        .env("MOON_WATCH_FAKE_NOW_EPOCH_SECS", "10000")
         .arg("watch")
         .arg("--once")
         .assert()
@@ -303,6 +307,7 @@ fn moon_watch_once_projects_and_embeds_pending_library_maintenance() {
     fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
     fs::create_dir_all(&sessions_dir).expect("mkdir sessions");
     write_moon_env(&moon_home);
+    write_moon_config_with_syns_trigger_time_local(&moon_home, "degrade", None, Some("23:59"));
 
     let raw_path = raw_dir.join("session-cleanse.jsonl");
     fs::write(
@@ -324,6 +329,7 @@ fn moon_watch_once_projects_and_embeds_pending_library_maintenance() {
         .env("QMD_BIN", &qmd)
         .env("OPENCLAW_BIN", &openclaw)
         .env("MOON_DISTILL_PROVIDER", "local")
+        .env("MOON_WATCH_FAKE_NOW_EPOCH_SECS", "10000")
         .arg("watch")
         .arg("--once")
         .assert()
@@ -626,7 +632,7 @@ fn moon_watch_once_strict_mode_allows_degraded_library_embed_result() {
     fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
     fs::create_dir_all(&sessions_dir).expect("mkdir sessions");
     write_moon_env(&moon_home);
-    write_moon_config(&moon_home, "strict", None);
+    write_moon_config_with_syns_trigger_time_local(&moon_home, "strict", None, Some("23:59"));
 
     fs::write(
         raw_dir.join("session-lib.jsonl"),
@@ -646,6 +652,7 @@ fn moon_watch_once_strict_mode_allows_degraded_library_embed_result() {
         .env("QMD_BIN", &qmd)
         .env("OPENCLAW_BIN", &openclaw)
         .env("MOON_DISTILL_PROVIDER", "local")
+        .env("MOON_WATCH_FAKE_NOW_EPOCH_SECS", "10000")
         .arg("watch")
         .arg("--once")
         .assert()

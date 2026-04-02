@@ -23,6 +23,13 @@ pub struct ConfigPatchOutcome {
     pub removed_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MoonOwnedMemoryContractSnapshot {
+    pub memory_slot: Option<String>,
+    pub resolved_memory_slot: String,
+    pub memory_search_enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfigPatchOptions {
     pub force: bool,
@@ -406,6 +413,49 @@ pub fn ensure_plugin_runtime_config(
         root,
         &prefix,
         &["compactFallbackOnSkip"],
+        Value::from(false),
+        true,
+        &mut outcome,
+    );
+
+    outcome
+}
+
+pub fn inspect_moon_owned_memory_contract(root: &Value) -> MoonOwnedMemoryContractSnapshot {
+    let memory_slot = root
+        .get("plugins")
+        .and_then(|value| value.get("slots"))
+        .and_then(|value| value.get("memory"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let memory_search_enabled = root
+        .get("agents")
+        .and_then(|value| value.get("defaults"))
+        .and_then(|value| value.get("memorySearch"))
+        .and_then(|value| value.get("enabled"))
+        .and_then(Value::as_bool);
+
+    MoonOwnedMemoryContractSnapshot {
+        resolved_memory_slot: memory_slot.as_deref().unwrap_or("memory-core").to_string(),
+        memory_slot,
+        memory_search_enabled,
+    }
+}
+
+pub fn ensure_moon_owned_memory_contract(root: &mut Value) -> ConfigPatchOutcome {
+    let mut outcome = ConfigPatchOutcome::default();
+
+    set_path_if_absent_or_forced(
+        root,
+        &["plugins", "slots", "memory"],
+        Value::from("none"),
+        true,
+        &mut outcome,
+    );
+    set_path_if_absent_or_forced(
+        root,
+        &["agents", "defaults", "memorySearch", "enabled"],
         Value::from(false),
         true,
         &mut outcome,

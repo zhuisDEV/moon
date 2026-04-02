@@ -82,6 +82,7 @@ Execution note:
 1. `context-engine` is the short-lived normal-path controller for active context preparation.
 2. It runs `record` first, triggers `cleanse` only when policy requires it, and persists the assembled context window.
 3. Native OpenClaw takeover now depends on the plugin slot selecting `moon` (`plugins.slots.contextEngine = "moon"`), which `moon install` writes automatically.
+4. Moon-owned installs also pin the OpenClaw memory contract to `plugins.slots.memory = "none"` and `agents.defaults.memorySearch.enabled = false`.
 
 Run L1 normalisation:
 
@@ -189,3 +190,4 @@ moon restart
 4. If a mutating command fails with an out-of-bounds error, run from your workspace tree or use `--allow-out-of-bounds`.
 5. Optional env default: set `MOON_ALLOW_OUT_OF_BOUNDS=1` (truthy: `1`, `true`, `yes`, `on`) to apply the same bypass for that process environment.
 6. If OpenClaw cannot find Moon memory paths, run `moon install`, then `moon verify --strict`, and check `plugins.entries.moon.config.memoryDir` / `memoryFile`.
+7. If `moon status` reports memory drift, inspect `plugins.slots.memory` and `agents.defaults.memorySearch.enabled` in `$OPENCLAW_CONFIG_PATH`.

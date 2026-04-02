@@ -101,6 +101,13 @@ fn install_creates_plugin_and_stage2_config_entries() {
     );
     assert_eq!(
         cfg.get("plugins")
+            .and_then(|v| v.get("slots"))
+            .and_then(|v| v.get("memory"))
+            .and_then(Value::as_str),
+        Some("none")
+    );
+    assert_eq!(
+        cfg.get("plugins")
             .and_then(|v| v.get("entries"))
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("config"))
@@ -209,10 +216,47 @@ fn install_creates_plugin_and_stage2_config_entries() {
     assert_eq!(
         cfg.get("agents")
             .and_then(|v| v.get("defaults"))
-            .and_then(|v| v.get("contextTokens"))
-            .and_then(Value::as_i64),
-        None
+            .and_then(|v| v.get("memorySearch"))
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool),
+        Some(false)
     );
+}
+
+#[test]
+fn install_followed_by_strict_verify_passes_with_moon_owned_memory_contract() {
+    let tmp = tempdir().expect("tempdir");
+    let state_dir = tmp.path().join("state");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
+    let config_path = state_dir.join("openclaw.json");
+    fs::write(&config_path, "{}\n").expect("write config");
+
+    let fake_openclaw = tmp.path().join("openclaw");
+    let log_path = tmp.path().join("openclaw.log");
+    write_fake_openclaw(&fake_openclaw, &log_path);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_BIN", &fake_openclaw)
+        .arg("install")
+        .assert()
+        .success();
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_BIN", &fake_openclaw)
+        .args(["verify", "--strict"])
+        .assert()
+        .success();
 }
 
 #[test]

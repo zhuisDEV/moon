@@ -253,14 +253,17 @@ config, including:
 
 1. `plugins.installs.moon.source|sourcePath|installPath`
 2. `plugins.slots.contextEngine = "moon"`
-3. `plugins.entries.moon.config.moonPath|moonHome|memoryDir|memoryFile`
-4. plugin fallback keys (`fallbackMode`, `compactFallbackOnSkip`)
-5. token/character defaults (`maxTokens`, `maxChars`, `maxRetainedBytes`,
+3. `plugins.slots.memory = "none"`
+4. `agents.defaults.memorySearch.enabled = false`
+5. `plugins.entries.moon.config.moonPath|moonHome|memoryDir|memoryFile`
+6. plugin fallback keys (`fallbackMode`, `compactFallbackOnSkip`)
+7. token/character defaults (`maxTokens`, `maxChars`, `maxRetainedBytes`,
    tool read limits)
 
 `moon verify --strict` uses `openclaw plugins info moon --json` as the primary
 runtime signal and falls back to `openclaw plugins list --json` diagnostics
-when needed.
+when needed. `moon status` reports the resolved OpenClaw memory slot and legacy
+memory-search state so drift is visible without opening OpenClaw directly.
 
 ## macOS Autostart Notes
 
@@ -278,7 +281,7 @@ missing.
 1. `required env file missing ... $MOON_HOME/.env`
    - Ensure `MOON_HOME` is what you expect.
    - Ensure `$MOON_HOME/.env` exists and is readable.
-2. `moon status` reports stale daemon lock
+2. `moon status` reports stale daemon lock or OpenClaw memory drift
    - Run `moon restart`.
    - If needed: `moon stop` then `moon restart`.
 3. Verify/provenance failures

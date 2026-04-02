@@ -80,6 +80,26 @@ fn status_reports_latest_assembly_artifact_from_state() {
     let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
     let sessions_dir = fs::canonicalize(&sessions_dir).expect("canonicalize sessions");
     let qmd_bin = fs::canonicalize(&qmd_bin).expect("canonicalize qmd");
+    let openclaw_state_dir = tmp.path().join("openclaw-state");
+    fs::create_dir_all(&openclaw_state_dir).expect("mkdir openclaw state");
+    let openclaw_config_path = openclaw_state_dir.join("openclaw.json");
+    write_file(
+        &openclaw_config_path,
+        r#"{
+  "plugins": {
+    "slots": {
+      "memory": "none"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": false
+      }
+    }
+  }
+}"#,
+    );
 
     let session_id = "session-status";
     let assembly_path = moon_home.join("mce").join(format!("{session_id}.md"));
@@ -105,6 +125,8 @@ fn status_reports_latest_assembly_artifact_from_state() {
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
         .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &openclaw_state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &openclaw_config_path)
         .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
         .env("QMD_BIN", &qmd_bin)
         .arg("status")
@@ -121,6 +143,57 @@ fn status_reports_latest_assembly_artifact_from_state() {
         .stdout(contains("hot_collection.lifecycle_mode=degrade"))
         .stdout(contains("hot_collection.lifecycle_command_mode=primary"))
         .stdout(contains("hot_collection.lifecycle_capability=primary"));
+}
+
+#[test]
+fn status_reports_openclaw_memory_contract_drift() {
+    let tmp = tempdir().expect("tempdir");
+    let (moon_home, sessions_dir, qmd_bin) = setup_runtime_tree(tmp.path());
+    let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
+    let sessions_dir = fs::canonicalize(&sessions_dir).expect("canonicalize sessions");
+    let qmd_bin = fs::canonicalize(&qmd_bin).expect("canonicalize qmd");
+
+    let state_dir = tmp.path().join("openclaw-state");
+    fs::create_dir_all(&state_dir).expect("mkdir state dir");
+    let config_path = state_dir.join("openclaw.json");
+    write_file(
+        &config_path,
+        r#"{
+  "plugins": {
+    "slots": {
+      "contextEngine": "moon",
+      "memory": "memory-core"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": true
+      }
+    }
+  }
+}"#,
+    );
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
+        .env("QMD_BIN", &qmd_bin)
+        .arg("status")
+        .assert()
+        .failure()
+        .stdout(contains("plugins.slots.memory.raw=memory-core"))
+        .stdout(contains("plugins.slots.memory.resolved=memory-core"))
+        .stdout(contains("agents.defaults.memorySearch.enabled=true"))
+        .stdout(contains(
+            "plugins.slots.memory expected none, found memory-core",
+        ))
+        .stdout(contains(
+            "agents.defaults.memorySearch.enabled expected false, found true",
+        ));
 }
 
 #[test]
@@ -197,6 +270,26 @@ fn status_fails_when_daemon_lock_pid_is_stale() {
     let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
     let sessions_dir = fs::canonicalize(&sessions_dir).expect("canonicalize sessions");
     let qmd_bin = fs::canonicalize(&qmd_bin).expect("canonicalize qmd");
+    let openclaw_state_dir = tmp.path().join("openclaw-state");
+    fs::create_dir_all(&openclaw_state_dir).expect("mkdir openclaw state");
+    let openclaw_config_path = openclaw_state_dir.join("openclaw.json");
+    write_file(
+        &openclaw_config_path,
+        r#"{
+  "plugins": {
+    "slots": {
+      "memory": "none"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": false
+      }
+    }
+  }
+}"#,
+    );
 
     write_file(
         &moon_home.join("logs/moon-watch.daemon.lock"),
@@ -215,6 +308,8 @@ fn status_fails_when_daemon_lock_pid_is_stale() {
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())
         .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &openclaw_state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &openclaw_config_path)
         .env("OPENCLAW_SESSIONS_DIR", &sessions_dir)
         .env("QMD_BIN", &qmd_bin)
         .arg("status")

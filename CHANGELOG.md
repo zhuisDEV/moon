@@ -6,6 +6,22 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-04-02
+
+### Added
+
+- Added a Moon-owned OpenClaw memory contract in install/config repair:
+  - `plugins.slots.memory = "none"`
+  - `agents.defaults.memorySearch.enabled = false`
+- Added explicit memory-contract diagnostics in `status` and `moon status`:
+  - resolved memory slot reporting
+  - legacy memory-search state reporting
+  - exact-key drift issues for missing/stale values
+- Added regression coverage for:
+  - install-time stale memory contract repair
+  - strict verify failures for stale/missing memory contract
+  - `moon status` drift reporting and clean-config expectations
+
 ### Changed
 
 - `verify` concise mode now reports the true count of suppressed `status`
@@ -20,6 +36,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Fixed numbering drift in `README.md` command notes/upgrade sections.
 - Clarified `verify --strict` source preference (`plugins info` primary,
   `plugins list` fallback).
+- Documented Moon-owned OpenClaw memory contract behavior in `README.md` and
+  `docs/runbook.md`.
 
 ## [1.0.8] - 2026-03-28
 

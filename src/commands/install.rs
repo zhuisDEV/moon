@@ -14,8 +14,9 @@ use crate::commands::moon_stop;
 use crate::moon::config::load_context_policy_if_explicit_env;
 use crate::moon::state::state_file_path;
 use crate::openclaw::config::{
-    ConfigPatchOptions, apply_config_patches, ensure_plugin_enabled, ensure_plugin_install_record,
-    ensure_plugin_runtime_config, ensure_plugin_slot, read_config_value, write_config_atomic,
+    ConfigPatchOptions, apply_config_patches, ensure_moon_owned_memory_contract,
+    ensure_plugin_enabled, ensure_plugin_install_record, ensure_plugin_runtime_config,
+    ensure_plugin_slot, read_config_value, write_config_atomic,
 };
 use crate::openclaw::paths::resolve_paths;
 use crate::openclaw::plugin_install;
@@ -96,6 +97,7 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
         &current_exe,
         &moon_paths.moon_home,
     );
+    let memory_contract_patch = ensure_moon_owned_memory_contract(&mut cfg);
 
     for key in patch.inserted_paths {
         report.detail(format!("inserted {key}"));
@@ -130,12 +132,19 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     for key in runtime_patch.forced_paths {
         report.detail(format!("forced {key}"));
     }
+    for key in memory_contract_patch.inserted_paths {
+        report.detail(format!("inserted {key}"));
+    }
+    for key in memory_contract_patch.forced_paths {
+        report.detail(format!("forced {key}"));
+    }
 
     let changed = patch.changed
         || plugin_patch.changed
         || install_record_patch.changed
         || slot_patch.changed
         || runtime_patch.changed
+        || memory_contract_patch.changed
         || plugin.changed;
     if changed && opts.apply && !opts.dry_run {
         let path_written = write_config_atomic(&paths, &cfg)?;

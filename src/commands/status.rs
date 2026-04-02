@@ -9,7 +9,9 @@ use crate::commands::CommandReport;
 use crate::moon::config::{
     MoonContextCompactionAuthority, MoonContextWindowMode, load_context_policy_if_explicit_env,
 };
-use crate::openclaw::config;
+use crate::openclaw::config::{
+    self, MoonOwnedMemoryContractSnapshot, inspect_moon_owned_memory_contract,
+};
 use crate::openclaw::gateway;
 use crate::openclaw::paths::resolve_paths;
 use crate::openclaw::plugin_verify;
@@ -64,6 +66,48 @@ fn path_string(root: &Value, path: &[&str]) -> Option<String> {
 
 fn path_u64(root: &Value, path: &[&str]) -> Option<u64> {
     path_value(root, path).and_then(Value::as_u64)
+}
+
+fn optional_bool(value: Option<bool>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "missing".to_string())
+}
+
+pub fn report_openclaw_memory_contract(
+    snapshot: &MoonOwnedMemoryContractSnapshot,
+    report: &mut CommandReport,
+) {
+    report.detail(format!(
+        "plugins.slots.memory.raw={}",
+        snapshot.memory_slot.as_deref().unwrap_or("missing")
+    ));
+    report.detail(format!(
+        "plugins.slots.memory.resolved={}",
+        snapshot.resolved_memory_slot
+    ));
+    report.detail(format!(
+        "agents.defaults.memorySearch.enabled={}",
+        optional_bool(snapshot.memory_search_enabled)
+    ));
+
+    match snapshot.memory_slot.as_deref() {
+        None => report.issue(
+            "plugins.slots.memory missing; expected none in a Moon-owned install".to_string(),
+        ),
+        Some("none") => {}
+        Some(other) => report.issue(format!("plugins.slots.memory expected none, found {other}")),
+    }
+
+    match snapshot.memory_search_enabled {
+        Some(false) => {}
+        Some(true) => report
+            .issue("agents.defaults.memorySearch.enabled expected false, found true".to_string()),
+        None => report.issue(
+            "agents.defaults.memorySearch.enabled missing; expected false in a Moon-owned install"
+                .to_string(),
+        ),
+    }
 }
 
 fn install_record_snapshot(root: &Value, plugin_id: &str) -> InstallRecordSnapshot {
@@ -143,6 +187,7 @@ pub fn run() -> Result<CommandReport> {
 
     let cfg = config::read_config_value(&paths)?;
     let snapshot = config_snapshot(&cfg, &paths.plugin_id);
+    let memory_contract = inspect_moon_owned_memory_contract(&cfg);
     let install_snapshot = install_record_snapshot(&cfg, &paths.plugin_id);
     let context_policy = load_context_policy_if_explicit_env()?;
     let verify = plugin_verify::verify_plugin(&paths)?;
@@ -171,6 +216,7 @@ pub fn run() -> Result<CommandReport> {
         verify.assets_match_local
     ));
     report.detail(format!("plugin_enabled={}", snapshot.plugin_enabled));
+    report_openclaw_memory_contract(&memory_contract, &mut report);
     if let Some(slot) = path_value(&cfg, &["plugins", "slots", "contextEngine"]) {
         report.detail(format!(
             "plugins.slots.contextEngine={}",
