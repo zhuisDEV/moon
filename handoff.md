@@ -172,3 +172,21 @@
   - `dev-notes.md`
   - `mip-proposal.md`
   - `openclaw-moon-context-flow-report.md`
+
+## 2026-04-08 13:28 AEST
+
+- Polished `moon update` post-install plugin reporting after observing a false
+  `assets_match_local=false` during a successful `v1.0.10` upgrade.
+- Root cause:
+  - `moon update` begins under the old binary version
+  - after `cargo install`, the old in-process binary was still running
+    `align_openclaw_plugin_state(...)`
+  - that caused embedded old plugin assets to be compared against freshly
+    installed new plugin files
+- Fix:
+  - when update installs a new binary, plugin alignment reporting is now
+    deferred to the newly installed binary's `verify --strict` run
+  - in-process alignment remains unchanged for no-op update paths where no
+    reinstall occurs
+- Added unit coverage in `src/commands/update.rs` for the alignment-strategy
+  split.

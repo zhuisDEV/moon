@@ -57,6 +57,12 @@ enum UpdateTarget {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PluginAlignmentStrategy {
+    InProcess,
+    DeferredToInstalledBinary,
+}
+
 impl UpdateTarget {
     fn describe(&self) -> String {
         match self {
@@ -137,7 +143,21 @@ pub fn run(opts: &UpdateOptions) -> Result<CommandReport> {
     )?;
 
     if install_ok {
-        crate::commands::align_openclaw_plugin_state(&mut report, "update");
+        match plugin_alignment_strategy(should_install) {
+            PluginAlignmentStrategy::InProcess => {
+                crate::commands::align_openclaw_plugin_state(&mut report, "update");
+            }
+            PluginAlignmentStrategy::DeferredToInstalledBinary => {
+                report.detail(
+                    "openclaw.plugin_alignment.status=deferred reason=updated_binary_required"
+                        .to_string(),
+                );
+                report.detail(
+                    "openclaw.plugin_alignment.note=post-install plugin validation runs via the newly installed moon binary during verify --strict"
+                        .to_string(),
+                );
+            }
+        }
         let _ = run_moon_subcommand(
             &moon_bin,
             &moon_home,
@@ -160,6 +180,14 @@ fn resolve_target(channel: UpdateChannel) -> Result<UpdateTarget> {
     match channel {
         UpdateChannel::Main => Ok(UpdateTarget::Main),
         UpdateChannel::Stable => Ok(UpdateTarget::Stable(resolve_latest_stable_tag()?)),
+    }
+}
+
+fn plugin_alignment_strategy(should_install: bool) -> PluginAlignmentStrategy {
+    if should_install {
+        PluginAlignmentStrategy::DeferredToInstalledBinary
+    } else {
+        PluginAlignmentStrategy::InProcess
     }
 }
 
@@ -414,7 +442,8 @@ fn summarize_command_failure(output: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_file_snapshots, parse_semver, restore_file_snapshots, select_latest_release_tag,
+        PluginAlignmentStrategy, capture_file_snapshots, parse_semver, plugin_alignment_strategy,
+        restore_file_snapshots, select_latest_release_tag,
     };
     use crate::commands::CommandReport;
     use std::fs;
@@ -486,6 +515,22 @@ dddd refs/tags/not-a-release
         assert_eq!(
             fs::read_to_string(&toml_path).expect("read toml"),
             "generated = true\n"
+        );
+    }
+
+    #[test]
+    fn plugin_alignment_is_deferred_when_update_installs_new_binary() {
+        assert_eq!(
+            plugin_alignment_strategy(true),
+            PluginAlignmentStrategy::DeferredToInstalledBinary
+        );
+    }
+
+    #[test]
+    fn plugin_alignment_runs_in_process_when_no_install_occurs() {
+        assert_eq!(
+            plugin_alignment_strategy(false),
+            PluginAlignmentStrategy::InProcess
         );
     }
 }
