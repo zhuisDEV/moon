@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "moon"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "anyhow",
  "assert_cmd",

@@ -37,6 +37,11 @@ function assertStringIncludes(
   }
 }
 
+async function readPluginManifest() {
+  const manifestUrl = new URL("./openclaw.plugin.json", import.meta.url);
+  return JSON.parse(await Deno.readTextFile(manifestUrl));
+}
+
 function writeSessionFile(filePath: string) {
   const entries = [
     {
@@ -118,7 +123,7 @@ function createApi(
     },
     runtime: {
       system: {
-        async runCommandWithTimeout(
+        runCommandWithTimeout(
           argv: string[],
           opts: { timeoutMs: number },
         ) {
@@ -311,7 +316,10 @@ Deno.test("moon plugin requests OpenClaw fallback when Moon does not emit a clea
       "missing cleanse summary during compaction",
     );
     assertStringIncludes(errors.join("\n"), "session_id=session-1");
-    assertStringIncludes(errors.join("\n"), "reason=moon cleanse did not trigger");
+    assertStringIncludes(
+      errors.join("\n"),
+      "reason=moon cleanse did not trigger",
+    );
     assertStringIncludes(
       errors.join("\n"),
       "moon->openclaw fallback trigger=compact-skip",
@@ -351,12 +359,182 @@ Deno.test("moon plugin can keep primary-only compaction skip behavior when fallb
       force: false,
     });
 
-    assertEquals(result.ok, true, "disabled fallback should keep skip semantics");
+    assertEquals(
+      result.ok,
+      true,
+      "disabled fallback should keep skip semantics",
+    );
     assertEquals(result.compacted, false, "skip should not report compaction");
     assertStringIncludes(result.reason ?? "", "moon cleanse did not trigger");
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }
+});
+
+Deno.test("moon plugin assemble keeps routine Moon assembly out of systemPromptAddition", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const assemblyPath = `${tempDir}/assembly.md`;
+    await Deno.writeTextFile(
+      assemblyPath,
+      "# MOON Assembly Context\n\n## Control Summary\n- session_id: session-1\n",
+    );
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        "context_engine.cleanse_summary_path=none",
+        "context_engine.cleanse_reason=no-pressure-snapshot",
+      ],
+      issues: [],
+    });
+    const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+    const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+    const messages = [{
+      role: "user",
+      content: [{ type: "text", text: "hello" }],
+    }];
+    const result = await engine.assemble({
+      sessionId: "session-1",
+      messages,
+      tokenBudget: 20_000,
+    });
+
+    assertEquals(calls.length, 1, "assemble should invoke context-engine once");
+    assertEquals(Array.isArray(result.messages), true);
+    assertEquals(result.messages.length, 1);
+    assertEquals(
+      Object.prototype.hasOwnProperty.call(result, "systemPromptAddition"),
+      false,
+      "routine Moon assembly should not inject system prompt text",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const sessionFile = `${tempDir}/session.jsonl`;
+    const assemblyPath = `${tempDir}/assembly.md`;
+    const cleansePath = `${tempDir}/cleanse.md`;
+    writeSessionFile(sessionFile);
+
+    await Deno.writeTextFile(
+      assemblyPath,
+      [
+        "# MOON Assembly Context",
+        "",
+        "## Control Summary",
+        "- session_id: session-1",
+        "- cleanse_summary: present",
+        "",
+        "## Cleanse Summary",
+        "- Preserve the active Moon prompt boundary.",
+        "",
+      ].join("\n"),
+    );
+    await Deno.writeTextFile(
+      cleansePath,
+      [
+        "---",
+        "moon_cleanse: 1",
+        'session_id: "session-1"',
+        "---",
+        "",
+        "# Cleanse Summary",
+        "- Preserve the active Moon prompt boundary.",
+        "",
+      ].join("\n"),
+    );
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.cleanse_summary_path=${cleansePath}`,
+        "context_engine.cleanse_reason=forced",
+      ],
+      issues: [],
+    });
+    const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+    const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+    const compactResult = await engine.compact({
+      sessionId: "session-1",
+      sessionFile,
+      tokenBudget: 20_000,
+      currentTokenCount: 80_000,
+      force: true,
+    });
+
+    assertEquals(compactResult.ok, true, "compaction should succeed");
+    assertEquals(compactResult.compacted, true, "compaction should append");
+
+    const entries = __moonTest.parseJsonlEntries(
+      await Deno.readTextFile(sessionFile),
+    );
+    const lastEntry = entries[entries.length - 1];
+    assertEquals(lastEntry.type, "compaction");
+    assertStringIncludes(
+      lastEntry.summary,
+      "Preserve the active Moon prompt boundary.",
+      "cleanse summary should be preserved in transcript compaction entry",
+    );
+
+    const messages = [{
+      role: "user",
+      content: [{ type: "text", text: "continue" }],
+    }];
+    const assembleResult = await engine.assemble({
+      sessionId: "session-1",
+      messages,
+      tokenBudget: 20_000,
+    });
+
+    assertEquals(
+      Object.prototype.hasOwnProperty.call(
+        assembleResult,
+        "systemPromptAddition",
+      ),
+      false,
+      "assemble should not duplicate compaction summary in system prompt text",
+    );
+    assert(
+      !JSON.stringify(assembleResult).includes(
+        "Preserve the active Moon prompt boundary.",
+      ),
+      "assemble output should not surface the compaction summary text",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin manifest keeps maxAssemblyChars as a deprecated compatibility key", async () => {
+  const manifest = await readPluginManifest();
+  const properties = manifest?.configSchema?.properties ?? {};
+
+  assertEquals(
+    typeof properties.maxAssemblyChars,
+    "object",
+    "manifest should continue to accept legacy maxAssemblyChars config",
+  );
+  assertEquals(
+    properties.maxAssemblyChars.minimum,
+    1000,
+    "legacy maxAssemblyChars minimum should stay stable",
+  );
+  assertEquals(
+    properties.maxAssemblyChars.maximum,
+    200000,
+    "legacy maxAssemblyChars maximum should stay stable",
+  );
 });
 
 Deno.test("moon plugin falls back to base assembly output when context-engine fails", async () => {
@@ -369,7 +547,7 @@ Deno.test("moon plugin falls back to base assembly output when context-engine fa
     },
     runtime: {
       system: {
-        async runCommandWithTimeout(
+        runCommandWithTimeout(
           argv: string[],
           opts: { timeoutMs: number },
         ) {
@@ -391,7 +569,11 @@ Deno.test("moon plugin falls back to base assembly output when context-engine fa
     tokenBudget: 20_000,
   });
 
-  assertEquals(calls.length, 1, "assemble should still invoke context-engine once");
+  assertEquals(
+    calls.length,
+    1,
+    "assemble should still invoke context-engine once",
+  );
   assertEquals(Array.isArray(result.messages), true);
   assertEquals(result.messages.length, 1);
   assertEquals(

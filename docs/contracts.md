@@ -16,18 +16,42 @@ contracts.
 
 ## Control Rules
 
-1. MOON owns the normal-path context flow before model dispatch.
+1. MOON owns the normal-path context preparation flow before model dispatch.
 2. `record` always runs at a stable checkpoint.
 3. `cleanse` runs only when pressure policy requires compaction.
-4. `project` is deterministic background/deferred work and is not the same as `cleanse`.
-5. `assemble` is the pre-dispatch control boundary for the next active context window.
-6. Search and memory maintenance are downstream support systems, not the control plane.
+4. `project` is deterministic background/deferred work and is not the same as
+   `cleanse`.
+5. `assemble` is the pre-dispatch control boundary for the next active context
+   window.
+6. Search and memory maintenance are downstream support systems, not the control
+   plane.
+
+## OpenClaw Boundary
+
+Moon and OpenClaw have separate ownership boundaries.
+
+1. Moon owns:
+   - checkpointing
+   - conditional `cleanse`
+   - operator/debug assembly artifacts
+   - transcript `compaction` entry creation
+2. OpenClaw owns:
+   - final system prompt assembly
+   - message-history replay
+   - structured tool definitions
+   - provider dispatch
+3. Routine Moon context must not be reintroduced as dynamic system-prompt text
+   through `systemPromptAddition`.
+4. Moon compaction summaries must travel through transcript `compaction` entries
+   and replay downstream as `compactionSummary` message-history context.
 
 ## Controller Form
 
-1. `moon-context-engine` is short-lived and runs when OpenClaw needs the active context window prepared.
+1. `moon-context-engine` is short-lived and runs when OpenClaw needs the active
+   context window prepared.
 2. The watcher, if present, is a separate long-running maintenance worker.
-3. The watcher must not be described or treated as the normal-path context controller.
+3. The watcher must not be described or treated as the normal-path context
+   controller.
 
 ## Runtime Root
 
@@ -75,7 +99,8 @@ Rules:
 Purpose:
 
 1. transform raw session documents into Moon-managed projection markdown
-2. create the deterministic bridge between raw capture and downstream L1 memory work
+2. create the deterministic bridge between raw capture and downstream L1 memory
+   work
 
 Input contract:
 
@@ -112,7 +137,8 @@ Output contract:
 
 1. write `$MOON_HOME/cleanse/<session_id>.md`
 2. emit a compact recovery summary, not projection markdown
-3. preserve current goal, active work, decisions, blockers, and relevant evidence
+3. preserve current goal, active work, decisions, blockers, and relevant
+   evidence
 
 Policy anchors:
 
@@ -131,8 +157,9 @@ Rules:
 
 Purpose:
 
-1. compose the next model-dispatch context under MOON ownership
-2. define the exact boundary where MOON becomes the normal-path controller
+1. checkpoint and compose the next Moon operator artifact for the active window
+2. define the exact Moon-side control boundary before OpenClaw builds the final
+   provider-facing prompt envelope
 
 Input contract:
 
@@ -143,16 +170,24 @@ Input contract:
 
 Output contract:
 
-1. produce the final MOON-owned dispatch payload for the next active context window
-2. include the latest `cleanse` summary when compaction has run
-3. exclude bulk search receipts, embed logs, and low-signal transport noise
+1. write an operator/debug assembly artifact for the active window
+2. preserve the latest `cleanse` summary in that artifact when compaction has
+   run
+3. exclude bulk search receipts, embed logs, and low-signal transport noise from
+   model-facing prompt text
+4. avoid routine `systemPromptAddition` injection for normal Moon context
 
 Rules:
 
 1. `assemble` is the primary control boundary before model dispatch
-2. `assemble` must not delegate normal-path context ownership back to OpenClaw
-3. `assemble` must stay focused on prompt/context composition, not background maintenance
-4. fallback behavior must not be embedded into the normal-path `assemble` contract
+2. `assemble` must not treat the operator artifact as the final provider-facing
+   prompt
+3. `assemble` must stay focused on prompt/context composition, not background
+   maintenance
+4. fallback behavior must not be embedded into the normal-path `assemble`
+   contract
+5. normal-path Moon summary content should reach the model through the verified
+   transcript compaction lane, not through routine system-prompt injection
 
 ## Search Support Contracts
 
@@ -169,7 +204,7 @@ Rules:
 
 1. `embed` operates on `$MOON_HOME/mds/`
 2. `embed` is bounded maintenance work
-3. full embed receipts do not belong in active context assembly
+3. full embed receipts do not belong in model-facing prompt context
 
 ### `recall`
 

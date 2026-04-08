@@ -2,9 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on Keep a Changelog and this project follows Semantic Versioning.
+The format is based on Keep a Changelog and this project follows Semantic
+Versioning.
 
 ## [Unreleased]
+
+## [1.0.10] - 2026-04-08
+
+### Changed
+
+- Moon's OpenClaw context-engine path no longer injects the rich Moon assembly
+  artifact into routine `systemPromptAddition` during normal `assemble()`.
+- Moon `cleanse` summaries now rely on transcript `compaction` entries and the
+  downstream `compactionSummary` message-history lane instead of routine dynamic
+  system-prompt text.
+- Operator/debug assembly artifacts remain on disk while provider-facing prompt
+  context stays focused on compaction summaries.
+
+### Fixed
+
+- Restored legacy `maxAssemblyChars` plugin config acceptance as a deprecated
+  compatibility no-op so existing installs continue to validate after upgrade.
+- Removed the dead assembly-artifact read from the plugin assemble path now that
+  routine assembly is operator-only.
+
+### Docs
+
+- Updated `mip.md`, `README.md`, `docs/contracts.md`, `assets/plugin/README.md`,
+  `dev-notes.md`, and `RELEASE.md` to reflect the landed prompt-boundary
+  contract and release validation steps.
 
 ## [1.0.9] - 2026-04-02
 
@@ -123,7 +149,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Docs
 
 - Rewrote `SKILL.md` to a minimal runtime CLI guide for agents.
-- Added an explicit runtime-doc handoff to `$MOON_HOME/README.md` from `SKILL.md`.
+- Added an explicit runtime-doc handoff to `$MOON_HOME/README.md` from
+  `SKILL.md`.
 - Removed hardcoded absolute/home paths from repo documentation and replaced
   them with variable-based path forms.
 - Consolidated troubleshooting guidance flow so repo docs remain portable for
@@ -134,15 +161,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Fixed
 
 - Resolved strict lint warnings affecting macOS-gated imports and test paths.
-- Kept release metadata aligned so `main`, crate version, and plugin version
-  now ship together as `v1.0.3`.
+- Kept release metadata aligned so `main`, crate version, and plugin version now
+  ship together as `v1.0.3`.
 
 ## [1.0.2] - 2026-03-20
 
 ### Fixed
 
-- `moon` now resolves its runtime env file from `~/.moon/.env` when
-  `MOON_HOME` is unset or blank, matching the documented default runtime root.
+- `moon` now resolves its runtime env file from `~/.moon/.env` when `MOON_HOME`
+  is unset or blank, matching the documented default runtime root.
 - `moon stop` and `moon restart` now work from a normal shell without requiring
   an exported `MOON_HOME`, as long as `~/.moon/.env` exists.
 
@@ -151,8 +178,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Changed
 
 - Watcher daemon lifecycle now uses a real exclusive process lock for
-  `moon-watch.daemon.lock`, preventing duplicate daemon instances under the
-  same `MOON_HOME`.
+  `moon-watch.daemon.lock`, preventing duplicate daemon instances under the same
+  `MOON_HOME`.
 - Daemon startup now fails fast with a clear owner PID message when another
   watcher already holds the lock.
 - Daemon loop now records watcher cycle failures to `logs/audit.log`
@@ -197,5 +224,5 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Docs
 
 - Added release/support/governance docs and GitHub issue/PR templates.
-- Updated README and skill docs to align with final v1 architecture and
-  fallback behavior.
+- Updated README and skill docs to align with final v1 architecture and fallback
+  behavior.

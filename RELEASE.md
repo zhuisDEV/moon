@@ -18,10 +18,12 @@ Use this process for tagged public releases (for example `v1.0.0`).
    - `SECURITY.md`
    - `SUPPORT.md`
 4. Run validation:
+   - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json`
+   - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
    - `cargo fmt --check`
    - `cargo clippy --all-targets --all-features -- -D warnings`
    - `cargo test --all-targets --all-features`
-   - `deno test --allow-read --allow-write --allow-env assets/plugin/index.test.ts`
+   - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
 
 ## Tag and Publish
 

@@ -15,9 +15,26 @@ Moon has two runtime lanes:
 2. Maintenance lane (background/transitional): `moon watch` handles library
    projection/embed/distill maintenance cycles.
 
+## OpenClaw Prompt Boundary
+
+Moon does not own the final provider-facing prompt envelope.
+
+1. Moon owns checkpointing, conditional `cleanse`, operator-side assembly
+   artifacts, and transcript compaction entries.
+2. OpenClaw owns final system prompt assembly, message replay, tool definitions,
+   and provider dispatch.
+3. Routine Moon `assemble` no longer injects the rich Moon assembly artifact
+   into OpenClaw system-prompt text.
+4. Moon `cleanse` summaries reach the model through transcript `compaction`
+   entries, which OpenClaw replays as `compactionSummary` message-history
+   context.
+5. Indexing receipts, embed counters, projection paths, and operator telemetry
+   stay out of model-facing prompt text by default.
+
 Moon v1 command surface includes:
 
-1. Admin/bootstrap: `install`, `update`, `verify`, `repair`, `status`, `config`, `health`
+1. Admin/bootstrap: `install`, `update`, `verify`, `repair`, `status`, `config`,
+   `health`
 2. Runtime stages: `record`, `project`, `cleanse`, `assemble`, `context-engine`
 3. Search/memory: `recall`, `embed`, `distill`
 4. Watcher control: `watch`, `stop`, `restart`
@@ -204,7 +221,8 @@ Exit codes:
 1. `status` now includes daemon lock/runtime checks and can fail when lock is
    stale or autostart state is inconsistent.
 2. `verify --strict` fails hard when runtime/plugin diagnostics are unhealthy.
-3. `verify` defaults to concise summary output; use `--verbose` for full status detail.
+3. `verify` defaults to concise summary output; use `--verbose` for full status
+   detail.
 4. `distill --mode norm` auto-selects a pending `$MOON_HOME/mlib/*.md` file if
    `--archive` is omitted.
 5. `watch --daemon` is blocked from development binaries (`target/debug` or
@@ -257,12 +275,12 @@ config, including:
 4. `agents.defaults.memorySearch.enabled = false`
 5. `plugins.entries.moon.config.moonPath|moonHome|memoryDir|memoryFile`
 6. plugin fallback keys (`fallbackMode`, `compactFallbackOnSkip`)
-7. token/character defaults (`maxTokens`, `maxChars`, `maxRetainedBytes`,
-   tool read limits)
+7. token/character defaults (`maxTokens`, `maxChars`, `maxRetainedBytes`, tool
+   read limits)
 
 `moon verify --strict` uses `openclaw plugins info moon --json` as the primary
-runtime signal and falls back to `openclaw plugins list --json` diagnostics
-when needed. `moon status` reports the resolved OpenClaw memory slot and legacy
+runtime signal and falls back to `openclaw plugins list --json` diagnostics when
+needed. `moon status` reports the resolved OpenClaw memory slot and legacy
 memory-search state so drift is visible without opening OpenClaw directly.
 
 ## macOS Autostart Notes
@@ -393,10 +411,11 @@ rm -rf "${MOON_HOME:-$HOME/.moon}"
 
 Optional shell-profile cleanup:
 
-1. `moon install` may have added `# Moon runtime home` and `export MOON_HOME=...`
-   into `~/.zprofile`.
+1. `moon install` may have added `# Moon runtime home` and
+   `export MOON_HOME=...` into `~/.zprofile`.
 2. Remove that block manually if you no longer want Moon in shell startup.
 
 Moon does not automatically revert existing OpenClaw config keys under
-`plugins.entries.moon`, `plugins.installs.moon`, or `plugins.slots.contextEngine`.
-If you need full rollback, edit `$OPENCLAW_CONFIG_PATH` manually.
+`plugins.entries.moon`, `plugins.installs.moon`, or
+`plugins.slots.contextEngine`. If you need full rollback, edit
+`$OPENCLAW_CONFIG_PATH` manually.

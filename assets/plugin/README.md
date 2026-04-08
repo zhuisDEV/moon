@@ -11,11 +11,18 @@ When OpenClaw selects `plugins.slots.contextEngine = "moon"`, the plugin:
 
 1. registers a native context engine under id `moon`
 2. invokes the managed `moon` binary as a short-lived checkpoint at `assemble`
-3. injects the assembled MOON artifact into the runtime system prompt
+3. keeps the assembled MOON artifact as operator/debug state instead of
+   injecting it into routine runtime system-prompt text
 4. syncs post-turn state through `afterTurn`
 5. owns same-turn overflow compaction through `compact`
 6. appends MOON-owned `compaction` entries into the OpenClaw session transcript
    using the latest `cleanse` summary
+
+Model-facing summary rule:
+
+1. routine Moon assembly does not return `systemPromptAddition`
+2. Moon `cleanse` summaries travel through transcript `compaction` entries
+3. OpenClaw replays those entries as `compactionSummary` message-history context
 
 Compaction rule:
 
@@ -48,7 +55,7 @@ Under `plugins.entries.moon.config`:
 3. `memoryDir` (MOON daily-memory directory, typically `$MOON_HOME/memory`)
 4. `memoryFile` (MOON durable memory file, typically `$MOON_HOME/MEMORY.md`)
 5. `contextEngineTimeoutMs` (default `20000`)
-6. `maxAssemblyChars` (default `24000`)
+6. `maxAssemblyChars` (deprecated compatibility no-op; accepted but ignored)
 7. `syncAfterTurn` (default `true`)
 8. `fallbackMode` (`openclaw` or `disabled`, default `disabled`)
 9. `compactFallbackOnSkip` (default `false`)
