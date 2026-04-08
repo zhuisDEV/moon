@@ -7,6 +7,28 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-04-08
+
+### Added
+
+- Added OpenClaw-style `openai-codex` remote provider support for `moon cleanse`,
+  remote `moon distill`, and remote wisdom synthesis via
+  `OPENAI_OAUTH_TOKEN` and optional `OPENAI_CODEX_BASE_URL`.
+
+### Fixed
+
+- `moon update` no longer reports a false `assets_match_local=false` after a
+  successful reinstall; post-install plugin alignment is now reported by the
+  newly installed binary's `verify --strict` path.
+- Aligned crate metadata with the current GitHub remote so release metadata now
+  points to `zhuisDEV/moon`.
+
+### Docs
+
+- Updated `.env.example`, `README.md`, `docs/runbook.md`, `handoff.md`, and
+  the install-time env template to document the new Codex OAuth lane and the
+  current provider environment variable contract.
+
 ## [1.0.10] - 2026-04-08
 
 ### Changed

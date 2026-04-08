@@ -29,6 +29,7 @@ pub struct CleanseOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemoteProvider {
     OpenAi,
+    OpenAiCodex,
     Anthropic,
     Gemini,
     OpenAiCompatible,
@@ -38,6 +39,7 @@ impl RemoteProvider {
     fn label(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::OpenAiCodex => "openai-codex",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
             Self::OpenAiCompatible => "openai-compatible",
@@ -58,6 +60,7 @@ pub fn run_cleanse(input: &CleanseInput) -> Result<CleanseOutput> {
     let prompt = build_cleanse_prompt(input);
     let raw_summary = match config.provider {
         RemoteProvider::OpenAi => call_openai(&config, &prompt)?,
+        RemoteProvider::OpenAiCodex => call_openai_codex(&config, &prompt)?,
         RemoteProvider::Anthropic => call_anthropic(&config, &prompt)?,
         RemoteProvider::Gemini => call_gemini(&config, &prompt)?,
         RemoteProvider::OpenAiCompatible => call_openai_compatible(&config, &prompt)?,
@@ -135,6 +138,7 @@ fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
         )
     })?;
     let base_url = match provider {
+        RemoteProvider::OpenAiCodex => Some(resolve_openai_codex_base_url()),
         RemoteProvider::OpenAiCompatible => Some(
             env_non_empty("AI_BASE_URL").unwrap_or_else(|| "https://api.openai.com".to_string()),
         ),
@@ -247,6 +251,42 @@ fn call_openai(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
 
     let json: Value = response.json()?;
     extract_openai_text(&json).context("openai cleanse response missing text content")
+}
+
+fn call_openai_codex(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
+    let base = config
+        .base_url
+        .as_deref()
+        .unwrap_or("https://chatgpt.com/backend-api")
+        .trim_end_matches('/');
+    let url = if base.ends_with("/codex/responses") {
+        base.to_string()
+    } else {
+        format!("{base}/codex/responses")
+    };
+    let payload = serde_json::json!({
+        "model": config.model,
+        "input": prompt,
+        "store": false,
+    });
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()?;
+    let response = client
+        .post(&url)
+        .bearer_auth(&config.api_key)
+        .json(&payload)
+        .send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "openai-codex cleanse call failed with status {}",
+            response.status()
+        );
+    }
+
+    let json: Value = response.json()?;
+    extract_openai_text(&json).context("openai-codex cleanse response missing text content")
 }
 
 fn call_openai_compatible(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
@@ -405,6 +445,7 @@ fn env_non_empty(var: &str) -> Option<String> {
 fn parse_provider_alias(raw: &str) -> Option<RemoteProvider> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "openai" => Some(RemoteProvider::OpenAi),
+        "openai-codex" | "codex" => Some(RemoteProvider::OpenAiCodex),
         "anthropic" | "claude" => Some(RemoteProvider::Anthropic),
         "gemini" | "google" => Some(RemoteProvider::Gemini),
         "openai-compatible" | "compatible" | "deepseek" => Some(RemoteProvider::OpenAiCompatible),
@@ -424,6 +465,9 @@ fn parse_prefixed_model(raw: &str) -> (Option<RemoteProvider>, String) {
 
 fn infer_provider_from_model(model: &str) -> Option<RemoteProvider> {
     let lower = model.trim().to_ascii_lowercase();
+    if lower.contains("codex") {
+        return Some(RemoteProvider::OpenAiCodex);
+    }
     if lower.starts_with("deepseek-") {
         return Some(RemoteProvider::OpenAiCompatible);
     }
@@ -448,6 +492,7 @@ fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
         RemoteProvider::OpenAi => {
             env_non_empty("OPENAI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
+        RemoteProvider::OpenAiCodex => env_non_empty("OPENAI_OAUTH_TOKEN"),
         RemoteProvider::Anthropic => {
             env_non_empty("ANTHROPIC_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
@@ -458,6 +503,12 @@ fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
             .or_else(|| env_non_empty("DEEPSEEK_API_KEY"))
             .or_else(|| env_non_empty("OPENAI_API_KEY")),
     }
+}
+
+fn resolve_openai_codex_base_url() -> String {
+    env_non_empty("OPENAI_CODEX_BASE_URL")
+        .or_else(|| env_non_empty("OPENAI_BASE_URL"))
+        .unwrap_or_else(|| "https://chatgpt.com/backend-api".to_string())
 }
 
 fn extract_openai_text(root: &Value) -> Option<String> {

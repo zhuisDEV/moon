@@ -42,6 +42,12 @@ const DEFAULT_RUNTIME_ENV_TEMPLATE: &str = "\
 # MOON_WISDOM_MODEL=gpt-4.1
 # OPENAI_API_KEY=...
 #
+# Optional OpenClaw-style Codex OAuth profile:
+# MOON_CLEANSE_PROVIDER=openai-codex
+# MOON_CLEANSE_MODEL=gpt-5.4
+# OPENAI_OAUTH_TOKEN=...
+# OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
+#
 # Optional path overrides:
 # MOON_MDS_DIR=$MOON_HOME/mds
 # MOON_MLIB_DIR=$MOON_HOME/mlib

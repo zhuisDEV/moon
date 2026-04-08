@@ -144,6 +144,33 @@ OPENCLAW_CONFIG_PATH=$OPENCLAW_STATE_DIR/openclaw.json
 OPENCLAW_SESSIONS_DIR=$OPENCLAW_STATE_DIR/agents/main/sessions
 ```
 
+Provider credential examples for Moon remote lanes (`cleanse`, remote `distill`, and `wisdom` synthesis):
+
+```bash
+# Native Gemini cleanse
+MOON_CLEANSE_PROVIDER=gemini
+MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_API_KEY=...
+
+# Native OpenAI Responses
+MOON_CLEANSE_PROVIDER=openai
+MOON_CLEANSE_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+
+# OpenClaw-style Codex OAuth
+MOON_CLEANSE_PROVIDER=openai-codex
+MOON_CLEANSE_MODEL=gpt-5.4
+OPENAI_OAUTH_TOKEN=...
+# Optional override; default is https://chatgpt.com/backend-api
+OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
+
+# OpenAI-compatible proxy
+MOON_CLEANSE_PROVIDER=openai-compatible
+MOON_CLEANSE_MODEL=deepseek-chat
+AI_BASE_URL=https://api.deepseek.com
+AI_API_KEY=...
+```
+
 ## Recommended `moon.toml` Baseline
 
 ```toml

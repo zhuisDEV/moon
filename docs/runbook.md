@@ -99,12 +99,21 @@ moon distill --mode syns
 Recommended model config:
 
 ```bash
+MOON_CLEANSE_PROVIDER=gemini
 MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
 GEMINI_API_KEY=...
 
 MOON_WISDOM_PROVIDER=openai
 MOON_WISDOM_MODEL=gpt-4.1
 OPENAI_API_KEY=...
+
+# Optional OpenClaw-style Codex OAuth lane
+# MOON_CLEANSE_PROVIDER=openai-codex
+# MOON_CLEANSE_MODEL=gpt-5.4
+# MOON_WISDOM_PROVIDER=openai-codex
+# MOON_WISDOM_MODEL=gpt-5.4
+# OPENAI_OAUTH_TOKEN=...
+# OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
 ```
 
 ## Search

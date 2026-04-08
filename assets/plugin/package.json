@@ -1,6 +1,6 @@
 {
   "name": "moon",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Native Moon context-engine plugin with persist-time tool result compaction",
   "openclaw": {
     "extensions": [

@@ -1,11 +1,11 @@
 [package]
 name = "moon"
-version = "1.0.10"
+version = "1.0.11"
 edition = "2024"
 description = "Rust CLI for OpenClaw session lifecycle automation: archive, index, recall, and low-cost distillation."
 license = "MIT"
-repository = "https://github.com/coinbuidl/moon"
-homepage = "https://github.com/coinbuidl/moon"
+repository = "https://github.com/zhuisDEV/moon"
+homepage = "https://github.com/zhuisDEV/moon"
 readme = "README.md"
 keywords = ["openclaw", "llm", "cli", "memory", "context"]
 categories = ["command-line-utilities"]

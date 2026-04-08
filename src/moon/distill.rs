@@ -114,6 +114,11 @@ pub struct OpenAiDistiller {
     pub api_key: String,
     pub model: String,
 }
+pub struct OpenAiCodexDistiller {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+}
 pub struct AnthropicDistiller {
     pub api_key: String,
     pub model: String,
@@ -127,6 +132,7 @@ pub struct OpenAiCompatDistiller {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemoteProvider {
     OpenAi,
+    OpenAiCodex,
     Anthropic,
     Gemini,
     OpenAiCompatible,
@@ -136,6 +142,7 @@ impl RemoteProvider {
     fn label(self) -> &'static str {
         match self {
             RemoteProvider::OpenAi => "openai",
+            RemoteProvider::OpenAiCodex => "openai-codex",
             RemoteProvider::Anthropic => "anthropic",
             RemoteProvider::Gemini => "gemini",
             RemoteProvider::OpenAiCompatible => "openai-compatible",
@@ -204,6 +211,7 @@ fn env_non_empty(var: &str) -> Option<String> {
 fn parse_provider_alias(raw: &str) -> Option<RemoteProvider> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "openai" => Some(RemoteProvider::OpenAi),
+        "openai-codex" | "codex" => Some(RemoteProvider::OpenAiCodex),
         "anthropic" | "claude" => Some(RemoteProvider::Anthropic),
         "gemini" | "google" => Some(RemoteProvider::Gemini),
         "openai-compatible" | "compatible" | "deepseek" => Some(RemoteProvider::OpenAiCompatible),
@@ -223,6 +231,9 @@ fn parse_prefixed_model(raw: &str) -> (Option<RemoteProvider>, String) {
 
 fn infer_provider_from_model(model: &str) -> Option<RemoteProvider> {
     let lower = model.trim().to_ascii_lowercase();
+    if lower.contains("codex") {
+        return Some(RemoteProvider::OpenAiCodex);
+    }
     if lower.starts_with("deepseek-") {
         return Some(RemoteProvider::OpenAiCompatible);
     }
@@ -249,6 +260,9 @@ fn first_available_provider() -> Option<RemoteProvider> {
     if env_non_empty("AI_API_KEY").is_some() {
         return Some(RemoteProvider::OpenAiCompatible);
     }
+    if env_non_empty("OPENAI_OAUTH_TOKEN").is_some() {
+        return Some(RemoteProvider::OpenAiCodex);
+    }
     if env_non_empty("OPENAI_API_KEY").is_some() {
         return Some(RemoteProvider::OpenAi);
     }
@@ -264,6 +278,7 @@ fn first_available_provider() -> Option<RemoteProvider> {
 fn default_model_for_provider(provider: RemoteProvider) -> &'static str {
     match provider {
         RemoteProvider::OpenAi => "gpt-4.1-mini",
+        RemoteProvider::OpenAiCodex => "gpt-5.4",
         RemoteProvider::Anthropic => "claude-3-5-haiku-latest",
         RemoteProvider::Gemini => "gemini-2.5-flash-lite",
         RemoteProvider::OpenAiCompatible => "deepseek-chat",
@@ -275,6 +290,7 @@ fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
         RemoteProvider::OpenAi => {
             env_non_empty("OPENAI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
+        RemoteProvider::OpenAiCodex => env_non_empty("OPENAI_OAUTH_TOKEN"),
         RemoteProvider::Anthropic => {
             env_non_empty("ANTHROPIC_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
@@ -295,6 +311,54 @@ fn resolve_compatible_base_url(model: &str) -> Option<String> {
         return Some("https://api.deepseek.com".to_string());
     }
     None
+}
+
+fn resolve_openai_codex_base_url() -> String {
+    env_non_empty("OPENAI_CODEX_BASE_URL")
+        .or_else(|| env_non_empty("OPENAI_BASE_URL"))
+        .unwrap_or_else(|| "https://chatgpt.com/backend-api".to_string())
+}
+
+fn openai_codex_url(base_url: Option<&str>) -> String {
+    let base = base_url
+        .unwrap_or("https://chatgpt.com/backend-api")
+        .trim_end_matches('/');
+    if base.ends_with("/codex/responses") {
+        base.to_string()
+    } else {
+        format!("{base}/codex/responses")
+    }
+}
+
+fn call_openai_codex_prompt(
+    client: &Client,
+    base_url: Option<&str>,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    stage: &str,
+) -> Result<String> {
+    let url = openai_codex_url(base_url);
+    let payload = serde_json::json!({
+        "model": model,
+        "input": prompt,
+        "store": false
+    });
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "openai-codex {} call failed with status {}",
+            stage,
+            response.status()
+        );
+    }
+    let json: Value = response.json()?;
+    extract_openai_text(&json)
+        .with_context(|| format!("openai-codex {} response missing text content", stage))
 }
 
 fn resolve_remote_config() -> Option<RemoteModelConfig> {
@@ -333,6 +397,7 @@ fn resolve_remote_config() -> Option<RemoteModelConfig> {
         model = default_model_for_provider(provider).to_string();
     }
     let base_url = match provider {
+        RemoteProvider::OpenAiCodex => Some(resolve_openai_codex_base_url()),
         RemoteProvider::OpenAiCompatible => resolve_compatible_base_url(&model),
         _ => None,
     };
@@ -454,6 +519,7 @@ fn infer_context_tokens_from_model(provider: RemoteProvider, model: &str) -> u64
                 200_000
             }
         }
+        RemoteProvider::OpenAiCodex => 1_050_000,
         RemoteProvider::Anthropic => 200_000,
         RemoteProvider::OpenAiCompatible => {
             if lower.starts_with("deepseek-") {
@@ -473,7 +539,7 @@ fn detect_context_tokens_from_remote(remote: &RemoteModelConfig) -> Option<u64> 
             remote.base_url.as_deref(),
             &remote.model,
         ),
-        RemoteProvider::OpenAi | RemoteProvider::Anthropic => None,
+        RemoteProvider::OpenAi | RemoteProvider::OpenAiCodex | RemoteProvider::Anthropic => None,
     }
 }
 
@@ -1475,6 +1541,23 @@ impl Distiller for OpenAiDistiller {
     }
 }
 
+impl Distiller for OpenAiCodexDistiller {
+    fn distill(&self, input: &DistillInput) -> Result<String> {
+        let prompt = build_llm_prompt(input);
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()?;
+        call_openai_codex_prompt(
+            &client,
+            Some(self.base_url.as_str()),
+            &self.api_key,
+            &self.model,
+            &prompt,
+            "distill",
+        )
+    }
+}
+
 impl Distiller for OpenAiCompatDistiller {
     fn distill(&self, input: &DistillInput) -> Result<String> {
         let prompt = build_llm_prompt(input);
@@ -1578,6 +1661,15 @@ fn distill_summary(input: &DistillInput) -> Result<(String, String)> {
             RemoteProvider::OpenAi => OpenAiDistiller {
                 api_key: remote.api_key.clone(),
                 model: remote.model.clone(),
+            }
+            .distill(input),
+            RemoteProvider::OpenAiCodex => OpenAiCodexDistiller {
+                api_key: remote.api_key.clone(),
+                model: remote.model.clone(),
+                base_url: remote
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://chatgpt.com/backend-api".to_string()),
             }
             .distill(input),
             RemoteProvider::Anthropic => AnthropicDistiller {
@@ -3174,7 +3266,7 @@ fn resolve_wisdom_remote_config() -> Result<Option<RemoteModelConfig>> {
 
     let provider = parse_provider_alias(&raw_provider).ok_or_else(|| {
         anyhow::anyhow!(
-            "syns skipped: invalid MOON_WISDOM_PROVIDER `{}`. Use one of: openai, anthropic, gemini, openai-compatible, local.",
+            "syns skipped: invalid MOON_WISDOM_PROVIDER `{}`. Use one of: openai, openai-codex, anthropic, gemini, openai-compatible, local.",
             raw_provider
         )
     })?;
@@ -3190,6 +3282,7 @@ fn resolve_wisdom_remote_config() -> Result<Option<RemoteModelConfig>> {
     }
 
     let base_url = match provider {
+        RemoteProvider::OpenAiCodex => Some(resolve_openai_codex_base_url()),
         RemoteProvider::OpenAiCompatible => resolve_compatible_base_url(&normalized_model),
         _ => None,
     };
@@ -3267,6 +3360,14 @@ fn call_remote_prompt(remote: &RemoteModelConfig, prompt: &str) -> Result<String
             let json: Value = response.json()?;
             extract_openai_text(&json).context("openai wisdom response missing text content")
         }
+        RemoteProvider::OpenAiCodex => call_openai_codex_prompt(
+            &client,
+            remote.base_url.as_deref(),
+            &remote.api_key,
+            &remote.model,
+            prompt,
+            "wisdom",
+        ),
         RemoteProvider::Anthropic => {
             let payload = serde_json::json!({
                 "model": remote.model,
@@ -3773,6 +3874,10 @@ mod tests {
         assert_eq!(provider, Some(RemoteProvider::OpenAi));
         assert_eq!(model, "gpt-4.1-mini");
 
+        let (provider, model) = parse_prefixed_model("openai-codex:gpt-5.4");
+        assert_eq!(provider, Some(RemoteProvider::OpenAiCodex));
+        assert_eq!(model, "gpt-5.4");
+
         let (provider, model) = parse_prefixed_model("claude:claude-3-5-haiku-latest");
         assert_eq!(provider, Some(RemoteProvider::Anthropic));
         assert_eq!(model, "claude-3-5-haiku-latest");
@@ -3787,6 +3892,10 @@ mod tests {
         assert_eq!(
             infer_provider_from_model("gpt-4.1-mini"),
             Some(RemoteProvider::OpenAi)
+        );
+        assert_eq!(
+            infer_provider_from_model("gpt-5.3-codex-spark"),
+            Some(RemoteProvider::OpenAiCodex)
         );
         assert_eq!(
             infer_provider_from_model("claude-3-5-haiku-latest"),

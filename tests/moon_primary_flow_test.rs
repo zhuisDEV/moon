@@ -49,6 +49,36 @@ fn start_fake_openai_compatible_server(response_body: &str) -> (thread::JoinHand
     (handle, format!("http://{}", addr))
 }
 
+fn start_fake_openai_responses_server(response_body: &str) -> (thread::JoinHandle<()>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake responses server");
+    let addr = listener.local_addr().expect("local addr");
+    let body = response_body.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("read timeout");
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    });
+    (handle, format!("http://{}", addr))
+}
+
 fn write_moon_env(moon_home: &Path) {
     fs::create_dir_all(moon_home).expect("mkdir moon env root");
     fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
@@ -271,6 +301,46 @@ fn moon_cleanse_writes_llm_compaction_summary() {
             .exists(),
         "cleanse should not project into mds"
     );
+}
+
+#[test]
+fn moon_cleanse_supports_openai_codex_oauth_provider() {
+    let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon");
+    let raw_dir = moon_home.join("raw");
+    fs::create_dir_all(&raw_dir).expect("mkdir raw");
+    let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
+    write_moon_env(&moon_home);
+
+    let source = raw_dir.join("s-codex.jsonl");
+    fs::write(
+        &source,
+        "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize the current session state.\"}]}}\n",
+    )
+    .expect("write source");
+
+    let response_body = json!({
+        "output_text": "# Cleanse Summary\n## Current Goal\n- Keep Moon aligned with OpenClaw.\n## Active Context\n- Add openai-codex support.\n## Decisions\n- Use OPENAI_OAUTH_TOKEN.\n## Open Tasks\n- Verify the provider lane.\n## Risks / Blockers\n- None.\n## Relevant Evidence\n- Native Codex backend reachable."
+    })
+    .to_string();
+    let (server_handle, base_url) = start_fake_openai_responses_server(&response_body);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(&moon_home)
+        .env("MOON_HOME", &moon_home)
+        .env("MOON_CLEANSE_PROVIDER", "openai-codex")
+        .env("MOON_CLEANSE_MODEL", "gpt-5.4")
+        .env("OPENAI_OAUTH_TOKEN", "oauth-test-token")
+        .env("OPENAI_CODEX_BASE_URL", &base_url)
+        .arg("cleanse")
+        .arg("--session-id")
+        .arg("s-codex")
+        .assert()
+        .success()
+        .stdout(contains("cleanse.provider=openai-codex"))
+        .stdout(contains("cleanse.model=gpt-5.4"));
+
+    server_handle.join().expect("join server");
 }
 
 #[test]

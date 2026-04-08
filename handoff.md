@@ -190,3 +190,44 @@
     reinstall occurs
 - Added unit coverage in `src/commands/update.rs` for the alignment-strategy
   split.
+
+## 2026-04-08 14:17 AEST
+
+- Added OpenClaw-style `openai-codex` remote provider support in Moon.
+- Scope:
+  - `moon cleanse`
+  - remote `moon distill`
+  - remote wisdom synthesis (`MOON_WISDOM_PROVIDER`)
+- Provider contract:
+  - provider id: `openai-codex`
+  - alias: `codex`
+  - auth env: `OPENAI_OAUTH_TOKEN`
+  - optional base URL override: `OPENAI_CODEX_BASE_URL`
+  - default base URL: `https://chatgpt.com/backend-api`
+  - request path: `/codex/responses`
+- Implementation notes:
+  - kept `openai-codex` distinct from standard `openai`
+  - model-name inference maps `*codex*` models to the new provider
+  - standard OpenAI-style response text extraction is reused for Codex
+- Tests/docs:
+  - added a fake-server integration test in `tests/moon_primary_flow_test.rs`
+    covering `moon cleanse` with `OPENAI_OAUTH_TOKEN`
+  - added provider parsing/inference coverage in `src/moon/distill.rs`
+  - updated `.env.example`, `README.md`, and `src/commands/install.rs`
+  - corrected docs to use `ANTHROPIC_API_KEY` instead of the stale
+    `CLAUDE_API_KEY`
+
+## 2026-04-08 14:42 AEST
+
+- Prepared the next release as `v1.0.11`.
+- Release-scope cleanup:
+  - aligned `Cargo.toml` package metadata with the live GitHub remote
+    (`zhuisDEV/moon`)
+  - bumped crate/plugin runtime versions to `1.0.11`
+  - added a `CHANGELOG.md` entry for:
+    - OpenClaw-style `openai-codex` support
+    - the earlier `moon update` plugin-alignment reporting fix
+  - updated `docs/runbook.md` with the Codex OAuth example lane
+- Code cleanup:
+  - deduplicated the `openai-codex` remote request path in `src/moon/distill.rs`
+    so remote distill and wisdom synthesis share the same helper
