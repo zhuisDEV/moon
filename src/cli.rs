@@ -22,6 +22,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Install(InstallArgs),
+    Login(LoginArgs),
     Update(UpdateArgs),
     Verify(VerifyArgs),
     Repair(RepairArgs),
@@ -67,6 +68,20 @@ pub struct UpdateArgs {
     pub dry_run: bool,
     #[arg(long, value_enum, default_value_t = UpdateChannelArg::Stable)]
     pub channel: UpdateChannelArg,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum LoginProviderArg {
+    #[value(name = "openai-codex")]
+    OpenAiCodex,
+}
+
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    #[arg(long, value_enum, default_value_t = LoginProviderArg::OpenAiCodex)]
+    pub provider: LoginProviderArg,
+    #[arg(long)]
+    pub headless: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -290,6 +305,7 @@ pub fn run() -> Result<()> {
         | Command::Health
         | Command::Verify(_)
         | Command::Config(_)
+        | Command::Login(_)
         | Command::Update(_) => {
             // Diagnostics are exempt from CWD enforcement.
         }
@@ -304,6 +320,16 @@ pub fn run() -> Result<()> {
             dry_run: args.dry_run,
             apply: args.apply,
         })?,
+        Command::Login(args) => {
+            commands::moon_login::run(&commands::moon_login::MoonLoginOptions {
+                provider: match args.provider {
+                    LoginProviderArg::OpenAiCodex => {
+                        commands::moon_login::MoonLoginProvider::OpenAiCodex
+                    }
+                },
+                headless: args.headless,
+            })?
+        }
         Command::Update(args) => commands::update::run(&commands::update::UpdateOptions {
             check: args.check,
             dry_run: args.dry_run,

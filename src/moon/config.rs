@@ -8,9 +8,10 @@ mod generated_env_allowlist {
     include!(concat!(env!("OUT_DIR"), "/moon_env_allowlist.rs"));
 }
 
-pub const SECRET_ENV_KEYS: [&str; 4] = [
+pub const SECRET_ENV_KEYS: [&str; 5] = [
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
+    "OPENAI_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "AI_API_KEY",
 ];

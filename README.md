@@ -157,12 +157,15 @@ MOON_CLEANSE_PROVIDER=openai
 MOON_CLEANSE_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=...
 
-# OpenClaw-style Codex OAuth
+# Managed OpenAI Codex OAuth
 MOON_CLEANSE_PROVIDER=openai-codex
 MOON_CLEANSE_MODEL=gpt-5.4
-OPENAI_OAUTH_TOKEN=...
+moon login
 # Optional override; default is https://chatgpt.com/backend-api
 OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
+
+# Optional manual override instead of `moon login`
+# OPENAI_OAUTH_TOKEN=...
 
 # OpenAI-compatible proxy
 MOON_CLEANSE_PROVIDER=openai-compatible
@@ -170,6 +173,12 @@ MOON_CLEANSE_MODEL=deepseek-chat
 AI_BASE_URL=https://api.deepseek.com
 AI_API_KEY=...
 ```
+
+`moon login` stores managed OpenAI Codex OAuth credentials under
+`$MOON_HOME/auth/openai-codex.json` and Moon will refresh them automatically
+for `openai-codex` requests. If no Moon-managed login is present, Moon also
+accepts a fresh Codex CLI login from `~/.codex/auth.json` as a read-only
+fallback. `OPENAI_OAUTH_TOKEN` remains the explicit override path.
 
 ## Recommended `moon.toml` Baseline
 

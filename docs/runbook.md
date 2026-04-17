@@ -107,14 +107,21 @@ MOON_WISDOM_PROVIDER=openai
 MOON_WISDOM_MODEL=gpt-4.1
 OPENAI_API_KEY=...
 
-# Optional OpenClaw-style Codex OAuth lane
+# Optional managed OpenAI Codex OAuth lane
 # MOON_CLEANSE_PROVIDER=openai-codex
 # MOON_CLEANSE_MODEL=gpt-5.4
 # MOON_WISDOM_PROVIDER=openai-codex
 # MOON_WISDOM_MODEL=gpt-5.4
-# OPENAI_OAUTH_TOKEN=...
+# moon login
 # OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
+# Optional manual override instead of `moon login`
+# OPENAI_OAUTH_TOKEN=...
 ```
+
+`moon login` stores managed OpenAI Codex OAuth credentials in
+`$MOON_HOME/auth/openai-codex.json`. Moon refreshes that credential
+automatically and can also reuse a fresh Codex CLI login from
+`~/.codex/auth.json` when no Moon-managed auth store exists.
 
 ## Search
 

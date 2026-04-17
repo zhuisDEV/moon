@@ -1,4 +1,5 @@
 use crate::moon::audit;
+use crate::moon::openai_codex_auth;
 use crate::moon::paths::MoonPaths;
 use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
 use anyhow::{Context, Result};
@@ -260,7 +261,7 @@ fn first_available_provider() -> Option<RemoteProvider> {
     if env_non_empty("AI_API_KEY").is_some() {
         return Some(RemoteProvider::OpenAiCompatible);
     }
-    if env_non_empty("OPENAI_OAUTH_TOKEN").is_some() {
+    if openai_codex_auth::has_available_auth() {
         return Some(RemoteProvider::OpenAiCodex);
     }
     if env_non_empty("OPENAI_API_KEY").is_some() {
@@ -285,12 +286,12 @@ fn default_model_for_provider(provider: RemoteProvider) -> &'static str {
     }
 }
 
-fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
-    match provider {
+fn resolve_api_key(provider: RemoteProvider) -> Result<Option<String>> {
+    Ok(match provider {
         RemoteProvider::OpenAi => {
             env_non_empty("OPENAI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
-        RemoteProvider::OpenAiCodex => env_non_empty("OPENAI_OAUTH_TOKEN"),
+        RemoteProvider::OpenAiCodex => openai_codex_auth::resolve_bearer_token()?,
         RemoteProvider::Anthropic => {
             env_non_empty("ANTHROPIC_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
@@ -300,7 +301,7 @@ fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
         RemoteProvider::OpenAiCompatible => env_non_empty("AI_API_KEY")
             .or_else(|| env_non_empty("DEEPSEEK_API_KEY"))
             .or_else(|| env_non_empty("OPENAI_API_KEY")),
-    }
+    })
 }
 
 fn resolve_compatible_base_url(model: &str) -> Option<String> {
@@ -401,7 +402,7 @@ fn resolve_remote_config() -> Option<RemoteModelConfig> {
         RemoteProvider::OpenAiCompatible => resolve_compatible_base_url(&model),
         _ => None,
     };
-    let api_key = resolve_api_key(provider)?;
+    let api_key = resolve_api_key(provider).ok()??;
     Some(RemoteModelConfig {
         provider,
         model,
@@ -3286,7 +3287,7 @@ fn resolve_wisdom_remote_config() -> Result<Option<RemoteModelConfig>> {
         RemoteProvider::OpenAiCompatible => resolve_compatible_base_url(&normalized_model),
         _ => None,
     };
-    let api_key = resolve_api_key(provider).ok_or_else(|| {
+    let api_key = resolve_api_key(provider)?.ok_or_else(|| {
         anyhow::anyhow!(
             "syns skipped: missing API key for provider `{}`. Fix the primary model credentials.",
             provider.label()

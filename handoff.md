@@ -231,3 +231,27 @@
 - Code cleanup:
   - deduplicated the `openai-codex` remote request path in `src/moon/distill.rs`
     so remote distill and wisdom synthesis share the same helper
+
+## 2026-04-17 20:05 AEST
+
+- Implemented end-to-end OpenAI Codex OAuth login in Moon.
+- Scope:
+  - new `moon login` command for `openai-codex`
+  - Moon-managed auth store at `$MOON_HOME/auth/openai-codex.json`
+  - automatic bearer-token refresh for Moon-managed `openai-codex` credentials
+  - fresh `~/.codex/auth.json` reuse as a read-only fallback when Moon-managed
+    credentials are absent
+- Runtime behavior:
+  - `OPENAI_OAUTH_TOKEN` remains the highest-priority explicit override
+  - `moon cleanse` and remote `moon distill` now resolve `openai-codex`
+    credentials from the managed auth store instead of requiring only the env
+    token path
+  - when Moon falls back from an inferred provider with missing credentials, it
+    can now promote `openai-codex` automatically if the OAuth lane is available
+- Tests/docs:
+  - added `tests/moon_oauth_login_test.rs` covering:
+    - headless login and auth-file persistence
+    - `moon cleanse` using the Moon-managed auth store
+    - refresh of an expired managed credential before the Codex request
+  - updated `README.md`, `docs/runbook.md`, `.env.example`, and
+    `src/commands/install.rs` to document `moon login`

@@ -3,6 +3,7 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::env;
 
+use crate::moon::openai_codex_auth;
 use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
 
 const DEFAULT_CLEANSE_MODEL: &str = "gemini-3.1-flash-lite-preview";
@@ -10,6 +11,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 45;
 const MAX_SUMMARY_CHARS: usize = 16_000;
 const MAX_MODEL_LINES: usize = 120;
 const MIN_BULLET_LINES: usize = 3;
+const DEFAULT_OPENAI_CODEX_MODEL: &str = "gpt-5.4";
 
 #[derive(Debug, Clone)]
 pub struct CleanseInput {
@@ -103,6 +105,9 @@ pub fn render_summary_document(
 }
 
 fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
+    let configured_provider = env_non_empty("MOON_CLEANSE_PROVIDER")
+        .as_deref()
+        .and_then(parse_provider_alias);
     if env_non_empty("MOON_CLEANSE_PROVIDER")
         .as_deref()
         .is_some_and(|value| value.eq_ignore_ascii_case("local"))
@@ -114,15 +119,13 @@ fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
 
     let configured_model =
         env_non_empty("MOON_CLEANSE_MODEL").unwrap_or_else(|| DEFAULT_CLEANSE_MODEL.to_string());
-    let mut chosen_provider = env_non_empty("MOON_CLEANSE_PROVIDER")
-        .as_deref()
-        .and_then(parse_provider_alias);
+    let mut chosen_provider = configured_provider;
     let (prefixed_provider, mut model) = parse_prefixed_model(&configured_model);
     if chosen_provider.is_none() {
         chosen_provider = prefixed_provider.or_else(|| infer_provider_from_model(&model));
     }
 
-    let provider = chosen_provider.ok_or_else(|| {
+    let mut provider = chosen_provider.ok_or_else(|| {
         anyhow::anyhow!(
             "failed to resolve cleanse provider; set MOON_CLEANSE_PROVIDER or prefix MOON_CLEANSE_MODEL"
         )
@@ -131,7 +134,18 @@ fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
         model = DEFAULT_CLEANSE_MODEL.to_string();
     }
 
-    let api_key = resolve_api_key(provider).ok_or_else(|| {
+    let mut api_key = resolve_api_key(provider)?;
+    if api_key.is_none()
+        && configured_provider.is_none()
+        && prefixed_provider.is_none()
+        && let Some(fallback_provider) = first_available_provider()
+        && fallback_provider != provider
+    {
+        provider = fallback_provider;
+        model = default_model_for_provider(provider).to_string();
+        api_key = resolve_api_key(provider)?;
+    }
+    let api_key = api_key.ok_or_else(|| {
         anyhow::anyhow!(
             "missing provider credentials for cleanse; configure the relevant API key for {}",
             provider.label()
@@ -151,6 +165,38 @@ fn resolve_cleanse_config() -> Result<CleanseModelConfig> {
         api_key,
         base_url,
     })
+}
+
+fn first_available_provider() -> Option<RemoteProvider> {
+    if env_non_empty("AI_BASE_URL").is_some() && env_non_empty("AI_API_KEY").is_some() {
+        return Some(RemoteProvider::OpenAiCompatible);
+    }
+    if env_non_empty("AI_API_KEY").is_some() {
+        return Some(RemoteProvider::OpenAiCompatible);
+    }
+    if openai_codex_auth::has_available_auth() {
+        return Some(RemoteProvider::OpenAiCodex);
+    }
+    if env_non_empty("OPENAI_API_KEY").is_some() {
+        return Some(RemoteProvider::OpenAi);
+    }
+    if env_non_empty("ANTHROPIC_API_KEY").is_some() {
+        return Some(RemoteProvider::Anthropic);
+    }
+    if env_non_empty("GEMINI_API_KEY").is_some() {
+        return Some(RemoteProvider::Gemini);
+    }
+    None
+}
+
+fn default_model_for_provider(provider: RemoteProvider) -> &'static str {
+    match provider {
+        RemoteProvider::OpenAi => "gpt-4.1-mini",
+        RemoteProvider::OpenAiCodex => DEFAULT_OPENAI_CODEX_MODEL,
+        RemoteProvider::Anthropic => "claude-3-5-haiku-latest",
+        RemoteProvider::Gemini => DEFAULT_CLEANSE_MODEL,
+        RemoteProvider::OpenAiCompatible => "deepseek-chat",
+    }
 }
 
 fn build_cleanse_prompt(input: &CleanseInput) -> String {
@@ -487,12 +533,12 @@ fn infer_provider_from_model(model: &str) -> Option<RemoteProvider> {
     None
 }
 
-fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
-    match provider {
+fn resolve_api_key(provider: RemoteProvider) -> Result<Option<String>> {
+    Ok(match provider {
         RemoteProvider::OpenAi => {
             env_non_empty("OPENAI_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
-        RemoteProvider::OpenAiCodex => env_non_empty("OPENAI_OAUTH_TOKEN"),
+        RemoteProvider::OpenAiCodex => openai_codex_auth::resolve_bearer_token()?,
         RemoteProvider::Anthropic => {
             env_non_empty("ANTHROPIC_API_KEY").or_else(|| env_non_empty("AI_API_KEY"))
         }
@@ -502,7 +548,7 @@ fn resolve_api_key(provider: RemoteProvider) -> Option<String> {
         RemoteProvider::OpenAiCompatible => env_non_empty("AI_API_KEY")
             .or_else(|| env_non_empty("DEEPSEEK_API_KEY"))
             .or_else(|| env_non_empty("OPENAI_API_KEY")),
-    }
+    })
 }
 
 fn resolve_openai_codex_base_url() -> String {

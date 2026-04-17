@@ -11,6 +11,7 @@ pub mod distill;
 pub mod embed;
 pub mod files;
 pub mod launchd;
+pub mod openai_codex_auth;
 pub mod paths;
 pub mod project;
 pub mod qmd;

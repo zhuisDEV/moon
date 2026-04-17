@@ -6,6 +6,7 @@ pub mod moon_context_engine;
 pub mod moon_distill;
 pub mod moon_embed;
 pub mod moon_health;
+pub mod moon_login;
 pub mod moon_project;
 pub mod moon_recall;
 pub mod moon_record;
