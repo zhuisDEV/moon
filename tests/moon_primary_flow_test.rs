@@ -59,16 +59,40 @@ fn start_fake_openai_responses_server(response_body: &str) -> (thread::JoinHandl
             .set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .expect("read timeout");
         let mut buf = [0u8; 4096];
+        let mut request = Vec::new();
         loop {
             match stream.read(&mut buf) {
                 Ok(0) => break,
-                Ok(_) => {}
+                Ok(read) => request.extend_from_slice(&buf[..read]),
                 Err(_) => break,
             }
         }
 
+        let request = String::from_utf8(request).expect("request utf8");
+        let body_offset = request
+            .find("\r\n\r\n")
+            .map(|idx| idx + 4)
+            .expect("http body boundary");
+        let payload: Value =
+            serde_json::from_str(&request[body_offset..]).expect("request payload json");
+        assert_eq!(payload["model"], "gpt-5.4");
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], true);
+        assert!(
+            payload["instructions"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert_eq!(payload["input"][0]["role"], "user");
+        assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
+        assert!(
+            payload["input"][0]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|value| value.contains("Session id: s-codex"))
+        );
+
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -319,9 +343,12 @@ fn moon_cleanse_supports_openai_codex_oauth_provider() {
     )
     .expect("write source");
 
-    let response_body = json!({
-        "output_text": "# Cleanse Summary\n## Current Goal\n- Keep Moon aligned with OpenClaw.\n## Active Context\n- Add openai-codex support.\n## Decisions\n- Use OPENAI_OAUTH_TOKEN.\n## Open Tasks\n- Verify the provider lane.\n## Risks / Blockers\n- None.\n## Relevant Evidence\n- Native Codex backend reachable."
-    })
+    let response_body = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"# Cleanse Summary\\n## Current Goal\\n- Keep Moon aligned with OpenClaw.\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"# Cleanse Summary\\n## Current Goal\\n- Keep Moon aligned with OpenClaw.\\n## Active Context\\n- Add openai-codex support.\\n## Decisions\\n- Use OPENAI_OAUTH_TOKEN.\\n## Open Tasks\\n- Verify the provider lane.\\n## Risks / Blockers\\n- None.\\n## Relevant Evidence\\n- Native Codex backend reachable.\"}\n\n"
+    )
     .to_string();
     let (server_handle, base_url) = start_fake_openai_responses_server(&response_body);
 

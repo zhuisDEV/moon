@@ -264,11 +264,7 @@ fn call_openai_codex(config: &CleanseModelConfig, prompt: &str) -> Result<String
     } else {
         format!("{base}/codex/responses")
     };
-    let payload = serde_json::json!({
-        "model": config.model,
-        "input": prompt,
-        "store": false,
-    });
+    let payload = openai_codex_payload(&config.model, prompt);
 
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -276,17 +272,41 @@ fn call_openai_codex(config: &CleanseModelConfig, prompt: &str) -> Result<String
     let response = client
         .post(&url)
         .bearer_auth(&config.api_key)
+        .header("accept", "text/event-stream")
         .json(&payload)
         .send()?;
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
         anyhow::bail!(
-            "openai-codex cleanse call failed with status {}",
-            response.status()
+            "openai-codex cleanse call failed with status {}: {}",
+            status,
+            truncate_with_ellipsis(body.trim(), 240)
         );
     }
 
-    let json: Value = response.json()?;
-    extract_openai_text(&json).context("openai-codex cleanse response missing text content")
+    let body = response.text()?;
+    extract_openai_codex_text(&body).context("openai-codex cleanse response missing text content")
+}
+
+fn openai_codex_payload(model: &str, prompt: &str) -> Value {
+    serde_json::json!({
+        "model": model,
+        "instructions": "You are MOON. Execute the requested task exactly and return plain text only.",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "store": false,
+        "stream": true,
+    })
 }
 
 fn call_openai_compatible(config: &CleanseModelConfig, prompt: &str) -> Result<String> {
@@ -545,4 +565,92 @@ fn extract_anthropic_text(root: &Value) -> Option<String> {
         .and_then(|item| item.get("text"))
         .and_then(Value::as_str)
         .map(|text| text.to_string())
+}
+
+fn extract_openai_codex_text(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.starts_with('{') {
+        let json: Value = serde_json::from_str(trimmed).ok()?;
+        return extract_openai_text(&json);
+    }
+
+    let mut latest_done = None;
+    let mut deltas = String::new();
+    for line in trimmed.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let event: Value = serde_json::from_str(data).ok()?;
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    deltas.push_str(delta);
+                }
+            }
+            Some("response.output_text.done") => {
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    latest_done = Some(text.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    latest_done.or_else(|| (!deltas.is_empty()).then_some(deltas))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_openai_codex_text, openai_codex_payload};
+
+    #[test]
+    fn openai_codex_payload_uses_instructions_and_structured_input() {
+        let payload = openai_codex_payload("gpt-5.4", "Summarize this session.");
+
+        assert_eq!(
+            payload.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.4")
+        );
+        assert!(
+            payload
+                .get("instructions")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.trim().is_empty())
+        );
+        assert_eq!(payload.get("store").and_then(|v| v.as_bool()), Some(false));
+
+        let input = payload
+            .get("input")
+            .and_then(|v| v.as_array())
+            .expect("input list");
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0].get("role").and_then(|v| v.as_str()), Some("user"));
+
+        let content = input[0]
+            .get("content")
+            .and_then(|v| v.as_array())
+            .expect("content list");
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0].get("type").and_then(|v| v.as_str()),
+            Some("input_text")
+        );
+        assert_eq!(
+            content[0].get("text").and_then(|v| v.as_str()),
+            Some("Summarize this session.")
+        );
+        assert_eq!(payload.get("stream").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn extract_openai_codex_text_reads_sse_output_text_done() {
+        let body = r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","text":"hello"}
+"#;
+
+        assert_eq!(extract_openai_codex_text(body).as_deref(), Some("hello"));
+    }
 }

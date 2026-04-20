@@ -339,26 +339,46 @@ fn call_openai_codex_prompt(
     stage: &str,
 ) -> Result<String> {
     let url = openai_codex_url(base_url);
-    let payload = serde_json::json!({
-        "model": model,
-        "input": prompt,
-        "store": false
-    });
+    let payload = openai_codex_payload(model, prompt);
     let response = client
         .post(&url)
         .bearer_auth(api_key)
+        .header("accept", "text/event-stream")
         .json(&payload)
         .send()?;
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
         anyhow::bail!(
-            "openai-codex {} call failed with status {}",
+            "openai-codex {} call failed with status {}: {}",
             stage,
-            response.status()
+            status,
+            truncate_with_ellipsis(body.trim(), 240)
         );
     }
-    let json: Value = response.json()?;
-    extract_openai_text(&json)
+    let body = response.text()?;
+    extract_openai_codex_text(&body)
         .with_context(|| format!("openai-codex {} response missing text content", stage))
+}
+
+fn openai_codex_payload(model: &str, prompt: &str) -> Value {
+    serde_json::json!({
+        "model": model,
+        "instructions": "You are MOON. Execute the requested task exactly and return plain text only.",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "store": false,
+        "stream": true
+    })
 }
 
 fn resolve_remote_config() -> Option<RemoteModelConfig> {
@@ -408,6 +428,38 @@ fn resolve_remote_config() -> Option<RemoteModelConfig> {
         api_key,
         base_url,
     })
+}
+
+fn extract_openai_codex_text(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.starts_with('{') {
+        let json: Value = serde_json::from_str(trimmed).ok()?;
+        return extract_openai_text(&json);
+    }
+
+    let mut latest_done = None;
+    let mut deltas = String::new();
+    for line in trimmed.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let event: Value = serde_json::from_str(data).ok()?;
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    deltas.push_str(delta);
+                }
+            }
+            Some("response.output_text.done") => {
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    latest_done = Some(text.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    latest_done.or_else(|| (!deltas.is_empty()).then_some(deltas))
 }
 
 fn token_limit_to_bytes_with_ratio(tokens: u64, safety_ratio: f64) -> usize {
@@ -3761,9 +3813,10 @@ mod tests {
     use super::{
         ChunkSummaryRollup, DistillInput, Distiller, LocalDistiller, MAX_SUMMARY_CHARS,
         RemoteProvider, WisdomDistillInput, clamp_summary, extract_anthropic_text,
-        extract_openai_compatible_text, extract_openai_text, infer_provider_from_model,
-        parse_prefixed_model, run_distillation, run_wisdom_distillation, sanitize_model_summary,
-        stream_archive_chunks, summarize_provider_mix,
+        extract_openai_codex_text, extract_openai_compatible_text, extract_openai_text,
+        infer_provider_from_model, openai_codex_payload, parse_prefixed_model, run_distillation,
+        run_wisdom_distillation, sanitize_model_summary, stream_archive_chunks,
+        summarize_provider_mix,
     };
     use crate::moon::paths::MoonPaths;
     use serde_json::json;
@@ -4497,5 +4550,56 @@ filtered_noise_count: 2
         assert!(memory.contains("## Lessons Learned"));
         assert!(memory.contains("## User Preferences"));
         assert!(memory.contains("## Durable Decisions & Context"));
+    }
+
+    #[test]
+    fn openai_codex_payload_uses_instructions_and_structured_input() {
+        let payload = openai_codex_payload("gpt-5.4", "Produce a concise synthesis.");
+
+        assert_eq!(
+            payload.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.4")
+        );
+        assert!(
+            payload
+                .get("instructions")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.trim().is_empty())
+        );
+        assert_eq!(payload.get("store").and_then(|v| v.as_bool()), Some(false));
+
+        let input = payload
+            .get("input")
+            .and_then(|v| v.as_array())
+            .expect("input list");
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0].get("role").and_then(|v| v.as_str()), Some("user"));
+
+        let content = input[0]
+            .get("content")
+            .and_then(|v| v.as_array())
+            .expect("content list");
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0].get("type").and_then(|v| v.as_str()),
+            Some("input_text")
+        );
+        assert_eq!(
+            content[0].get("text").and_then(|v| v.as_str()),
+            Some("Produce a concise synthesis.")
+        );
+        assert_eq!(payload.get("stream").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn extract_openai_codex_text_reads_sse_output_text_done() {
+        let body = r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","text":"hello"}
+"#;
+
+        assert_eq!(extract_openai_codex_text(body).as_deref(), Some("hello"));
     }
 }
