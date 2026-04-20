@@ -128,6 +128,7 @@ fn remove_runtime_artifacts(
         paths.logs_dir.clone(),
         paths.context_engine_dir.clone(),
         paths.context_packet_dir.clone(),
+        paths.moon_home.join("context-packets"),
         paths.moon_home.join("docs"),
         paths.moon_home.join("README.md"),
         paths.moon_home.join(".env.example"),

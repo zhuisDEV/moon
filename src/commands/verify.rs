@@ -24,10 +24,21 @@ pub fn run(opts: &VerifyOptions) -> Result<CommandReport> {
 
     let openclaw_ready = ensure_openclaw_available(&mut report);
     if openclaw_ready {
-        if let Err(err) = doctor::run_full_doctor() {
-            report.issue(format!("doctor failed: {err:#}"));
-        } else {
-            report.detail("doctor: ok".to_string());
+        match doctor::run_full_doctor() {
+            doctor::DoctorRunOutcome::Ok => {
+                report.detail("doctor: ok".to_string());
+            }
+            doctor::DoctorRunOutcome::TimedOut {
+                message,
+                timeout_secs,
+            } => {
+                report.detail(format!(
+                    "doctor: timeout_advisory timeout_secs={timeout_secs} reason={message}"
+                ));
+            }
+            doctor::DoctorRunOutcome::Failed { message } => {
+                report.issue(format!("doctor failed: {message}"));
+            }
         }
     }
 

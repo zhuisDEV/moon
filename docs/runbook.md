@@ -79,8 +79,7 @@ Execution note:
 
 1. `assemble` is the explicit pre-dispatch boundary.
 2. It writes the operator artifact to `$MOON_HOME/mce/`.
-3. It also writes the model-facing active context packet to
-   `$MOON_HOME/context-packets/`.
+3. It also writes the model-facing active context packet to `$MOON_HOME/mcp/`.
 
 Run the integrated checkpoint controller:
 
@@ -214,7 +213,7 @@ moon restart
 3. Projection markdown: `$MOON_HOME/mds/`
 4. Cleanse summaries: `$MOON_HOME/cleanse/`
 5. Operator assembly artifacts: `$MOON_HOME/mce/`
-6. Active context packets: `$MOON_HOME/context-packets/`
+6. Active context packets: `$MOON_HOME/mcp/`
 7. Daily memory: `$MOON_MEMORY_DIR/YYYY-MM-DD.md`
 8. Durable memory: `$MOON_MEMORY_FILE`
 9. Logs: `$MOON_LOGS_DIR`

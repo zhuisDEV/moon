@@ -32,7 +32,7 @@ fn prepare_runtime_tree(moon_home: &Path) {
     fs::create_dir_all(moon_home.join("cleanse")).expect("mkdir cleanse");
     fs::create_dir_all(moon_home.join("logs")).expect("mkdir logs");
     fs::create_dir_all(moon_home.join("mce")).expect("mkdir mce");
-    fs::create_dir_all(moon_home.join("context-packets")).expect("mkdir packets");
+    fs::create_dir_all(moon_home.join("mcp")).expect("mkdir packets");
     fs::create_dir_all(moon_home.join("docs")).expect("mkdir docs");
     fs::create_dir_all(moon_home.join("state")).expect("mkdir state");
     fs::create_dir_all(moon_home.join("qmd")).expect("mkdir qmd");
@@ -159,7 +159,7 @@ fn uninstall_removes_integration_and_preserves_user_memory_by_default() {
         "assembly dir should be removed"
     );
     assert!(
-        !moon_home.join("context-packets").exists(),
+        !moon_home.join("mcp").exists(),
         "context packet dir should be removed"
     );
     assert!(

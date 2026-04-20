@@ -55,7 +55,7 @@ pub fn resolve_paths() -> Result<MoonPaths> {
     let memory_file = env_or_default_path("MOON_MEMORY_FILE", moon_home.join("MEMORY.md"));
     let logs_dir = env_or_default_path("MOON_LOGS_DIR", moon_home.join("logs"));
     let context_engine_dir = moon_home.join("mce");
-    let context_packet_dir = moon_home.join("context-packets");
+    let context_packet_dir = moon_home.join("mcp");
     let openclaw_sessions_dir = env_or_default_path(
         "OPENCLAW_SESSIONS_DIR",
         home.join(".openclaw/agents/main/sessions"),

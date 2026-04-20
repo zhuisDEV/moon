@@ -58,7 +58,7 @@ Moon now uses three distinct surfaces:
    - rich debugging/control artifact
    - not shipped directly to the model
 2. Active context packet
-   - written under `$MOON_HOME/context-packets/`
+   - written under `$MOON_HOME/mcp/`
    - deterministic, model-facing packet
    - injected by the plugin into the OpenClaw `messages` lane
 3. `cleanse` summary
@@ -147,7 +147,7 @@ Key paths:
 3. library projections: `$MOON_HOME/mlib/`
 4. cleanse summaries: `$MOON_HOME/cleanse/`
 5. operator assembly artifacts: `$MOON_HOME/mce/`
-6. active context packets: `$MOON_HOME/context-packets/`
+6. active context packets: `$MOON_HOME/mcp/`
 7. daily memory: `$MOON_HOME/memory/`
 8. durable memory: `$MOON_HOME/MEMORY.md`
 9. state: `$MOON_HOME/state/moon_state.json`
@@ -342,7 +342,7 @@ Default uninstall removes:
    - `mlib/`
    - `cleanse/`
    - `mce/`
-   - `context-packets/`
+   - `mcp/`
    - `logs/`
    - `state/`
    - `qmd/`

@@ -339,7 +339,7 @@
       - recent library docs
       - recent distilled artifacts
       - QMD recall hits when available
-    - packet artifact path is `$MOON_HOME/context-packets/<session_id>.md`
+    - packet artifact path is `$MOON_HOME/mcp/<session_id>.md`
     - local generation cache reuses the previous packet when the source corpus
       has not changed
   - `src/commands/moon_assemble.rs` and `src/commands/moon_context_engine.rs`
@@ -411,3 +411,49 @@
   - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json README.md docs/runbook.md`
   - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
   - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+
+## 2026-04-21 00:32 AEST
+
+- Renamed the default active-context packet directory from
+  `$MOON_HOME/context-packets/` to `$MOON_HOME/mcp/`.
+- Scope:
+  - `src/moon/paths.rs` now resolves `context_packet_dir` to `$MOON_HOME/mcp`
+  - packet-path tests and checkpoint assertions now expect `/mcp/<session>.md`
+  - uninstall removes both the current `mcp/` directory and the legacy
+    `context-packets/` directory
+  - README/runbook/dev notes/MIP now reflect the new default path
+- Rationale:
+  - the directory contains Moon active context packets, not operator assembly
+    artifacts
+  - `mcp` is the shorter runtime path the operator asked to standardize on
+
+## 2026-04-21 00:54 AEST
+
+- Fixed the `moon update` / `moon verify --strict` false-negative path caused by
+  transient OpenClaw doctor timeouts.
+- Implementation:
+  - `src/openclaw/gateway.rs` now resolves doctor timeout from
+    `MOON_OPENCLAW_DOCTOR_TIMEOUT_SECS` with a default of 30s
+  - `src/openclaw/doctor.rs` now classifies doctor results as:
+    - ok
+    - timed out
+    - failed
+  - `src/commands/verify.rs` now treats doctor timeout as an advisory detail
+    instead of a hard verify issue
+  - real doctor failures still fail strict verify
+- Regression coverage:
+  - added timeout advisory coverage in
+    `tests/context_engine_slot_status_test.rs`
+  - kept the existing failure-path test proving non-interactive doctor errors
+    still fail strict verify and no interactive fallback is used
+- Validation during this pass:
+  - `cargo fmt --all`
+  - `cargo test --test context_engine_slot_status_test -- --nocapture`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json README.md docs/runbook.md`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `cargo run --quiet -- --allow-out-of-bounds install`
+  - `cargo run --quiet -- verify --strict --json`

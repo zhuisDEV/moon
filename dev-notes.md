@@ -289,8 +289,7 @@ The active-context packet plan is now implemented in Moon.
 
 1. `moon context-engine` refreshes the hot projection every checkpoint, even
    when `cleanse` does not run.
-2. Moon writes a separate active context packet artifact under
-   `$MOON_HOME/context-packets/`.
+2. Moon writes a separate active context packet artifact under `$MOON_HOME/mcp/`.
 3. `assets/plugin/index.js` reads that packet and injects it into the OpenClaw
    `messages` lane during routine `assemble()`.
 4. Routine Moon `systemPromptAddition` remains unused.

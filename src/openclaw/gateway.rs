@@ -6,7 +6,15 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::Duration;
 
-const DOCTOR_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_DOCTOR_TIMEOUT_SECS: u64 = 30;
+
+pub fn configured_doctor_timeout_secs() -> u64 {
+    env::var("MOON_OPENCLAW_DOCTOR_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_DOCTOR_TIMEOUT_SECS)
+}
 
 fn ensure_executable_path(path: &Path) -> Result<()> {
     let meta = fs::metadata(path)
@@ -144,10 +152,11 @@ pub fn run_gateway_stop_start() -> Result<()> {
 }
 
 pub fn run_doctor() -> Result<()> {
+    let timeout_secs = configured_doctor_timeout_secs();
     run_openclaw_retry_with_optional_timeout(
         &["doctor", "--non-interactive"],
         2,
-        Some(DOCTOR_TIMEOUT_SECS),
+        Some(timeout_secs),
     )?;
     Ok(())
 }

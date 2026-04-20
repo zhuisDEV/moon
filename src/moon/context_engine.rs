@@ -652,7 +652,7 @@ mod tests {
             memory_file: root.join("MEMORY.md"),
             logs_dir: root.join("logs"),
             context_engine_dir: root.join("mce"),
-            context_packet_dir: root.join("context-packets"),
+            context_packet_dir: root.join("mcp"),
             openclaw_sessions_dir: root.join("sessions"),
             qmd_bin: root.join("bin/qmd"),
             qmd_db: root.join("qmd.sqlite"),
@@ -743,7 +743,7 @@ exit 0
             output
                 .context_packet_output_path
                 .as_deref()
-                .is_some_and(|path| path.ends_with("/context-packets/session-a.md"))
+                .is_some_and(|path| path.ends_with("/mcp/session-a.md"))
         );
         assert!(
             output
@@ -828,7 +828,7 @@ exit 0
             output
                 .context_packet_output_path
                 .as_deref()
-                .is_some_and(|path| path.ends_with("/context-packets/session-b.md"))
+                .is_some_and(|path| path.ends_with("/mcp/session-b.md"))
         );
         assert!(
             output

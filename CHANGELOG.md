@@ -7,6 +7,19 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-04-21
+
+### Changed
+
+- Default active-context packet directory now resolves to `$MOON_HOME/mcp/`
+  instead of `$MOON_HOME/context-packets/`.
+
+### Fixed
+
+- `moon verify --strict` now treats OpenClaw doctor timeouts as advisory when
+  Moon status is otherwise healthy, so successful `moon update` runs do not
+  return a false failure on transient doctor timeout.
+
 ## [1.0.13] - 2026-04-20
 
 ### Added

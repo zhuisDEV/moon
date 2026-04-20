@@ -1227,7 +1227,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.0.13",
+      version: "1.0.14",
       ownsCompaction: true,
     },
     bootstrap(params) {

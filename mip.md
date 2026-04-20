@@ -6,7 +6,7 @@
 2. Implemented on `2026-04-20`.
 3. The implementation now exists in the repo:
    - hot projection refresh runs every checkpoint
-   - Moon writes an active context packet under `$MOON_HOME/context-packets/`
+   - Moon writes an active context packet under `$MOON_HOME/mcp/`
    - the plugin injects that packet through the `messages` lane
    - the plugin can run the gated Moon curator subagent when configured
 4. Verified against:
