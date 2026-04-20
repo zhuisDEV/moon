@@ -339,6 +339,7 @@ mod tests {
             memory_file: root.join("MEMORY.md"),
             logs_dir: root.join("logs"),
             context_engine_dir: root.join("mce"),
+            context_packet_dir: root.join("context-packets"),
             openclaw_sessions_dir: root.join("sessions"),
             qmd_bin: root.join("bin/qmd"),
             qmd_db: root.join("qmd.sqlite"),

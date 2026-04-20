@@ -13,6 +13,7 @@ pub mod moon_record;
 pub mod moon_restart;
 pub mod moon_status;
 pub mod moon_stop;
+pub mod moon_uninstall;
 pub mod moon_watch;
 pub mod repair;
 pub mod status;

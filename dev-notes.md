@@ -282,3 +282,20 @@ Important constraint:
 - do **not** overload it with unrelated indexing telemetry or generic operator
   receipts unless a separate message-history injection contract is later
   verified
+
+## 2026-04-20 Active Packet Status
+
+The active-context packet plan is now implemented in Moon.
+
+1. `moon context-engine` refreshes the hot projection every checkpoint, even
+   when `cleanse` does not run.
+2. Moon writes a separate active context packet artifact under
+   `$MOON_HOME/context-packets/`.
+3. `assets/plugin/index.js` reads that packet and injects it into the OpenClaw
+   `messages` lane during routine `assemble()`.
+4. Routine Moon `systemPromptAddition` remains unused.
+5. When replay already contains `compactionSummary`, the plugin tells Moon via
+   `--replay-has-compaction-summary` so the packet can avoid duplicating the
+   latest `cleanse` summary.
+6. A Moon-owned embedded curator subagent is available behind plugin config and
+   only runs in gated mode over the bounded packet candidate set.

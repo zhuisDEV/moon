@@ -114,12 +114,19 @@ function createApi(
   stdout: string,
   callLog: Array<{ argv: string[]; timeoutMs: number }>,
   pluginConfigOverrides: Record<string, unknown> = {},
+  runtimeOverrides: {
+    embeddedRunner?: (params: Record<string, unknown>) => Promise<unknown>;
+  } = {},
 ) {
   return {
     pluginConfig: {
       moonPath: "moon",
       moonHome: "/tmp/moon-home",
       ...pluginConfigOverrides,
+    },
+    config: {},
+    resolvePath(value: string) {
+      return value;
     },
     runtime: {
       system: {
@@ -134,6 +141,9 @@ function createApi(
             stderr: "",
           };
         },
+      },
+      agent: {
+        runEmbeddedPiAgent: runtimeOverrides.embeddedRunner,
       },
     },
   };
@@ -371,13 +381,23 @@ Deno.test("moon plugin can keep primary-only compaction skip behavior when fallb
   }
 });
 
-Deno.test("moon plugin assemble keeps routine Moon assembly out of systemPromptAddition", async () => {
+Deno.test("moon plugin assemble injects the Moon packet into messages and keeps systemPromptAddition empty", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
   try {
     const assemblyPath = `${tempDir}/assembly.md`;
+    const packetPath = `${tempDir}/packet.md`;
     await Deno.writeTextFile(
       assemblyPath,
       "# MOON Assembly Context\n\n## Control Summary\n- session_id: session-1\n",
+    );
+    await Deno.writeTextFile(
+      packetPath,
+      [
+        "# Moon Active Context",
+        "",
+        "## Current Goal",
+        "- Keep Moon retrieval in the messages lane.",
+      ].join("\n"),
     );
 
     const stdout = JSON.stringify({
@@ -385,6 +405,10 @@ Deno.test("moon plugin assemble keeps routine Moon assembly out of systemPromptA
       ok: true,
       details: [
         `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.packet_path=${packetPath}`,
+        "context_engine.packet_candidate_count=2",
+        "context_engine.packet_cache_hit=false",
+        "context_engine.packet_query=messages lane",
         "context_engine.cleanse_summary_path=none",
         "context_engine.cleanse_reason=no-pressure-snapshot",
       ],
@@ -405,7 +429,14 @@ Deno.test("moon plugin assemble keeps routine Moon assembly out of systemPromptA
 
     assertEquals(calls.length, 1, "assemble should invoke context-engine once");
     assertEquals(Array.isArray(result.messages), true);
-    assertEquals(result.messages.length, 1);
+    assertEquals(result.messages.length, 2);
+    assertEquals(result.messages[0]?.role, "assistant");
+    assertStringIncludes(
+      JSON.stringify(result.messages[0]),
+      "Moon Active Context",
+      "assemble should inject the packet as a synthetic message",
+    );
+    assertEquals(result.messages[1]?.role, "user");
     assertEquals(
       Object.prototype.hasOwnProperty.call(result, "systemPromptAddition"),
       false,
@@ -421,6 +452,7 @@ Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only"
   try {
     const sessionFile = `${tempDir}/session.jsonl`;
     const assemblyPath = `${tempDir}/assembly.md`;
+    const packetPath = `${tempDir}/packet.md`;
     const cleansePath = `${tempDir}/cleanse.md`;
     writeSessionFile(sessionFile);
 
@@ -435,6 +467,16 @@ Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only"
         "",
         "## Cleanse Summary",
         "- Preserve the active Moon prompt boundary.",
+        "",
+      ].join("\n"),
+    );
+    await Deno.writeTextFile(
+      packetPath,
+      [
+        "# Moon Active Context",
+        "",
+        "## Active Work",
+        "- Continue the bounded Moon packet rollout.",
         "",
       ].join("\n"),
     );
@@ -457,6 +499,10 @@ Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only"
       ok: true,
       details: [
         `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.packet_path=${packetPath}`,
+        "context_engine.packet_candidate_count=2",
+        "context_engine.packet_cache_hit=false",
+        "context_engine.packet_query=bounded moon packet",
         `context_engine.cleanse_summary_path=${cleansePath}`,
         "context_engine.cleanse_reason=forced",
       ],
@@ -488,6 +534,11 @@ Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only"
     );
 
     const messages = [{
+      role: "compactionSummary",
+      summary: "Preserve the active Moon prompt boundary.",
+      tokensBefore: 80_000,
+      timestamp: 1,
+    }, {
       role: "user",
       content: [{ type: "text", text: "continue" }],
     }];
@@ -506,10 +557,163 @@ Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only"
       "assemble should not duplicate compaction summary in system prompt text",
     );
     assert(
-      !JSON.stringify(assembleResult).includes(
+      !JSON.stringify(assembleResult.messages[1] ?? {}).includes(
         "Preserve the active Moon prompt boundary.",
       ),
-      "assemble output should not surface the compaction summary text",
+      "injected Moon packet should not duplicate the compaction summary text",
+    );
+    assert(
+      calls.some((call) =>
+        call.argv.includes("--replay-has-compaction-summary")
+      ),
+      "assemble should tell Moon when compactionSummary already exists in replay",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin can gate packet curation through an embedded Moon subagent", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const assemblyPath = `${tempDir}/assembly.md`;
+    const packetPath = `${tempDir}/packet.md`;
+    await Deno.writeTextFile(assemblyPath, "# MOON Assembly Context\n");
+    await Deno.writeTextFile(
+      packetPath,
+      [
+        "# Moon Active Context",
+        "",
+        "## Current Goal",
+        "- Local packet before curation.",
+        "",
+        "## Evidence",
+        "- Candidate A",
+        "- Candidate B",
+      ].join("\n"),
+    );
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.packet_path=${packetPath}`,
+        "context_engine.packet_candidate_count=12",
+        "context_engine.packet_cache_hit=false",
+        "context_engine.packet_query=curate the packet",
+        "context_engine.cleanse_summary_path=none",
+        "context_engine.cleanse_reason=no-pressure-snapshot",
+      ],
+      issues: [],
+    });
+    const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+    const embeddedCalls: Array<Record<string, unknown>> = [];
+    const engine = __moonTest.createMoonContextEngine(
+      createApi(
+        stdout,
+        calls,
+        {
+          assemblySubagentMode: "gated",
+          assemblySubagentProvider: "openai-codex",
+          assemblySubagentModel: "gpt-5.4",
+          contextPacketCandidateThreshold: 1,
+        },
+        {
+          embeddedRunner: (params) => {
+            embeddedCalls.push(params);
+            return Promise.resolve({
+              payloads: [{
+                text:
+                  "# Moon Active Context\n\n## Current Goal\n- Curated packet.\n",
+              }],
+            });
+          },
+        },
+      ),
+    );
+
+    const params = {
+      sessionId: "session-curated",
+      sessionKey: "agent:main:test",
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: "Use recall." }],
+      }],
+      tokenBudget: 20_000,
+      prompt: "Recall the most relevant current context.",
+    };
+    const first = await engine.assemble(params);
+    const second = await engine.assemble(params);
+
+    assertEquals(
+      calls.length,
+      2,
+      "context-engine should still run on both turns",
+    );
+    assertEquals(embeddedCalls.length, 1, "curator result should be cached");
+    assertStringIncludes(JSON.stringify(first.messages[0]), "Curated packet");
+    assertStringIncludes(JSON.stringify(second.messages[0]), "Curated packet");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin falls back to the local packet when curator fails", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
+  try {
+    const assemblyPath = `${tempDir}/assembly.md`;
+    const packetPath = `${tempDir}/packet.md`;
+    await Deno.writeTextFile(assemblyPath, "# MOON Assembly Context\n");
+    await Deno.writeTextFile(
+      packetPath,
+      "# Moon Active Context\n\n## Current Goal\n- Local packet survives.\n",
+    );
+
+    const stdout = JSON.stringify({
+      command: "context-engine",
+      ok: true,
+      details: [
+        `context_engine.assembly_path=${assemblyPath}`,
+        `context_engine.packet_path=${packetPath}`,
+        "context_engine.packet_candidate_count=99",
+        "context_engine.packet_cache_hit=false",
+        "context_engine.packet_query=why did we do this",
+        "context_engine.cleanse_summary_path=none",
+        "context_engine.cleanse_reason=no-pressure-snapshot",
+      ],
+      issues: [],
+    });
+    const engine = __moonTest.createMoonContextEngine(
+      createApi(
+        stdout,
+        [],
+        {
+          assemblySubagentMode: "gated",
+          assemblySubagentProvider: "openai-codex",
+          assemblySubagentModel: "gpt-5.4",
+          contextPacketCandidateThreshold: 1,
+        },
+        {
+          embeddedRunner: () => Promise.reject(new Error("timeout")),
+        },
+      ),
+    );
+
+    const result = await engine.assemble({
+      sessionId: "session-fallback",
+      sessionKey: "agent:main:test",
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: "What happened?" }],
+      }],
+      tokenBudget: 20_000,
+      prompt: "Recall the most relevant current context.",
+    });
+
+    assertStringIncludes(
+      JSON.stringify(result.messages[0]),
+      "Local packet survives",
     );
   } finally {
     await Deno.remove(tempDir, { recursive: true });

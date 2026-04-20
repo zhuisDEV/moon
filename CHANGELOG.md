@@ -7,6 +7,37 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-04-20
+
+### Added
+
+- Added the Moon active-context packet path end to end:
+  - routine hot projection refresh on every checkpoint
+  - packet artifact generation under `$MOON_HOME/context-packets/`
+  - plugin-side packet injection through the OpenClaw `messages` lane
+  - optional gated Moon-owned curator subagent for packet curation
+- Added `moon uninstall` with:
+  - safe default cleanup for OpenClaw integration and generated Moon runtime artifacts
+  - `--purge` for full `MOON_HOME` removal
+  - `--remove-binary` to attempt `cargo uninstall moon`
+
+### Changed
+
+- Rewrote `README.md` to reflect the current Moon architecture, command surface,
+  Codex OAuth flow, active packet design, and uninstall behavior.
+
+### Fixed
+
+- `moon status` and `moon health` now treat the context-packet dir as
+  not-yet-created runtime state instead of a hard failure when no packet has
+  been generated yet.
+
+### Docs
+
+- Updated `docs/runbook.md`, `docs/contracts.md`, `assets/plugin/README.md`,
+  `dev-notes.md`, `moon.toml.example`, `mip.md`, and `handoff.md` to match the
+  current runtime and uninstall contract.
+
 ## [1.0.12] - 2026-04-20
 
 ### Added

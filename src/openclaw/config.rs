@@ -129,6 +129,68 @@ fn remove_path(root: &mut Value, path: &[&str], outcome: &mut ConfigPatchOutcome
     }
 }
 
+fn remove_path_if_string_equals(
+    root: &mut Value,
+    path: &[&str],
+    expected: &str,
+    outcome: &mut ConfigPatchOutcome,
+) {
+    if path.is_empty() {
+        return;
+    }
+    let mut cursor = root;
+    for key in &path[..path.len() - 1] {
+        let Some(next) = cursor.get_mut(*key) else {
+            return;
+        };
+        cursor = next;
+    }
+    let Some(map) = cursor.as_object_mut() else {
+        return;
+    };
+    let leaf = path[path.len() - 1];
+    if map
+        .get(leaf)
+        .and_then(Value::as_str)
+        .is_some_and(|current| current == expected)
+    {
+        map.remove(leaf);
+        outcome.changed = true;
+        outcome.removed_paths.push(path.join("."));
+    }
+}
+
+fn remove_path_if_bool_equals(
+    root: &mut Value,
+    path: &[&str],
+    expected: bool,
+    outcome: &mut ConfigPatchOutcome,
+) {
+    if path.is_empty() {
+        return;
+    }
+    let mut cursor = root;
+    for key in &path[..path.len() - 1] {
+        let Some(next) = cursor.get_mut(*key) else {
+            return;
+        };
+        cursor = next;
+    }
+    let Some(map) = cursor.as_object_mut() else {
+        return;
+    };
+    let leaf = path[path.len() - 1];
+    if map
+        .get(leaf)
+        .and_then(Value::as_bool)
+        .is_some_and(|current| current == expected)
+    {
+        map.remove(leaf);
+        outcome.changed = true;
+        outcome.removed_paths.push(path.join("."));
+    }
+}
+
 fn patch_channel_limits(root: &mut Value, force: bool, outcome: &mut ConfigPatchOutcome) {
     let Some(channels) = root.get_mut("channels") else {
         return;
@@ -458,6 +520,28 @@ pub fn ensure_moon_owned_memory_contract(root: &mut Value) -> ConfigPatchOutcome
         &["agents", "defaults", "memorySearch", "enabled"],
         Value::from(false),
         true,
+        &mut outcome,
+    );
+
+    outcome
+}
+
+pub fn remove_moon_installation_config(root: &mut Value, plugin_id: &str) -> ConfigPatchOutcome {
+    let mut outcome = ConfigPatchOutcome::default();
+
+    remove_path(root, &["plugins", "entries", plugin_id], &mut outcome);
+    remove_path(root, &["plugins", "installs", plugin_id], &mut outcome);
+    remove_path_if_string_equals(
+        root,
+        &["plugins", "slots", "contextEngine"],
+        plugin_id,
+        &mut outcome,
+    );
+    remove_path_if_string_equals(root, &["plugins", "slots", "memory"], "none", &mut outcome);
+    remove_path_if_bool_equals(
+        root,
+        &["agents", "defaults", "memorySearch", "enabled"],
+        false,
         &mut outcome,
     );
 

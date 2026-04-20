@@ -22,6 +22,39 @@
         "minimum": 1000,
         "maximum": 300000
       },
+      "contextPacketMaxTokens": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 20000
+      },
+      "contextPacketCandidateThreshold": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      },
+      "assemblySubagentMode": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "gated"
+        ]
+      },
+      "assemblySubagentProvider": {
+        "type": "string"
+      },
+      "assemblySubagentModel": {
+        "type": "string"
+      },
+      "assemblySubagentTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 120000
+      },
+      "assemblySubagentCacheTtlMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 86400000
+      },
       "maxAssemblyChars": {
         "type": "integer",
         "minimum": 1000,

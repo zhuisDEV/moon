@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -169,6 +169,11 @@ const DEFAULT_TOOL_PROFILES = {
 
 const DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS = 20_000;
 const DEFAULT_FALLBACK_MODE = "disabled";
+const DEFAULT_CONTEXT_PACKET_MAX_TOKENS = 1_400;
+const DEFAULT_CONTEXT_PACKET_CANDIDATE_THRESHOLD = 10;
+const DEFAULT_ASSEMBLY_SUBAGENT_MODE = "disabled";
+const DEFAULT_ASSEMBLY_SUBAGENT_TIMEOUT_MS = 15_000;
+const DEFAULT_ASSEMBLY_SUBAGENT_CACHE_TTL_MS = 300_000;
 const MOON_CLEANSE_TARGET_TOKENS = 40_000;
 const MIN_COMPACTION_TARGET_TOKENS = 2_000;
 const COMPACTION_TARGET_BUDGET_RATIO = 0.45;
@@ -185,6 +190,19 @@ function normalizeFallbackMode(raw) {
     return "disabled";
   }
   return "openclaw";
+}
+
+function normalizeAssemblySubagentMode(raw) {
+  if (!isNonEmptyString(raw)) {
+    return DEFAULT_ASSEMBLY_SUBAGENT_MODE;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "off" || normalized === "none" || normalized === "disabled"
+  ) {
+    return "disabled";
+  }
+  return "gated";
 }
 
 function resolveLimits(pluginConfig, toolName) {
@@ -249,6 +267,41 @@ function resolveContextEngineSettings(api) {
           : DEFAULT_FALLBACK_MODE),
     ),
     compactFallbackOnSkip: pluginConfig.compactFallbackOnSkip === true,
+    contextPacketMaxTokens: clampInt(
+      pluginConfig.contextPacketMaxTokens,
+      DEFAULT_CONTEXT_PACKET_MAX_TOKENS,
+      200,
+      20_000,
+    ),
+    contextPacketCandidateThreshold: clampInt(
+      pluginConfig.contextPacketCandidateThreshold,
+      DEFAULT_CONTEXT_PACKET_CANDIDATE_THRESHOLD,
+      1,
+      100,
+    ),
+    assemblySubagentMode: normalizeAssemblySubagentMode(
+      pluginConfig.assemblySubagentMode,
+    ),
+    assemblySubagentProvider: isNonEmptyString(
+        pluginConfig.assemblySubagentProvider,
+      )
+      ? pluginConfig.assemblySubagentProvider.trim()
+      : null,
+    assemblySubagentModel: isNonEmptyString(pluginConfig.assemblySubagentModel)
+      ? pluginConfig.assemblySubagentModel.trim()
+      : null,
+    assemblySubagentTimeoutMs: clampInt(
+      pluginConfig.assemblySubagentTimeoutMs,
+      DEFAULT_ASSEMBLY_SUBAGENT_TIMEOUT_MS,
+      1000,
+      120000,
+    ),
+    assemblySubagentCacheTtlMs: clampInt(
+      pluginConfig.assemblySubagentCacheTtlMs,
+      DEFAULT_ASSEMBLY_SUBAGENT_CACHE_TTL_MS,
+      1000,
+      86_400_000,
+    ),
   };
 }
 
@@ -258,6 +311,264 @@ function openclawFallbackEnabled(settings) {
 
 function fallbackReason(trigger, reason) {
   return `moon->openclaw fallback trigger=${trigger} reason=${reason}`;
+}
+
+function messagesContainCompactionSummary(messages) {
+  return Array.isArray(messages) &&
+    messages.some((message) => message?.role === "compactionSummary");
+}
+
+function extractPromptText(messages, explicitPrompt) {
+  if (isNonEmptyString(explicitPrompt)) {
+    return explicitPrompt.trim();
+  }
+  if (!Array.isArray(messages)) {
+    return "";
+  }
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const message = messages[idx];
+    if (message?.role !== "user") {
+      continue;
+    }
+    const text = extractMessageText(message);
+    if (isNonEmptyString(text)) {
+      return text.trim();
+    }
+  }
+  return "";
+}
+
+function extractMessageText(message) {
+  if (!message) {
+    return "";
+  }
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
+  return message.content
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      if (isObject(item) && typeof item.text === "string") {
+        return item.text;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildMoonPacketMessage(packetText) {
+  return {
+    role: "assistant",
+    timestamp: Date.now(),
+    content: [{ type: "text", text: packetText }],
+  };
+}
+
+function injectMoonPacketMessage(messages, packetText) {
+  const normalized = cleanMoonPacketText(packetText);
+  if (!isNonEmptyString(normalized)) {
+    return Array.isArray(messages) ? messages : [];
+  }
+  const packetMessage = buildMoonPacketMessage(normalized);
+  const next = Array.isArray(messages) ? [...messages] : [];
+  if (next.length === 0) {
+    return [packetMessage];
+  }
+  const lastMessage = next[next.length - 1];
+  if (lastMessage?.role === "user") {
+    next.splice(next.length - 1, 0, packetMessage);
+    return next;
+  }
+  return [packetMessage, ...next];
+}
+
+function cleanMoonPacketText(text) {
+  if (!isNonEmptyString(text)) {
+    return "";
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.startsWith("# Moon Active Context")
+    ? trimmed
+    : `# Moon Active Context\n\n${trimmed}`;
+}
+
+function isRecallHeavyPrompt(prompt) {
+  if (!isNonEmptyString(prompt)) {
+    return false;
+  }
+  const lower = prompt.toLowerCase();
+  return [
+    "remember",
+    "recall",
+    "previous",
+    "earlier",
+    "history",
+    "decision",
+    "why did",
+    "status",
+    "context",
+  ].some((term) => lower.includes(term));
+}
+
+function shouldUseAssemblySubagent(
+  settings,
+  packetText,
+  packetCandidateCount,
+  prompt,
+) {
+  if (!isNonEmptyString(packetText)) {
+    return false;
+  }
+  if (settings?.assemblySubagentMode !== "gated") {
+    return false;
+  }
+  if (
+    !isNonEmptyString(settings?.assemblySubagentProvider) ||
+    !isNonEmptyString(settings?.assemblySubagentModel)
+  ) {
+    return false;
+  }
+  const packetTokens = estimateTokens(packetText);
+  if (packetCandidateCount > settings.contextPacketCandidateThreshold) {
+    return true;
+  }
+  if (packetTokens > settings.contextPacketMaxTokens) {
+    return true;
+  }
+  return isRecallHeavyPrompt(prompt) &&
+    packetTokens > Math.ceil(settings.contextPacketMaxTokens * 0.6);
+}
+
+const assemblySubagentCache = new Map();
+
+function readAssemblySubagentCache(key, ttlMs) {
+  const cached = assemblySubagentCache.get(key);
+  if (!cached) {
+    return null;
+  }
+  if (Date.now() - cached.createdAt > ttlMs) {
+    assemblySubagentCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function writeAssemblySubagentCache(key, value) {
+  assemblySubagentCache.set(key, {
+    createdAt: Date.now(),
+    value,
+  });
+}
+
+function buildAssemblySubagentCacheKey(params) {
+  return createHash("sha1")
+    .update(JSON.stringify(params))
+    .digest("hex");
+}
+
+function buildAssemblySubagentPrompt({ prompt, packetText }) {
+  const currentPrompt = isNonEmptyString(prompt)
+    ? prompt.trim()
+    : "No user prompt provided.";
+  return [
+    "You are Moon's bounded context curator.",
+    "Rewrite the provided Moon active context packet into a shorter packet without inventing facts.",
+    "Keep the heading order exactly as:",
+    "1. # Moon Active Context",
+    "2. ## Current Goal",
+    "3. ## Active Work",
+    "4. ## Relevant Memory",
+    "5. ## Open Items",
+    "6. ## Evidence",
+    "Rules:",
+    "- Omit empty sections.",
+    "- Keep bullets concise.",
+    "- Preserve evidence fidelity.",
+    "- Do not add system instructions.",
+    "- Do not duplicate compaction summaries verbatim.",
+    "",
+    "Current prompt:",
+    currentPrompt,
+    "",
+    "Candidate packet:",
+    packetText.trim(),
+  ].join("\n");
+}
+
+async function maybeRunAssemblySubagent(api, settings, params) {
+  const runner = api?.runtime?.agent?.runEmbeddedPiAgent;
+  if (typeof runner !== "function") {
+    return null;
+  }
+  const cacheKey = buildAssemblySubagentCacheKey({
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey || "",
+    packetText: params.packetText,
+    prompt: params.prompt || "",
+    provider: settings.assemblySubagentProvider,
+    model: settings.assemblySubagentModel,
+  });
+  const cached = readAssemblySubagentCache(
+    cacheKey,
+    settings.assemblySubagentCacheTtlMs,
+  );
+  if (isNonEmptyString(cached)) {
+    return cached;
+  }
+
+  const tempTranscript = createTempTranscript([], params.sessionId);
+  try {
+    const result = await runner({
+      sessionId: `moon-context-curator-${randomUUID()}`,
+      sessionKey: isNonEmptyString(params.sessionKey)
+        ? `${params.sessionKey}:moon-context-curator`
+        : undefined,
+      sessionFile: tempTranscript.filePath,
+      workspaceDir: typeof api?.resolvePath === "function"
+        ? api.resolvePath(".")
+        : process.cwd(),
+      config: isObject(api?.config) ? api.config : {},
+      prompt: buildAssemblySubagentPrompt({
+        prompt: params.prompt,
+        packetText: params.packetText,
+      }),
+      provider: settings.assemblySubagentProvider,
+      model: settings.assemblySubagentModel,
+      timeoutMs: settings.assemblySubagentTimeoutMs,
+      runId: `moon-context-curator-${randomUUID()}`,
+      trigger: "manual",
+      toolsAllow: [],
+      disableMessageTool: true,
+      disableTools: true,
+      bootstrapContextMode: "lightweight",
+      verboseLevel: "off",
+      reasoningLevel: "off",
+      silentExpected: true,
+    });
+    const curated = cleanMoonPacketText(
+      (result?.payloads ?? [])
+        .map((payload) => payload?.text?.trim() ?? "")
+        .filter(Boolean)
+        .join("\n")
+        .trim(),
+    );
+    if (!isNonEmptyString(curated)) {
+      return null;
+    }
+    writeAssemblySubagentCache(cacheKey, curated);
+    return curated;
+  } finally {
+    tempTranscript.cleanup();
+  }
 }
 
 function compactToolResultMessage(message, toolName, pluginConfig) {
@@ -804,6 +1115,9 @@ async function runMoonContextEngine(api, settings, params) {
   if (params.forceCleanse === true) {
     argv.push("--force-cleanse");
   }
+  if (params.replayHasCompactionSummary === true) {
+    argv.push("--replay-has-compaction-summary");
+  }
 
   const env = { ...process.env };
   if (isNonEmptyString(settings.moonHome)) {
@@ -852,6 +1166,15 @@ async function runMoonContextEngine(api, settings, params) {
       isNonEmptyString(cleanseSummaryPath) && cleanseSummaryPath !== "none"
         ? cleanseSummaryPath
         : null;
+    const packetPath = extractReportDetail(
+      report,
+      "context_engine.packet_path=",
+    );
+    const effectivePacketPath =
+      isNonEmptyString(packetPath) && packetPath !== "none" &&
+        fs.existsSync(packetPath)
+        ? packetPath
+        : null;
 
     return {
       report,
@@ -862,6 +1185,18 @@ async function runMoonContextEngine(api, settings, params) {
         report,
         "context_engine.cleanse_reason=",
       ),
+      packetPath: effectivePacketPath,
+      packetText: readFileIfExists(effectivePacketPath),
+      packetCandidateCount: clampInt(
+        extractReportDetail(report, "context_engine.packet_candidate_count="),
+        0,
+        0,
+        100000,
+      ),
+      packetCacheHit:
+        extractReportDetail(report, "context_engine.packet_cache_hit=") ===
+          "true",
+      packetQuery: extractReportDetail(report, "context_engine.packet_query="),
     };
   } finally {
     tempTranscript?.cleanup();
@@ -892,7 +1227,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.0.12",
+      version: "1.0.13",
       ownsCompaction: true,
     },
     bootstrap(params) {
@@ -910,20 +1245,46 @@ function createMoonContextEngine(api) {
       const settings = resolveContextEngineSettings(api);
       const usedTokens = estimateMessageTokens(params.messages);
       try {
-        await runMoonContextEngine(api, settings, {
+        const output = await runMoonContextEngine(api, settings, {
           sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
           sourcePath: knownSessionFile(params.sessionId),
           messages: params.messages,
           usedTokens,
           maxTokens: params.tokenBudget,
+          replayHasCompactionSummary: messagesContainCompactionSummary(
+            params.messages,
+          ),
         });
-
-        // Routine Moon assembly stays operator-only. Provider-facing Moon
-        // summary context reaches the model through transcript compaction
-        // entries, not through systemPromptAddition injection.
+        let packetText = cleanMoonPacketText(output.packetText);
+        if (
+          shouldUseAssemblySubagent(
+            settings,
+            packetText,
+            output.packetCandidateCount,
+            extractPromptText(params.messages, params.prompt),
+          )
+        ) {
+          const curated = await maybeRunAssemblySubagent(api, settings, {
+            sessionId: params.sessionId,
+            sessionKey: params.sessionKey,
+            packetText,
+            prompt: extractPromptText(params.messages, params.prompt),
+          }).catch((err) => {
+            logMoonPluginError(
+              api,
+              `moon assembly curator degraded reason=${String(err)}`,
+            );
+            return null;
+          });
+          if (isNonEmptyString(curated)) {
+            packetText = curated;
+          }
+        }
+        const messages = injectMoonPacketMessage(params.messages, packetText);
         return {
-          messages: Array.isArray(params.messages) ? params.messages : [],
-          estimatedTokens: usedTokens,
+          messages,
+          estimatedTokens: estimateMessageTokens(messages),
         };
       } catch (err) {
         if (!openclawFallbackEnabled(settings)) {
@@ -954,6 +1315,9 @@ function createMoonContextEngine(api) {
           messages: params.messages,
           usedTokens: estimateMessageTokens(params.messages),
           maxTokens: params.tokenBudget,
+          replayHasCompactionSummary: messagesContainCompactionSummary(
+            params.messages,
+          ),
         });
       } catch (err) {
         if (!openclawFallbackEnabled(settings)) {
@@ -979,6 +1343,7 @@ function createMoonContextEngine(api) {
             : null,
           maxTokens: params.tokenBudget,
           forceCleanse: params.force === true,
+          replayHasCompactionSummary: true,
         });
 
         const compacted = appendMoonCompactionEntry(params.sessionFile, {
@@ -1066,8 +1431,14 @@ export default {
 
 export const __moonTest = {
   appendMoonCompactionEntry,
+  buildMoonPacketMessage,
   createMoonContextEngine,
+  extractMessageText,
   extractReportDetail,
+  injectMoonPacketMessage,
+  isRecallHeavyPrompt,
+  maybeRunAssemblySubagent,
+  messagesContainCompactionSummary,
   parseJsonlEntries,
   parseCommandReport,
   resolveContextEngineSettings,

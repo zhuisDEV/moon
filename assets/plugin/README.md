@@ -13,16 +13,20 @@ When OpenClaw selects `plugins.slots.contextEngine = "moon"`, the plugin:
 2. invokes the managed `moon` binary as a short-lived checkpoint at `assemble`
 3. keeps the assembled MOON artifact as operator/debug state instead of
    injecting it into routine runtime system-prompt text
-4. syncs post-turn state through `afterTurn`
-5. owns same-turn overflow compaction through `compact`
-6. appends MOON-owned `compaction` entries into the OpenClaw session transcript
+4. reads the Moon active context packet and injects it into the OpenClaw
+   `messages` lane
+5. can optionally run a gated Moon-owned curator subagent over that packet
+6. syncs post-turn state through `afterTurn`
+7. owns same-turn overflow compaction through `compact`
+8. appends MOON-owned `compaction` entries into the OpenClaw session transcript
    using the latest `cleanse` summary
 
 Model-facing summary rule:
 
 1. routine Moon assembly does not return `systemPromptAddition`
-2. Moon `cleanse` summaries travel through transcript `compaction` entries
-3. OpenClaw replays those entries as `compactionSummary` message-history context
+2. routine Moon assembly injects the active context packet through `messages`
+3. Moon `cleanse` summaries travel through transcript `compaction` entries
+4. OpenClaw replays those entries as `compactionSummary` message-history context
 
 Compaction rule:
 
@@ -56,11 +60,20 @@ Under `plugins.entries.moon.config`:
 4. `memoryFile` (MOON durable memory file, typically `$MOON_HOME/MEMORY.md`)
 5. `contextEngineTimeoutMs` (default `20000`)
 6. `maxAssemblyChars` (deprecated compatibility no-op; accepted but ignored)
-7. `syncAfterTurn` (default `true`)
-8. `fallbackMode` (`openclaw` or `disabled`, default `disabled`)
-9. `compactFallbackOnSkip` (default `false`)
-10. `maxTokens` (default `12000`)
-11. `maxChars` (default `60000`)
-12. `maxRetainedBytes` (default `250000`)
-13. `tools.<tool>.maxTokens`
-14. `tools.<tool>.maxChars`
+7. `contextPacketMaxTokens` (gating threshold for local packet size, default
+   `1400`)
+8. `contextPacketCandidateThreshold` (gating threshold for candidate count,
+   default `10`)
+9. `assemblySubagentMode` (`disabled` or `gated`, default `disabled`)
+10. `assemblySubagentProvider` (required when gated curation is enabled)
+11. `assemblySubagentModel` (required when gated curation is enabled)
+12. `assemblySubagentTimeoutMs` (default `15000`)
+13. `assemblySubagentCacheTtlMs` (default `300000`)
+14. `syncAfterTurn` (default `true`)
+15. `fallbackMode` (`openclaw` or `disabled`, default `disabled`)
+16. `compactFallbackOnSkip` (default `false`)
+17. `maxTokens` (default `12000`)
+18. `maxChars` (default `60000`)
+19. `maxRetainedBytes` (default `250000`)
+20. `tools.<tool>.maxTokens`
+21. `tools.<tool>.maxChars`

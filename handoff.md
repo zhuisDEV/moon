@@ -294,3 +294,120 @@
     - refresh of an expired managed credential before the Codex request
   - updated `README.md`, `docs/runbook.md`, `.env.example`, and
     `src/commands/install.rs` to document `moon login`
+
+## 2026-04-20 20:55 AEST
+
+- Rewrote `mip.md` as the next control-plan MIP for Moon active context
+  assembly and memory-management performance.
+- Verified planning baseline before the rewrite:
+  - Moon `main` at `1b1254b5464a473f65336c3d97420a768526d61a`
+  - OpenClaw `origin/main` at `94e2bf258d6ee35f4661c73bc3400c6bba52885a`
+- New planning direction:
+  - keep OpenClaw `active-memory` disabled
+  - keep routine Moon `systemPromptAddition` unused
+  - move Moon active context into the `messages` lane as a Moon-owned active
+    context packet
+  - refresh the hot searchable corpus on every checkpoint, not only when
+    `cleanse` runs
+  - add deterministic Moon retrieval first
+  - add a bounded Moon-owned curator subagent in the plugin only as a gated
+    second-stage selector
+- The rewritten MIP now includes:
+  - verified baseline and ownership boundary
+  - target architecture for packet retrieval and placement
+  - config plan
+  - phased implementation plan
+  - test plan
+  - rollout and acceptance criteria
+
+## 2026-04-20 23:40 AEST
+
+- Implemented the active-context packet MIP end to end.
+- Rust control-plane changes:
+  - `src/moon/context_engine.rs`
+    - hot projection now refreshes every checkpoint, not only on `cleanse`
+    - context-engine now builds a separate active context packet artifact
+    - context-engine reports packet path, chars, candidate count, cache hit, and
+      query
+  - new `src/moon/context_packet.rs`
+    - deterministic packet builder over:
+      - hot projection / raw session projection data
+      - latest `cleanse` summary when replay does not already have
+        `compactionSummary`
+      - durable `MEMORY.md`
+      - recent daily memory files
+      - recent library docs
+      - recent distilled artifacts
+      - QMD recall hits when available
+    - packet artifact path is `$MOON_HOME/context-packets/<session_id>.md`
+    - local generation cache reuses the previous packet when the source corpus
+      has not changed
+  - `src/commands/moon_assemble.rs` and `src/commands/moon_context_engine.rs`
+    now surface packet diagnostics
+  - `src/commands/moon_status.rs` and `src/commands/moon_health.rs` now report
+    the packet directory/state without treating a not-yet-created packet
+    directory as a failure
+  - added `context_packet` config to `src/moon/config.rs`,
+    `moon.toml.example`, and state tracking in `src/moon/state.rs`
+- Plugin changes:
+  - `assets/plugin/index.js`
+    - reads `context_engine.packet_*` details
+    - injects the packet into the OpenClaw `messages` lane during routine
+      `assemble()`
+    - keeps routine `systemPromptAddition` unused
+    - passes `--replay-has-compaction-summary` back to Moon when replay already
+      contains `compactionSummary`
+    - adds an optional gated Moon-owned curator subagent path hosted via
+      `api.runtime.agent.runEmbeddedPiAgent`
+    - caches curator outputs by session/prompt/packet fingerprint
+  - `assets/plugin/openclaw.plugin.json`
+    - added packet/subagent config schema keys
+    - kept `maxAssemblyChars` as a deprecated compatibility no-op
+- Docs updated:
+  - `README.md`
+  - `docs/contracts.md`
+  - `assets/plugin/README.md`
+  - `dev-notes.md`
+  - `moon.toml.example`
+  - `mip.md` status now marks the plan implemented
+- Verification:
+  - `cargo fmt --all`
+  - `cargo test --all-targets --all-features`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `deno fmt assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+
+## 2026-04-20 23:58 AEST
+
+- Added `moon uninstall` and wired it into the CLI.
+- Uninstall behavior:
+  - default uninstall removes runtime artifacts, daemon wiring, OpenClaw plugin
+    integration, and Moon runtime skills
+  - preserves user-owned state by default:
+    - `$MOON_HOME/memory/`
+    - `$MOON_HOME/MEMORY.md`
+    - `$MOON_HOME/.env`
+    - `$MOON_HOME/moon.toml`
+    - `$MOON_HOME/auth/`
+  - `--purge` removes the full `MOON_HOME`
+  - `--remove-binary` attempts `cargo uninstall moon`
+- Added OpenClaw cleanup helpers for uninstall:
+  - removes `plugins.entries.moon`
+  - removes `plugins.installs.moon`
+  - clears Moon-owned slot/config toggles when present
+- Rewrote `README.md` to reflect the current Moon architecture and command
+  surface, including the active-context packet and uninstall flow.
+- Updated `docs/runbook.md` for current runtime paths, assemble behavior, and
+  uninstall usage.
+- Added uninstall regression tests in `tests/uninstall_flow_test.rs`.
+- Validation run during this pass:
+  - `cargo fmt --all`
+  - `deno fmt README.md docs/runbook.md assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json`
+  - `cargo test --test uninstall_flow_test -- --nocapture`
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json README.md docs/runbook.md`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`

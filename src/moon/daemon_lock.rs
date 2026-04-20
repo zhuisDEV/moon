@@ -175,6 +175,7 @@ mod tests {
             memory_file: moon_home.join("MEMORY.md"),
             logs_dir: moon_home.join("logs"),
             context_engine_dir: moon_home.join("mce"),
+            context_packet_dir: moon_home.join("context-packets"),
             openclaw_sessions_dir: home.join(".openclaw/agents/main/sessions"),
             qmd_bin: home.join(".bun/bin/qmd"),
             qmd_db: moon_home.join("qmd/index.sqlite"),

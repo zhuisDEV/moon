@@ -6,6 +6,11 @@ use crate::moon::assemble::{
     write_assembly_output,
 };
 use crate::moon::audit;
+use crate::moon::config::load_config;
+use crate::moon::context_packet::{
+    ContextPacketInput, build_context_packet, output_path as context_packet_output_path,
+    write_context_packet_output,
+};
 use crate::moon::paths::resolve_paths;
 use crate::moon::state::{load, save};
 
@@ -14,6 +19,7 @@ pub struct MoonAssembleOptions {
     pub source_path: Option<String>,
     pub session_id: Option<String>,
     pub dry_run: bool,
+    pub replay_has_compaction_summary: bool,
 }
 
 pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
@@ -55,6 +61,39 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
         output.assembled_at_epoch_secs
     ));
 
+    let cfg = load_config().unwrap_or_default();
+    let context_packet = cfg
+        .context_packet
+        .enabled
+        .then(|| {
+            build_context_packet(
+                &paths,
+                &state,
+                &cfg.context_packet,
+                &ContextPacketInput {
+                    session_id: output.session_id.clone(),
+                    raw_source_path: input.raw_source_path.clone(),
+                    cleanse_summary_path: input.cleanse_summary_path.clone(),
+                    replay_has_compaction_summary: opts.replay_has_compaction_summary,
+                },
+            )
+        })
+        .transpose()?;
+    if let Some(packet) = context_packet.as_ref() {
+        report.detail(format!(
+            "assemble.packet_output_path={}",
+            context_packet_output_path(&paths, &packet.session_id).display()
+        ));
+        report.detail(format!(
+            "assemble.packet_chars={}",
+            packet.content.chars().count()
+        ));
+        report.detail(format!(
+            "assemble.packet_candidate_count={}",
+            packet.candidate_count
+        ));
+    }
+
     if opts.dry_run {
         report.detail("assemble.dry_run=true".to_string());
         return Ok(report);
@@ -62,6 +101,18 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
 
     let written_path = write_assembly_output(&paths, &output.session_id, &output.content)?;
     report.detail(format!("assemble.written_path={}", written_path.display()));
+    if let Some(packet) = context_packet.as_ref() {
+        let written_packet_path =
+            write_context_packet_output(&paths, &packet.session_id, &packet.content)?;
+        report.detail(format!(
+            "assemble.packet_written_path={}",
+            written_packet_path.display()
+        ));
+        state.last_context_packet_session_id = Some(packet.session_id.clone());
+        state.last_context_packet_epoch_secs = Some(packet.packet_at_epoch_secs);
+        state.last_context_packet_generation = Some(packet.generation.clone());
+        state.last_context_packet_candidate_count = Some(packet.candidate_count);
+    }
 
     state.last_session_id = Some(output.session_id.clone());
     state.last_assembly_session_id = Some(output.session_id.clone());

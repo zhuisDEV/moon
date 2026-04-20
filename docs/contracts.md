@@ -19,11 +19,12 @@ contracts.
 1. MOON owns the normal-path context preparation flow before model dispatch.
 2. `record` always runs at a stable checkpoint.
 3. `cleanse` runs only when pressure policy requires compaction.
-4. `project` is deterministic background/deferred work and is not the same as
-   `cleanse`.
-5. `assemble` is the pre-dispatch control boundary for the next active context
+4. the hot `project` refresh runs every checkpoint so active retrieval stays
+   current even when `cleanse` does not fire.
+5. `project` is deterministic projection work and is not the same as `cleanse`.
+6. `assemble` is the pre-dispatch control boundary for the next active context
    window.
-6. Search and memory maintenance are downstream support systems, not the control
+7. Search and memory maintenance are downstream support systems, not the control
    plane.
 
 ## OpenClaw Boundary
@@ -34,6 +35,7 @@ Moon and OpenClaw have separate ownership boundaries.
    - checkpointing
    - conditional `cleanse`
    - operator/debug assembly artifacts
+   - model-facing active context packet generation
    - transcript `compaction` entry creation
 2. OpenClaw owns:
    - final system prompt assembly
@@ -112,6 +114,8 @@ Output contract:
 1. write `$MOON_HOME/mds/<session_id>.md`
 2. preserve high-signal user, assistant, and tool activity
 3. remove obvious transport noise deterministically
+4. refresh the hot searchable session projection every checkpoint, not only
+   during `cleanse`
 
 Rules:
 
@@ -171,22 +175,26 @@ Input contract:
 Output contract:
 
 1. write an operator/debug assembly artifact for the active window
-2. preserve the latest `cleanse` summary in that artifact when compaction has
-   run
-3. exclude bulk search receipts, embed logs, and low-signal transport noise from
+2. write a separate model-facing active context packet for message-lane
+   injection
+3. preserve the latest `cleanse` summary in the operator artifact when
+   compaction has run
+4. exclude bulk search receipts, embed logs, and low-signal transport noise from
    model-facing prompt text
-4. avoid routine `systemPromptAddition` injection for normal Moon context
+5. avoid routine `systemPromptAddition` injection for normal Moon context
 
 Rules:
 
 1. `assemble` is the primary control boundary before model dispatch
-2. `assemble` must not treat the operator artifact as the final provider-facing
+2. the model-facing packet must travel through the OpenClaw `messages` lane,
+   not through routine system-prompt injection
+3. `assemble` must not treat the operator artifact as the final provider-facing
    prompt
-3. `assemble` must stay focused on prompt/context composition, not background
+4. `assemble` must stay focused on prompt/context composition, not background
    maintenance
-4. fallback behavior must not be embedded into the normal-path `assemble`
+5. fallback behavior must not be embedded into the normal-path `assemble`
    contract
-5. normal-path Moon summary content should reach the model through the verified
+6. normal-path Moon summary content should reach the model through the verified
    transcript compaction lane, not through routine system-prompt injection
 
 ## Search Support Contracts

@@ -11,6 +11,7 @@ pub struct MoonContextEngineOptions {
     pub used_tokens: Option<u64>,
     pub max_tokens: Option<u64>,
     pub force_cleanse: bool,
+    pub replay_has_compaction_summary: bool,
 }
 
 pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
@@ -39,6 +40,7 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
             session_id: opts.session_id.clone(),
             pressure,
             force_cleanse: opts.force_cleanse,
+            replay_has_compaction_summary: opts.replay_has_compaction_summary,
         },
     )?;
 
@@ -68,6 +70,45 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
     report.detail(format!(
         "context_engine.assembly_chars={}",
         output.assembly.content.chars().count()
+    ));
+    report.detail(format!(
+        "context_engine.packet_path={}",
+        output
+            .context_packet_output_path
+            .as_deref()
+            .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_chars={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.content.chars().count())
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.packet_candidate_count={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.candidate_count)
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.packet_cache_hit={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.cache_hit)
+            .unwrap_or(false)
+    ));
+    report.detail(format!(
+        "context_engine.packet_query={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.query.as_str())
+            .unwrap_or("none")
     ));
 
     Ok(report)

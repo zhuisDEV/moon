@@ -58,6 +58,10 @@ pub fn run() -> Result<CommandReport> {
         "context_engine_dir={}",
         paths.context_engine_dir.display()
     ));
+    report.detail(format!(
+        "context_packet_dir={}",
+        paths.context_packet_dir.display()
+    ));
     report.detail(format!("state_file={}", state_file_path(&paths).display()));
     report.detail(format!(
         "state.last_session_id={}",
@@ -82,6 +86,14 @@ pub fn run() -> Result<CommandReport> {
     report.detail(format!(
         "state.last_assembly_epoch_secs={}",
         optional_u64(state.last_assembly_epoch_secs)
+    ));
+    report.detail(format!(
+        "state.last_context_packet_session_id={}",
+        optional_text(state.last_context_packet_session_id.as_deref())
+    ));
+    report.detail(format!(
+        "state.last_context_packet_epoch_secs={}",
+        optional_u64(state.last_context_packet_epoch_secs)
     ));
     if let Some(session_id) = state.last_assembly_session_id.as_deref() {
         let latest_output = assembly_output_path(&paths, session_id);
@@ -188,6 +200,12 @@ pub fn run() -> Result<CommandReport> {
         report.issue(format!(
             "missing context-engine dir ({})",
             paths.context_engine_dir.display()
+        ));
+    }
+    if !paths.context_packet_dir.exists() {
+        report.detail(format!(
+            "context-packet dir not created yet ({})",
+            paths.context_packet_dir.display()
         ));
     }
     if !paths.memory_file.exists() {

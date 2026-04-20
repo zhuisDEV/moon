@@ -190,6 +190,14 @@ pub fn run() -> Result<CommandReport> {
             report.issue(format!("path.{name}=missing ({})", path.display()));
         }
     }
+    if paths.context_packet_dir.exists() {
+        report.detail("path.context_packet_dir=ok".to_string());
+    } else {
+        report.detail(format!(
+            "path.context_packet_dir=not_created_yet ({})",
+            paths.context_packet_dir.display()
+        ));
+    }
 
     // Check daemon lock
     let lock_path = daemon_lock_path(&paths);

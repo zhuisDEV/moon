@@ -36,6 +36,10 @@ pub struct MoonState {
     pub last_provider: Option<String>,
     pub last_assembly_session_id: Option<String>,
     pub last_assembly_epoch_secs: Option<u64>,
+    pub last_context_packet_session_id: Option<String>,
+    pub last_context_packet_epoch_secs: Option<u64>,
+    pub last_context_packet_generation: Option<String>,
+    pub last_context_packet_candidate_count: Option<usize>,
     pub distilled_archives: BTreeMap<String, u64>,
     pub embedded_projection_collections: BTreeMap<String, EmbeddedProjectionEntries>,
     pub embedded_projections: BTreeMap<String, u64>,
@@ -48,7 +52,7 @@ pub struct MoonState {
 impl Default for MoonState {
     fn default() -> Self {
         Self {
-            schema_version: 6,
+            schema_version: 7,
             last_heartbeat_epoch_secs: 0,
             last_archive_trigger_epoch_secs: None,
             last_compaction_trigger_epoch_secs: None,
@@ -60,6 +64,10 @@ impl Default for MoonState {
             last_provider: None,
             last_assembly_session_id: None,
             last_assembly_epoch_secs: None,
+            last_context_packet_session_id: None,
+            last_context_packet_epoch_secs: None,
+            last_context_packet_generation: None,
+            last_context_packet_candidate_count: None,
             distilled_archives: BTreeMap::new(),
             embedded_projection_collections: BTreeMap::new(),
             embedded_projections: BTreeMap::new(),

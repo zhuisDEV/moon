@@ -5,6 +5,7 @@ pub mod cleanse;
 pub mod config;
 #[allow(dead_code)]
 pub mod context_engine;
+pub mod context_packet;
 pub mod daemon_lock;
 #[allow(dead_code)]
 pub mod distill;

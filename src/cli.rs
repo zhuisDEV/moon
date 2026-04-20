@@ -22,6 +22,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Install(InstallArgs),
+    Uninstall(UninstallArgs),
     Login(LoginArgs),
     Update(UpdateArgs),
     Verify(VerifyArgs),
@@ -52,6 +53,16 @@ pub struct InstallArgs {
     pub dry_run: bool,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub apply: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct UninstallArgs {
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub purge: bool,
+    #[arg(long)]
+    pub remove_binary: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -148,6 +159,8 @@ pub struct AssembleArgs {
     pub session_id: Option<String>,
     #[arg(long = "dry-run")]
     pub dry_run: bool,
+    #[arg(long = "replay-has-compaction-summary")]
+    pub replay_has_compaction_summary: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -162,6 +175,8 @@ pub struct ContextEngineArgs {
     pub max_tokens: Option<u64>,
     #[arg(long = "force-cleanse")]
     pub force_cleanse: bool,
+    #[arg(long = "replay-has-compaction-summary")]
+    pub replay_has_compaction_summary: bool,
 }
 
 #[derive(Debug, Args)]
@@ -306,6 +321,7 @@ pub fn run() -> Result<()> {
         | Command::Verify(_)
         | Command::Config(_)
         | Command::Login(_)
+        | Command::Uninstall(_)
         | Command::Update(_) => {
             // Diagnostics are exempt from CWD enforcement.
         }
@@ -320,6 +336,13 @@ pub fn run() -> Result<()> {
             dry_run: args.dry_run,
             apply: args.apply,
         })?,
+        Command::Uninstall(args) => {
+            commands::moon_uninstall::run(&commands::moon_uninstall::MoonUninstallOptions {
+                dry_run: args.dry_run,
+                purge: args.purge,
+                remove_binary: args.remove_binary,
+            })?
+        }
         Command::Login(args) => {
             commands::moon_login::run(&commands::moon_login::MoonLoginOptions {
                 provider: match args.provider {
@@ -376,6 +399,7 @@ pub fn run() -> Result<()> {
                 source_path: args.source.clone(),
                 session_id: args.session_id.clone(),
                 dry_run: args.dry_run,
+                replay_has_compaction_summary: args.replay_has_compaction_summary,
             })?
         }
         Command::ContextEngine(args) => commands::moon_context_engine::run(
@@ -385,6 +409,7 @@ pub fn run() -> Result<()> {
                 used_tokens: args.used_tokens,
                 max_tokens: args.max_tokens,
                 force_cleanse: args.force_cleanse,
+                replay_has_compaction_summary: args.replay_has_compaction_summary,
             },
         )?,
         Command::Stop => commands::moon_stop::run()?,

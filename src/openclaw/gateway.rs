@@ -112,6 +112,26 @@ pub fn try_plugins_install(path: &Path) -> Result<()> {
     }
 }
 
+pub fn try_plugins_uninstall(plugin_id: &str) -> Result<()> {
+    let out = run_openclaw(&["plugins", "uninstall", plugin_id]);
+
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            let lower = stderr.to_ascii_lowercase();
+            if lower.contains("not installed")
+                || lower.contains("not found")
+                || lower.contains("unknown plugin")
+            {
+                return Ok(());
+            }
+            anyhow::bail!("openclaw plugins uninstall failed: {}", stderr.trim())
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub fn run_gateway_restart(retries: usize) -> Result<()> {
     run_openclaw_retry(&["gateway", "restart"], retries)?;
     Ok(())

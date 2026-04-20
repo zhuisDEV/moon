@@ -204,6 +204,30 @@ impl Default for MoonContextConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MoonContextPacketConfig {
+    pub enabled: bool,
+    pub max_chars: usize,
+    pub max_candidates: usize,
+    pub qmd_limit: usize,
+    pub recent_memory_files: usize,
+    pub recent_distill_docs: usize,
+}
+
+impl Default for MoonContextPacketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_chars: 6_000,
+            max_candidates: 18,
+            qmd_limit: 6,
+            recent_memory_files: 4,
+            recent_distill_docs: 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MoonConfig {
     pub thresholds: MoonThresholds,
@@ -212,6 +236,7 @@ pub struct MoonConfig {
     pub embed: MoonEmbedConfig,
     pub hot_collection: MoonHotCollectionConfig,
     pub context: Option<MoonContextConfig>,
+    pub context_packet: MoonContextPacketConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -222,6 +247,7 @@ struct PartialMoonConfig {
     embed: Option<MoonEmbedConfig>,
     hot_collection: Option<MoonHotCollectionConfig>,
     context: Option<MoonContextConfig>,
+    context_packet: Option<MoonContextPacketConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -481,6 +507,9 @@ fn merge_file_config(base: &mut MoonConfig) -> Result<()> {
         }
         if let Some(context) = parsed.context {
             base.context = Some(context);
+        }
+        if let Some(context_packet) = parsed.context_packet {
+            base.context_packet = context_packet;
         }
         break;
     }

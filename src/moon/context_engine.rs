@@ -11,6 +11,9 @@ use crate::moon::config::{
     MoonContextConfig, MoonHotCollectionLifecycleCommandMode, MoonHotCollectionLifecycleMode,
     load_config,
 };
+use crate::moon::context_packet::{
+    ContextPacketInput, ContextPacketOutput, build_context_packet, write_context_packet_output,
+};
 use crate::moon::distill::load_source_excerpt;
 use crate::moon::embed;
 use crate::moon::paths::MoonPaths;
@@ -38,6 +41,7 @@ pub struct CheckpointOptions {
     pub session_id: Option<String>,
     pub pressure: Option<PressureSnapshot>,
     pub force_cleanse: bool,
+    pub replay_has_compaction_summary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +53,8 @@ pub struct CheckpointOutput {
     pub cleanse_reason: String,
     pub assembly_output_path: String,
     pub assembly: AssembleOutput,
+    pub context_packet_output_path: Option<String>,
+    pub context_packet: Option<ContextPacketOutput>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +103,7 @@ struct CleanseThresholds {
 
 pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<CheckpointOutput> {
     qmd::install_runtime_env(paths);
+    let cfg = load_config().unwrap_or_default();
     let plan = record::plan_record(
         paths,
         opts.source_path.as_deref(),
@@ -150,15 +157,14 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
             pruned.removed_pending_hot_collections
         );
     }
-    let mut projected_path = None;
     let mut embed_now = "not-triggered".to_string();
+    let projected_path = Some(run_project_checkpoint(
+        paths,
+        &mut state,
+        &plan.session_id,
+        &plan.target_path,
+    )?);
     let cleanse_summary_path = if should_cleanse {
-        projected_path = Some(run_project_checkpoint(
-            paths,
-            &mut state,
-            &plan.session_id,
-            &plan.target_path,
-        )?);
         let queued_epoch_secs = now_epoch_secs()?;
         state.last_compaction_trigger_epoch_secs = Some(queued_epoch_secs);
         embed_now = run_embed_now(paths, &mut state, &plan.session_id);
@@ -184,6 +190,32 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
     ));
     let assembly = assemble_context(&assemble_input)?;
     let assembly_output_path = write_assembly_output(paths, &plan.session_id, &assembly.content)?;
+    let (context_packet, context_packet_output_path) = if cfg.context_packet.enabled {
+        let packet = build_context_packet(
+            paths,
+            &state,
+            &cfg.context_packet,
+            &ContextPacketInput {
+                session_id: plan.session_id.clone(),
+                raw_source_path: plan.target_path.clone(),
+                cleanse_summary_path: cleanse_summary_path.as_ref().map(std::path::PathBuf::from),
+                replay_has_compaction_summary: opts.replay_has_compaction_summary,
+            },
+        )?;
+        let packet_output_path =
+            write_context_packet_output(paths, &plan.session_id, &packet.content)?;
+        state.last_context_packet_session_id = Some(plan.session_id.clone());
+        state.last_context_packet_epoch_secs = Some(packet.packet_at_epoch_secs);
+        state.last_context_packet_generation = Some(packet.generation.clone());
+        state.last_context_packet_candidate_count = Some(packet.candidate_count);
+        (Some(packet), Some(packet_output_path.display().to_string()))
+    } else {
+        state.last_context_packet_session_id = None;
+        state.last_context_packet_epoch_secs = None;
+        state.last_context_packet_generation = None;
+        state.last_context_packet_candidate_count = None;
+        (None, None)
+    };
 
     state.last_assembly_session_id = Some(plan.session_id.clone());
     state.last_assembly_epoch_secs = Some(assembly.assembled_at_epoch_secs);
@@ -194,13 +226,14 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
         "context-engine",
         "ok",
         &format!(
-            "session_id={} record={} project={} cleanse={} embed_now={} assembly={} reason={} hot_lifecycle={} hot_prune={}",
+            "session_id={} record={} project={} cleanse={} embed_now={} assembly={} packet={} reason={} hot_lifecycle={} hot_prune={}",
             plan.session_id,
             plan.target_path.display(),
             projected_path.as_deref().unwrap_or("none"),
             cleanse_summary_path.as_deref().unwrap_or("none"),
             embed_now,
             assembly_output_path.display(),
+            context_packet_output_path.as_deref().unwrap_or("none"),
             cleanse_reason,
             hot_lifecycle_summary,
             hot_prune_summary
@@ -215,6 +248,8 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
         cleanse_reason,
         assembly_output_path: assembly_output_path.display().to_string(),
         assembly,
+        context_packet_output_path,
+        context_packet,
     })
 }
 
@@ -617,6 +652,7 @@ mod tests {
             memory_file: root.join("MEMORY.md"),
             logs_dir: root.join("logs"),
             context_engine_dir: root.join("mce"),
+            context_packet_dir: root.join("context-packets"),
             openclaw_sessions_dir: root.join("sessions"),
             qmd_bin: root.join("bin/qmd"),
             qmd_db: root.join("qmd.sqlite"),
@@ -693,6 +729,7 @@ exit 0
                     max_tokens: 200_000,
                 }),
                 force_cleanse: false,
+                replay_has_compaction_summary: false,
             },
         )
         .expect("run checkpoint");
@@ -704,9 +741,21 @@ exit 0
         assert!(output.assembly_output_path.ends_with("/mce/session-a.md"));
         assert!(
             output
+                .context_packet_output_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("/context-packets/session-a.md"))
+        );
+        assert!(
+            output
                 .assembly
                 .content
                 .contains("Keep the checkpoint path simple.")
+        );
+        assert!(
+            output
+                .context_packet
+                .as_ref()
+                .is_some_and(|packet| packet.content.contains("# Moon Active Context"))
         );
         assert!(output.assembly.content.contains("- cleanse_summary: none"));
         assert!(
@@ -716,6 +765,7 @@ exit 0
                 .contains("## Embedding Index Anchor")
         );
         assert!(std::path::Path::new(&output.assembly_output_path).is_file());
+        assert!(crate::moon::state::hot_projection_path_for_session(&paths, "session-a").is_file());
 
         let state = load(&paths).expect("load state");
         assert_eq!(state.last_session_id.as_deref(), Some("session-a"));
@@ -760,6 +810,7 @@ exit 0
                 session_id: Some("session-b".to_string()),
                 pressure: None,
                 force_cleanse: true,
+                replay_has_compaction_summary: false,
             },
         )
         .expect("run checkpoint");
@@ -775,9 +826,21 @@ exit 0
         assert!(output.assembly_output_path.ends_with("/mce/session-b.md"));
         assert!(
             output
+                .context_packet_output_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("/context-packets/session-b.md"))
+        );
+        assert!(
+            output
                 .assembly
                 .content
                 .contains("Keep the primary path MOON-owned.")
+        );
+        assert!(
+            output
+                .context_packet
+                .as_ref()
+                .is_some_and(|packet| packet.content.contains("# Moon Active Context"))
         );
         assert!(
             output

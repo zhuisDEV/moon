@@ -22,11 +22,17 @@ moon config --show
 
 Admin/bootstrap commands:
 
-1. `moon install`: wire the current MOON runtime shell, provision the `$MOON_HOME` runtime root, and write OpenClaw config pointers for `moonHome`, `memory/`, and `MEMORY.md`
-2. `moon verify --strict`: verify runtime shell wiring, provenance, dependencies, and health (concise by default; add `--verbose` for full detail)
-3. `moon status`: inspect resolved runtime paths and runtime shell state
-4. `moon config --show`: inspect resolved config
-5. `moon health`: inspect overall runtime health
+1. `moon install`: wire the current MOON runtime shell, provision the
+   `$MOON_HOME` runtime root, and write OpenClaw config pointers for `moonHome`,
+   `memory/`, and `MEMORY.md`
+2. `moon uninstall`: remove Moon-managed OpenClaw wiring and runtime artifacts
+   (`--purge` for full Moon home removal)
+3. `moon verify --strict`: verify runtime shell wiring, provenance,
+   dependencies, and health (concise by default; add `--verbose` for full
+   detail)
+4. `moon status`: inspect resolved runtime paths and runtime shell state
+5. `moon config --show`: inspect resolved config
+6. `moon health`: inspect overall runtime health
 
 ## Core Flow
 
@@ -38,7 +44,8 @@ moon record
 
 Execution note:
 
-1. `record` is the stable-checkpoint step and should run even when `cleanse` does not trigger.
+1. `record` is the stable-checkpoint step and should run even when `cleanse`
+   does not trigger.
 
 Project raw into MDS:
 
@@ -48,7 +55,8 @@ moon project
 
 Execution note:
 
-1. `project` is deterministic background/deferred work derived from recorded raw state.
+1. `project` is deterministic background/deferred work derived from recorded raw
+   state.
 
 Apply pressure relief compaction:
 
@@ -69,7 +77,10 @@ moon assemble
 
 Execution note:
 
-1. `assemble` is the explicit pre-dispatch boundary and writes to `$MOON_HOME/mce/`.
+1. `assemble` is the explicit pre-dispatch boundary.
+2. It writes the operator artifact to `$MOON_HOME/mce/`.
+3. It also writes the model-facing active context packet to
+   `$MOON_HOME/context-packets/`.
 
 Run the integrated checkpoint controller:
 
@@ -79,10 +90,16 @@ moon context-engine --used-tokens 65000 --max-tokens 200000
 
 Execution note:
 
-1. `context-engine` is the short-lived normal-path controller for active context preparation.
-2. It runs `record` first, triggers `cleanse` only when policy requires it, and persists the assembled context window.
-3. Native OpenClaw takeover now depends on the plugin slot selecting `moon` (`plugins.slots.contextEngine = "moon"`), which `moon install` writes automatically.
-4. Moon-owned installs also pin the OpenClaw memory contract to `plugins.slots.memory = "none"` and `agents.defaults.memorySearch.enabled = false`.
+1. `context-engine` is the short-lived normal-path controller for active context
+   preparation.
+2. It runs `record` first, triggers `cleanse` only when policy requires it, and
+   persists the assembled context window.
+3. Native OpenClaw takeover now depends on the plugin slot selecting `moon`
+   (`plugins.slots.contextEngine = "moon"`), which `moon install` writes
+   automatically.
+4. Moon-owned installs also pin the OpenClaw memory contract to
+   `plugins.slots.memory = "none"` and
+   `agents.defaults.memorySearch.enabled = false`.
 
 Run L1 normalisation:
 
@@ -143,11 +160,13 @@ Rules:
 2. `embed` is the public search-maintenance command.
 3. Moon v1 does not keep a separate public `index` command.
 4. `embed` should remain bounded via `--max-docs`.
-5. Only a minimal indexing anchor, if any, should enter the next active context window; full embed receipts should stay out of prompt assembly.
+5. Only a minimal indexing anchor, if any, should enter the next active context
+   window; full embed receipts should stay out of prompt assembly.
 
 ## Transitional Watcher
 
-The watcher is the separate long-running maintenance worker. It remains transitional infrastructure and does not own the active context window.
+The watcher is the separate long-running maintenance worker. It remains
+transitional infrastructure and does not own the active context window.
 
 Run one watcher cycle:
 
@@ -194,16 +213,26 @@ moon restart
 2. Raw documents: `$MOON_HOME/raw/`
 3. Projection markdown: `$MOON_HOME/mds/`
 4. Cleanse summaries: `$MOON_HOME/cleanse/`
-5. Daily memory: `$MOON_MEMORY_DIR/YYYY-MM-DD.md`
-6. Durable memory: `$MOON_MEMORY_FILE`
-7. Logs: `$MOON_LOGS_DIR`
+5. Operator assembly artifacts: `$MOON_HOME/mce/`
+6. Active context packets: `$MOON_HOME/context-packets/`
+7. Daily memory: `$MOON_MEMORY_DIR/YYYY-MM-DD.md`
+8. Durable memory: `$MOON_MEMORY_FILE`
+9. Logs: `$MOON_LOGS_DIR`
 
 ## Troubleshooting
 
-1. If `verify` or `status` reports provenance drift, run `moon install` and then `moon verify --strict`.
-2. If search maintenance fails, verify `QMD_BIN` and re-run bounded `moon embed --max-docs <N>`.
-3. If `syns` is unavailable, confirm provider API keys and `MOON_WISDOM_PROVIDER` / `MOON_WISDOM_MODEL`.
-4. If a mutating command fails with an out-of-bounds error, run from your workspace tree or use `--allow-out-of-bounds`.
-5. Optional env default: set `MOON_ALLOW_OUT_OF_BOUNDS=1` (truthy: `1`, `true`, `yes`, `on`) to apply the same bypass for that process environment.
-6. If OpenClaw cannot find Moon memory paths, run `moon install`, then `moon verify --strict`, and check `plugins.entries.moon.config.memoryDir` / `memoryFile`.
-7. If `moon status` reports memory drift, inspect `plugins.slots.memory` and `agents.defaults.memorySearch.enabled` in `$OPENCLAW_CONFIG_PATH`.
+1. If `verify` or `status` reports provenance drift, run `moon install` and then
+   `moon verify --strict`.
+2. If search maintenance fails, verify `QMD_BIN` and re-run bounded
+   `moon embed --max-docs <N>`.
+3. If `syns` is unavailable, confirm provider API keys and
+   `MOON_WISDOM_PROVIDER` / `MOON_WISDOM_MODEL`.
+4. If a mutating command fails with an out-of-bounds error, run from your
+   workspace tree or use `--allow-out-of-bounds`.
+5. Optional env default: set `MOON_ALLOW_OUT_OF_BOUNDS=1` (truthy: `1`, `true`,
+   `yes`, `on`) to apply the same bypass for that process environment.
+6. If OpenClaw cannot find Moon memory paths, run `moon install`, then
+   `moon verify --strict`, and check `plugins.entries.moon.config.memoryDir` /
+   `memoryFile`.
+7. If `moon status` reports memory drift, inspect `plugins.slots.memory` and
+   `agents.defaults.memorySearch.enabled` in `$OPENCLAW_CONFIG_PATH`.
