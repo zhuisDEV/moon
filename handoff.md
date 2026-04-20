@@ -257,6 +257,20 @@
   assert `moon verify --strict --json` reports doctor failure without ever
   invoking plain `openclaw doctor`.
 
+## 2026-04-20 15:37 AEST
+
+- Merged `codex/openai-codex-oauth-login` forward onto local `main`.
+- Prepared release metadata for `v1.0.12`:
+  - bumped crate/plugin runtime versions
+  - added `CHANGELOG.md` release notes for:
+    - OpenAI Codex OAuth login
+    - Codex cleanse request handling fixes
+    - bounded non-interactive verify doctor behavior
+- Release validation follow-up:
+  - fixed a `clippy::match_like_matches_macro` lint in
+    `src/moon/openai_codex_auth.rs` so `cargo clippy --all-targets --all-features -- -D warnings`
+    passes for the release build
+
 ## 2026-04-17 20:05 AEST
 
 - Implemented end-to-end OpenAI Codex OAuth login in Moon.

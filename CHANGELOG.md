@@ -7,6 +7,25 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-04-20
+
+### Added
+
+- Added end-to-end OpenAI Codex OAuth login support via `moon login
+  openai-codex`, including managed token storage under Moon runtime state.
+
+### Fixed
+
+- Fixed OpenAI Codex cleanse/distill request handling in the remote model lane.
+- `moon verify --strict --json` no longer falls back to interactive OpenClaw
+  doctor execution; verify now uses the non-interactive doctor path only and
+  returns a bounded failure when doctor times out.
+
+### Docs
+
+- Updated the runtime docs and env examples for the Codex OAuth login/setup
+  flow.
+
 ## [1.0.11] - 2026-04-08
 
 ### Added

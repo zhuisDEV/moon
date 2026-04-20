@@ -471,10 +471,10 @@ pub fn has_available_auth() -> bool {
         }
         _ => {}
     }
-    match load_external_codex_credential() {
-        Ok(Some(credential)) if !credential_is_expired(&credential) => true,
-        _ => false,
-    }
+    matches!(
+        load_external_codex_credential(),
+        Ok(Some(credential)) if !credential_is_expired(&credential)
+    )
 }
 
 pub fn resolve_bearer_token() -> Result<Option<String>> {
