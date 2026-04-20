@@ -174,6 +174,13 @@ const DEFAULT_CONTEXT_PACKET_CANDIDATE_THRESHOLD = 10;
 const DEFAULT_ASSEMBLY_SUBAGENT_MODE = "disabled";
 const DEFAULT_ASSEMBLY_SUBAGENT_TIMEOUT_MS = 15_000;
 const DEFAULT_ASSEMBLY_SUBAGENT_CACHE_TTL_MS = 300_000;
+const DEFAULT_ASSEMBLY_SUBAGENT_MODELS = {
+  openai: "gpt-5.4-mini",
+  "openai-codex": "gpt-5.4-mini",
+  anthropic: "claude-3-5-haiku-latest",
+  google: "gemini-3.1-flash-lite-preview",
+  "openai-compatible": "deepseek-chat",
+};
 const MOON_CLEANSE_TARGET_TOKENS = 40_000;
 const MIN_COMPACTION_TARGET_TOKENS = 2_000;
 const COMPACTION_TARGET_BUDGET_RATIO = 0.45;
@@ -203,6 +210,63 @@ function normalizeAssemblySubagentMode(raw) {
     return "disabled";
   }
   return "gated";
+}
+
+function normalizeAssemblySubagentProviderKey(raw) {
+  if (!isNonEmptyString(raw)) {
+    return null;
+  }
+  const normalized = raw.trim().toLowerCase();
+  switch (normalized) {
+    case "openai":
+      return "openai";
+    case "openai-codex":
+    case "codex":
+      return "openai-codex";
+    case "anthropic":
+    case "claude":
+      return "anthropic";
+    case "google":
+    case "gemini":
+      return "google";
+    case "openai-compatible":
+    case "compatible":
+    case "deepseek":
+      return "openai-compatible";
+    default:
+      return normalized;
+  }
+}
+
+function inferAssemblySubagentProvider(model) {
+  if (!isNonEmptyString(model)) {
+    return null;
+  }
+  const normalized = model.trim().toLowerCase();
+  if (
+    normalized.startsWith("gpt-") || normalized.startsWith("o1") ||
+    normalized.startsWith("o3") || normalized.startsWith("o4")
+  ) {
+    return "openai";
+  }
+  if (normalized.startsWith("claude-")) {
+    return "anthropic";
+  }
+  if (normalized.startsWith("gemini-")) {
+    return "google";
+  }
+  if (normalized.startsWith("deepseek-")) {
+    return "openai-compatible";
+  }
+  return null;
+}
+
+function defaultAssemblySubagentModel(provider) {
+  const normalized = normalizeAssemblySubagentProviderKey(provider);
+  if (!normalized) {
+    return null;
+  }
+  return DEFAULT_ASSEMBLY_SUBAGENT_MODELS[normalized] ?? null;
 }
 
 function resolveLimits(pluginConfig, toolName) {
@@ -241,6 +305,18 @@ function resolveLimits(pluginConfig, toolName) {
 
 function resolveContextEngineSettings(api) {
   const pluginConfig = isObject(api?.pluginConfig) ? api.pluginConfig : {};
+  const explicitAssemblySubagentProvider = isNonEmptyString(
+      pluginConfig.assemblySubagentProvider,
+    )
+    ? pluginConfig.assemblySubagentProvider.trim()
+    : null;
+  const explicitAssemblySubagentModel = isNonEmptyString(
+      pluginConfig.assemblySubagentModel,
+    )
+    ? pluginConfig.assemblySubagentModel.trim()
+    : null;
+  const inferredAssemblySubagentProvider = explicitAssemblySubagentProvider ||
+    inferAssemblySubagentProvider(explicitAssemblySubagentModel);
 
   return {
     moonPath: resolvePathSetting(api, pluginConfig.moonPath) ||
@@ -282,14 +358,9 @@ function resolveContextEngineSettings(api) {
     assemblySubagentMode: normalizeAssemblySubagentMode(
       pluginConfig.assemblySubagentMode,
     ),
-    assemblySubagentProvider: isNonEmptyString(
-        pluginConfig.assemblySubagentProvider,
-      )
-      ? pluginConfig.assemblySubagentProvider.trim()
-      : null,
-    assemblySubagentModel: isNonEmptyString(pluginConfig.assemblySubagentModel)
-      ? pluginConfig.assemblySubagentModel.trim()
-      : null,
+    assemblySubagentProvider: inferredAssemblySubagentProvider,
+    assemblySubagentModel: explicitAssemblySubagentModel ||
+      defaultAssemblySubagentModel(inferredAssemblySubagentProvider),
     assemblySubagentTimeoutMs: clampInt(
       pluginConfig.assemblySubagentTimeoutMs,
       DEFAULT_ASSEMBLY_SUBAGENT_TIMEOUT_MS,
@@ -1227,7 +1298,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.0.14",
+      version: "1.0.15",
       ownsCompaction: true,
     },
     bootstrap(params) {

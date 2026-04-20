@@ -659,6 +659,38 @@ Deno.test("moon plugin can gate packet curation through an embedded Moon subagen
   }
 });
 
+Deno.test("moon plugin resolves fast default curator models by provider", () => {
+  const geminiSettings = __moonTest.resolveContextEngineSettings(
+    createApi("", [], {
+      assemblySubagentMode: "gated",
+      assemblySubagentProvider: "google",
+    }),
+  );
+  assertEquals(geminiSettings.assemblySubagentProvider, "google");
+  assertEquals(
+    geminiSettings.assemblySubagentModel,
+    "gemini-3.1-flash-lite-preview",
+  );
+
+  const codexSettings = __moonTest.resolveContextEngineSettings(
+    createApi("", [], {
+      assemblySubagentMode: "gated",
+      assemblySubagentProvider: "openai-codex",
+    }),
+  );
+  assertEquals(codexSettings.assemblySubagentProvider, "openai-codex");
+  assertEquals(codexSettings.assemblySubagentModel, "gpt-5.4-mini");
+
+  const inferredOpenAiSettings = __moonTest.resolveContextEngineSettings(
+    createApi("", [], {
+      assemblySubagentMode: "gated",
+      assemblySubagentModel: "gpt-5.4-mini",
+    }),
+  );
+  assertEquals(inferredOpenAiSettings.assemblySubagentProvider, "openai");
+  assertEquals(inferredOpenAiSettings.assemblySubagentModel, "gpt-5.4-mini");
+});
+
 Deno.test("moon plugin falls back to the local packet when curator fails", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
   try {

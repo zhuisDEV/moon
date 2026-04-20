@@ -268,8 +268,9 @@
     - bounded non-interactive verify doctor behavior
 - Release validation follow-up:
   - fixed a `clippy::match_like_matches_macro` lint in
-    `src/moon/openai_codex_auth.rs` so `cargo clippy --all-targets --all-features -- -D warnings`
-    passes for the release build
+    `src/moon/openai_codex_auth.rs` so
+    `cargo clippy --all-targets --all-features -- -D warnings` passes for the
+    release build
 
 ## 2026-04-17 20:05 AEST
 
@@ -297,8 +298,8 @@
 
 ## 2026-04-20 20:55 AEST
 
-- Rewrote `mip.md` as the next control-plan MIP for Moon active context
-  assembly and memory-management performance.
+- Rewrote `mip.md` as the next control-plan MIP for Moon active context assembly
+  and memory-management performance.
 - Verified planning baseline before the rewrite:
   - Moon `main` at `1b1254b5464a473f65336c3d97420a768526d61a`
   - OpenClaw `origin/main` at `94e2bf258d6ee35f4661c73bc3400c6bba52885a`
@@ -347,8 +348,8 @@
   - `src/commands/moon_status.rs` and `src/commands/moon_health.rs` now report
     the packet directory/state without treating a not-yet-created packet
     directory as a failure
-  - added `context_packet` config to `src/moon/config.rs`,
-    `moon.toml.example`, and state tracking in `src/moon/state.rs`
+  - added `context_packet` config to `src/moon/config.rs`, `moon.toml.example`,
+    and state tracking in `src/moon/state.rs`
 - Plugin changes:
   - `assets/plugin/index.js`
     - reads `context_engine.packet_*` details
@@ -457,3 +458,31 @@
   - `cargo test --all-targets --all-features`
   - `cargo run --quiet -- --allow-out-of-bounds install`
   - `cargo run --quiet -- verify --strict --json`
+
+## 2026-04-21 01:18 AEST
+
+- Updated the Moon OpenClaw plugin to use fast provider-specific defaults for
+  the optional assembly curator subagent when gated mode is enabled and the
+  operator omits an explicit model.
+- New curator defaults:
+  - `openai` -> `gpt-5.4-mini`
+  - `openai-codex` -> `gpt-5.4-mini`
+  - `google` / `gemini` -> `gemini-3.1-flash-lite-preview`
+  - `anthropic` -> `claude-3-5-haiku-latest`
+- The plugin also infers `openai` when the operator sets
+  `assemblySubagentModel=gpt-5.4-mini` without a provider.
+- Deliberately did not change Moon Rust cleanse / wisdom defaults in this pass.
+  Current OpenAI two-level split remains:
+  - fast pass: `gpt-4.1-mini`
+  - stronger synthesis pass: `gpt-4.1`
+- Release packaging:
+  - version bump to `v1.0.15`
+  - updated `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`,
+    `assets/plugin/package.json`, and the plugin runtime version string
+- Validation during release packaging:
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json assets/plugin/README.md CHANGELOG.md handoff.md`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`

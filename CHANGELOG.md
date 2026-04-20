@@ -7,6 +7,20 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-04-21
+
+### Changed
+
+- The optional Moon assembly curator subagent now defaults to fast
+  provider-specific models when gated mode is enabled and the operator omits an
+  explicit subagent model:
+  - `openai` -> `gpt-5.4-mini`
+  - `openai-codex` -> `gpt-5.4-mini`
+  - `google` / `gemini` -> `gemini-3.1-flash-lite-preview`
+  - `anthropic` -> `claude-3-5-haiku-latest`
+- The plugin now infers `openai` as the curator provider when the configured
+  subagent model already implies an OpenAI family model such as `gpt-5.4-mini`.
+
 ## [1.0.14] - 2026-04-21
 
 ### Changed
@@ -30,7 +44,8 @@ Versioning.
   - plugin-side packet injection through the OpenClaw `messages` lane
   - optional gated Moon-owned curator subagent for packet curation
 - Added `moon uninstall` with:
-  - safe default cleanup for OpenClaw integration and generated Moon runtime artifacts
+  - safe default cleanup for OpenClaw integration and generated Moon runtime
+    artifacts
   - `--purge` for full `MOON_HOME` removal
   - `--remove-binary` to attempt `cargo uninstall moon`
 
@@ -55,8 +70,10 @@ Versioning.
 
 ### Added
 
-- Added end-to-end OpenAI Codex OAuth login support via `moon login
-  openai-codex`, including managed token storage under Moon runtime state.
+- Added end-to-end OpenAI Codex OAuth login support via
+  `moon login
+  openai-codex`, including managed token storage under Moon
+  runtime state.
 
 ### Fixed
 
@@ -74,8 +91,8 @@ Versioning.
 
 ### Added
 
-- Added OpenClaw-style `openai-codex` remote provider support for `moon cleanse`,
-  remote `moon distill`, and remote wisdom synthesis via
+- Added OpenClaw-style `openai-codex` remote provider support for
+  `moon cleanse`, remote `moon distill`, and remote wisdom synthesis via
   `OPENAI_OAUTH_TOKEN` and optional `OPENAI_CODEX_BASE_URL`.
 
 ### Fixed
@@ -88,9 +105,9 @@ Versioning.
 
 ### Docs
 
-- Updated `.env.example`, `README.md`, `docs/runbook.md`, `handoff.md`, and
-  the install-time env template to document the new Codex OAuth lane and the
-  current provider environment variable contract.
+- Updated `.env.example`, `README.md`, `docs/runbook.md`, `handoff.md`, and the
+  install-time env template to document the new Codex OAuth lane and the current
+  provider environment variable contract.
 
 ## [1.0.10] - 2026-04-08
 

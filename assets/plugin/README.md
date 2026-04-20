@@ -65,8 +65,12 @@ Under `plugins.entries.moon.config`:
 8. `contextPacketCandidateThreshold` (gating threshold for candidate count,
    default `10`)
 9. `assemblySubagentMode` (`disabled` or `gated`, default `disabled`)
-10. `assemblySubagentProvider` (required when gated curation is enabled)
-11. `assemblySubagentModel` (required when gated curation is enabled)
+10. `assemblySubagentProvider` (required when gated curation is enabled unless
+    the model already implies one; fast defaults: `openai`/`openai-codex` ->
+    `gpt-5.4-mini`, `google`/`gemini` -> `gemini-3.1-flash-lite-preview`,
+    `anthropic` -> `claude-3-5-haiku-latest`)
+11. `assemblySubagentModel` (optional; defaults to a fast provider-specific
+    model when omitted)
 12. `assemblySubagentTimeoutMs` (default `15000`)
 13. `assemblySubagentCacheTtlMs` (default `300000`)
 14. `syncAfterTurn` (default `true`)
