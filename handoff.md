@@ -232,6 +232,31 @@
   - deduplicated the `openai-codex` remote request path in `src/moon/distill.rs`
     so remote distill and wisdom synthesis share the same helper
 
+## 2026-04-20 15:18 AEST
+
+- Investigated a reported runtime caveat where `moon verify --strict --json`
+  appeared to hang after `moon restart` fixed the watcher/runtime state.
+- Findings:
+  - current live `moon verify --strict --json` could complete successfully on
+    the installed `v1.0.11` binary, but the doctor path remained structurally
+    unsafe for non-interactive verification
+  - `verify` called OpenClaw doctor through `src/openclaw/gateway.rs`
+  - that path retried `openclaw doctor --non-interactive`, then fell back to a
+    plain interactive `openclaw doctor`
+  - that fallback is inappropriate for `verify --json` / strict automation and
+    can present as a hang when OpenClaw doctor is slow or waiting on interactive
+    behavior
+- Fix:
+  - `run_doctor()` now uses only `openclaw doctor --non-interactive`
+  - added a dedicated 30s doctor timeout instead of inheriting the generic 120s
+    external-command timeout
+  - removed the interactive doctor fallback from the verify path
+  - improved verify issue text to preserve the underlying doctor error cause
+    chain
+- Added regression coverage in `tests/context_engine_slot_status_test.rs` to
+  assert `moon verify --strict --json` reports doctor failure without ever
+  invoking plain `openclaw doctor`.
+
 ## 2026-04-17 20:05 AEST
 
 - Implemented end-to-end OpenAI Codex OAuth login in Moon.

@@ -6,6 +6,8 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::Duration;
 
+const DOCTOR_TIMEOUT_SECS: u64 = 30;
+
 fn ensure_executable_path(path: &Path) -> Result<()> {
     let meta = fs::metadata(path)
         .with_context(|| format!("openclaw binary path does not exist: {}", path.display()))?;
@@ -39,19 +41,36 @@ pub(crate) fn resolve_openclaw_bin_path() -> Result<PathBuf> {
 }
 
 fn run_openclaw(args: &[&str]) -> Result<Output> {
+    run_openclaw_with_optional_timeout(args, None)
+}
+
+fn run_openclaw_with_optional_timeout(args: &[&str], timeout_secs: Option<u64>) -> Result<Output> {
     let bin = resolve_openclaw_bin_path()?;
     let mut cmd = Command::new(&bin);
     cmd.args(args);
-    let out = crate::moon::util::run_command_with_timeout(&mut cmd)
-        .with_context(|| format!("failed to run `{}` {}", bin.display(), args.join(" ")))?;
+    let out = match timeout_secs {
+        Some(timeout_secs) => {
+            crate::moon::util::run_command_with_optional_timeout(&mut cmd, Some(timeout_secs))
+        }
+        None => crate::moon::util::run_command_with_timeout(&mut cmd),
+    }
+    .with_context(|| format!("failed to run `{}` {}", bin.display(), args.join(" ")))?;
     Ok(out)
 }
 
 pub fn run_openclaw_retry(args: &[&str], retries: usize) -> Result<Output> {
+    run_openclaw_retry_with_optional_timeout(args, retries, None)
+}
+
+fn run_openclaw_retry_with_optional_timeout(
+    args: &[&str],
+    retries: usize,
+    timeout_secs: Option<u64>,
+) -> Result<Output> {
     let mut last_out: Option<Output> = None;
 
     for attempt in 0..=retries {
-        let out = run_openclaw(args)?;
+        let out = run_openclaw_with_optional_timeout(args, timeout_secs)?;
         if out.status.success() {
             return Ok(out);
         }
@@ -105,12 +124,11 @@ pub fn run_gateway_stop_start() -> Result<()> {
 }
 
 pub fn run_doctor() -> Result<()> {
-    let primary = run_openclaw_retry(&["doctor", "--non-interactive"], 2);
-    if primary.is_ok() {
-        return Ok(());
-    }
-
-    run_openclaw_retry(&["doctor"], 1)?;
+    run_openclaw_retry_with_optional_timeout(
+        &["doctor", "--non-interactive"],
+        2,
+        Some(DOCTOR_TIMEOUT_SECS),
+    )?;
     Ok(())
 }
 
