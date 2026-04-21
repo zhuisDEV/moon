@@ -206,8 +206,7 @@ fn acquire_lock(
     collection_name: &str,
     now_epoch: u64,
 ) -> Result<Option<EmbedLockGuard>> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
     let lock_path = paths.logs_dir.join("moon-embed.lock");
 
     let mut lock_file = OpenOptions::new()

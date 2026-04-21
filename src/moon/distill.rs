@@ -349,12 +349,14 @@ fn call_openai_codex_prompt(
         .send()?;
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_default();
+        let headers = response.headers().clone();
         anyhow::bail!(
-            "openai-codex {} call failed with status {}: {}",
-            stage,
-            status,
-            truncate_with_ellipsis(body.trim(), 240)
+            "{}",
+            crate::moon::util::http_status_message(
+                &format!("openai-codex {stage} call failed"),
+                status,
+                &headers,
+            )
         );
     }
     let body = response.text()?;
@@ -2760,8 +2762,7 @@ fn atomic_write_file(path: &Path, content: &str) -> Result<()> {
 }
 
 fn acquire_memory_lock(paths: &MoonPaths) -> Result<fs::File> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
     let lock_path = paths.logs_dir.join(MEMORY_LOCK_FILE);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -2777,8 +2778,7 @@ fn acquire_memory_lock(paths: &MoonPaths) -> Result<fs::File> {
 }
 
 fn acquire_l1_normalisation_lock(paths: &MoonPaths) -> Result<fs::File> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
     let lock_path = paths.logs_dir.join(L1_NORM_LOCK_FILE);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -2798,15 +2798,10 @@ fn acquire_l1_normalisation_lock(paths: &MoonPaths) -> Result<fs::File> {
 }
 
 fn append_distill_audit_event(paths: &MoonPaths, event: &DistillAuditEvent) -> Result<String> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
     let path = paths.logs_dir.join(DISTILL_AUDIT_FILE);
     let line = format!("{}\n", serde_json::to_string(event)?);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file = crate::moon::fs_security::open_private_append(&path)?;
     file.write_all(line.as_bytes())
         .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(path.display().to_string())
@@ -3670,8 +3665,7 @@ pub fn run_wisdom_distillation(
 ) -> Result<DistillOutput> {
     fs::create_dir_all(&paths.memory_dir)
         .with_context(|| format!("failed to create {}", paths.memory_dir.display()))?;
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
 
     let epoch = input.day_epoch_secs.unwrap_or(now_epoch_secs()?);
     let default_today = today_daily_memory_path(paths, epoch);

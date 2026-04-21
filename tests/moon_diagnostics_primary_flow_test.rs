@@ -30,6 +30,15 @@ fn write_executable(path: &Path, content: &str) {
     }
 }
 
+#[cfg(unix)]
+fn set_owner_only(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut perms = fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(mode);
+    fs::set_permissions(path, perms).expect("chmod");
+}
+
 fn write_moon_config(moon_home: &Path, lifecycle_mode: &str, lifecycle_command_mode: Option<&str>) {
     let mut config = format!("[hot_collection]\nlifecycle_mode = \"{lifecycle_mode}\"\n");
     if let Some(command_mode) = lifecycle_command_mode {
@@ -58,6 +67,11 @@ fn setup_runtime_tree(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, s
 
     write_file(&moon_home.join("MEMORY.md"), "# Memory\n");
     write_file(&moon_home.join(".env"), "\n");
+    #[cfg(unix)]
+    {
+        set_owner_only(&moon_home.join(".env"), 0o600);
+        set_owner_only(&moon_home.join("logs"), 0o700);
+    }
     write_executable(
         &qmd_bin,
         r#"#!/usr/bin/env bash

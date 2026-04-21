@@ -309,6 +309,8 @@ fn ensure_runtime_root_layout(
         .with_context(|| format!("failed to create runtime dir {}", qmd_db_dir.display()))?;
     report.detail(format!("runtime.dir.ready={}", qmd_db_dir.display()));
 
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
+
     if !paths.memory_file.exists() {
         fs::write(&paths.memory_file, "# MOON Memory\n")
             .with_context(|| format!("failed to write {}", paths.memory_file.display()))?;
@@ -324,9 +326,10 @@ fn ensure_runtime_root_layout(
     }
 
     let runtime_env_path = paths.moon_home.join(".env");
-    if !runtime_env_path.exists() {
-        fs::write(&runtime_env_path, DEFAULT_RUNTIME_ENV_TEMPLATE)
-            .with_context(|| format!("failed to write {}", runtime_env_path.display()))?;
+    if crate::moon::fs_security::ensure_private_file_with_contents_if_missing(
+        &runtime_env_path,
+        DEFAULT_RUNTIME_ENV_TEMPLATE.as_bytes(),
+    )? {
         report.detail(format!(
             "runtime.env.created={}",
             runtime_env_path.display()
@@ -335,7 +338,26 @@ fn ensure_runtime_root_layout(
         report.detail(format!("runtime.env.ready={}", runtime_env_path.display()));
     }
 
+    harden_runtime_secret_artifacts(paths)?;
+    report.detail("security.runtime_secret_permissions=owner-only".to_string());
+
     report.detail("runtime.bootstrap=ready".to_string());
+    Ok(())
+}
+
+fn harden_runtime_secret_artifacts(paths: &crate::moon::paths::MoonPaths) -> Result<()> {
+    let runtime_env_path = paths.moon_home.join(".env");
+    crate::moon::fs_security::harden_private_file_if_exists(&runtime_env_path)?;
+    crate::moon::fs_security::harden_private_dir_if_exists(&paths.logs_dir)?;
+    crate::moon::fs_security::harden_private_file_if_exists(&paths.logs_dir.join("audit.log"))?;
+    crate::moon::fs_security::harden_private_file_if_exists(
+        &paths.logs_dir.join("distill.audit.log"),
+    )?;
+
+    let auth_dir = paths.moon_home.join("auth");
+    crate::moon::fs_security::harden_private_dir_if_exists(&auth_dir)?;
+    crate::moon::fs_security::harden_private_file_if_exists(&auth_dir.join("openai-codex.json"))?;
+    crate::moon::fs_security::harden_private_file_if_exists(&auth_dir.join("openai-codex.lock"))?;
     Ok(())
 }
 

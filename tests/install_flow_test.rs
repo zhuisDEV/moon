@@ -3,6 +3,20 @@ use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+fn assert_owner_only(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "expected owner-only permissions for {} but got {:03o}",
+        path.display(),
+        mode
+    );
+}
+
 fn write_fake_openclaw(bin_path: &Path, log_path: &Path) {
     let script = format!(
         "#!/usr/bin/env bash\necho \"$@\" >> \"{}\"\nif [ \"$1\" = \"plugins\" ] && [ \"$2\" = \"list\" ]; then\n  echo '[{{\"id\":\"moon\"}}]'\nfi\nexit 0\n",
@@ -77,6 +91,11 @@ fn install_creates_plugin_and_stage2_config_entries() {
         runtime_env.contains("MOON_CLEANSE_PROVIDER=gemini") || runtime_env.trim().is_empty(),
         "runtime .env should either keep caller-provided content or include bootstrap template"
     );
+    #[cfg(unix)]
+    {
+        assert_owner_only(&moon_home.join(".env"));
+        assert_owner_only(&moon_home.join("logs"));
+    }
 
     let cfg: Value = serde_json::from_str(&fs::read_to_string(&config_path).expect("read config"))
         .expect("parse cfg");

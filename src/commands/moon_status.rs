@@ -167,6 +167,9 @@ pub fn run() -> Result<CommandReport> {
     for key in SECRET_ENV_KEYS {
         report.detail(format!("secret.{key}={}", masked_env_secret(key)));
     }
+    for issue in crate::moon::fs_security::runtime_secret_permission_issues(&paths)? {
+        report.issue(issue);
+    }
     report_daemon_runtime(&paths, &mut report);
 
     if !paths.raw_dir.exists() {

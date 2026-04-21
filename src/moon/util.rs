@@ -1,4 +1,6 @@
 use anyhow::Result;
+use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 use std::io::Read;
 use std::process::{Command, Output};
 use std::thread;
@@ -24,6 +26,24 @@ pub fn truncate_with_ellipsis(input: &str, max_chars: usize) -> String {
         s
     } else {
         clean
+    }
+}
+
+pub fn request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    for key in ["x-request-id", "openai-request-id", "request-id"] {
+        let value = headers.get(key)?.to_str().ok()?.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+pub fn http_status_message(prefix: &str, status: StatusCode, headers: &HeaderMap) -> String {
+    if let Some(request_id) = request_id_from_headers(headers) {
+        format!("{prefix} with status {status} request_id={request_id}")
+    } else {
+        format!("{prefix} with status {status}")
     }
 }
 

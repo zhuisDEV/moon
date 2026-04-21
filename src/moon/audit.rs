@@ -1,8 +1,9 @@
 use crate::moon::paths::MoonPaths;
 use crate::moon::util::now_epoch_secs;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 const MAX_AUDIT_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10MB
@@ -16,8 +17,7 @@ pub struct AuditEvent {
 }
 
 pub fn append_event(paths: &MoonPaths, phase: &str, status: &str, message: &str) -> Result<()> {
-    fs::create_dir_all(&paths.logs_dir)
-        .with_context(|| format!("failed to create {}", paths.logs_dir.display()))?;
+    crate::moon::fs_security::ensure_private_dir(&paths.logs_dir)?;
     let event = AuditEvent {
         at_epoch_secs: now_epoch_secs()?,
         phase: phase.to_string(),
@@ -29,11 +29,7 @@ pub fn append_event(paths: &MoonPaths, phase: &str, status: &str, message: &str)
     let path = paths.logs_dir.join("audit.log");
     let _ = maybe_rotate_log(&path);
 
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = crate::moon::fs_security::open_private_append(&path)?;
     file.write_all(line.as_bytes())?;
     Ok(())
 }

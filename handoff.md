@@ -509,3 +509,39 @@
   - version bump to `v1.0.16`
   - updated `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`,
     `assets/plugin/package.json`, and the plugin runtime version string
+
+## 2026-04-21 20:28 AEST
+
+- Hardened Moon runtime secret handling for the `v1.1.0` release.
+- Added `src/moon/fs_security.rs` and routed Moon secret-bearing file creation
+  through private filesystem helpers.
+- Runtime hardening scope:
+  - `moon install` now repairs owner-only permissions for:
+    - `$MOON_HOME/.env`
+    - `$MOON_HOME/auth/`
+    - `$MOON_HOME/auth/openai-codex.json`
+    - `$MOON_HOME/logs/`
+    - `$MOON_HOME/logs/audit.log`
+    - `$MOON_HOME/logs/distill.audit.log`
+  - managed OpenAI Codex auth persistence now writes through private file
+    helpers instead of ambient default modes
+  - Moon audit/distill audit paths now append through owner-only log handles
+- Sanitized remote failure behavior:
+  - OpenAI Codex OAuth/login, cleanse, and distill failure paths no longer
+    include raw provider response bodies in CLI/audit error text
+  - request ids are preserved when the backend returns them
+- Verification contract:
+  - shared `src/commands/status.rs` now enforces the runtime secret permission
+    contract so `moon verify --strict` fails on insecure secret-bearing runtime
+    paths
+  - `src/commands/moon_status.rs` uses the same shared check for direct runtime
+    diagnostics
+- Added regression coverage for:
+  - owner-only install/login artifacts
+  - strict verify failure on insecure runtime secret permissions
+  - sanitized OAuth/login and Codex cleanse failure output
+- Updated docs for the new security contract:
+  - `README.md`
+  - `docs/runbook.md`
+  - `docs/security_checklist.md`
+  - `CHANGELOG.md`

@@ -71,8 +71,7 @@ pub fn acquire_daemon_lock(
 ) -> Result<DaemonLockGuard> {
     let lock_path = daemon_lock_path(paths);
     if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+        crate::moon::fs_security::ensure_private_dir(parent)?;
     }
 
     let mut file = OpenOptions::new()

@@ -4,6 +4,15 @@ use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+fn set_world_readable(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut perms = fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(mode);
+    fs::set_permissions(path, perms).expect("chmod");
+}
+
 fn write_fake_openclaw(bin_path: &Path, log_path: &Path) {
     let script = format!(
         r#"#!/usr/bin/env bash
@@ -429,5 +438,46 @@ fn verify_strict_fails_when_memory_contract_is_missing() {
         .stdout(contains(
             "agents.defaults.memorySearch.enabled missing; expected false in a Moon-owned install",
         ))
+        .stdout(contains("strict verify failed"));
+}
+
+#[test]
+#[cfg(unix)]
+fn verify_strict_fails_when_runtime_secret_file_permissions_are_insecure() {
+    let tmp = tempdir().expect("tempdir");
+    let state_dir = tmp.path().join("state");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&state_dir).expect("mkdir");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "\n").expect("write moon env");
+    let config_path = state_dir.join("openclaw.json");
+    fs::write(&config_path, "{}\n").expect("write config");
+
+    let fake_openclaw = tmp.path().join("openclaw");
+    let log_path = tmp.path().join("openclaw.log");
+    write_fake_openclaw(&fake_openclaw, &log_path);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_BIN", &fake_openclaw)
+        .arg("install")
+        .assert()
+        .success();
+
+    set_world_readable(&moon_home.join(".env"), 0o644);
+
+    assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("OPENCLAW_STATE_DIR", &state_dir)
+        .env("OPENCLAW_CONFIG_PATH", &config_path)
+        .env("OPENCLAW_BIN", &fake_openclaw)
+        .args(["verify", "--strict"])
+        .assert()
+        .failure()
+        .stdout(contains("runtime env file: insecure permissions"))
         .stdout(contains("strict verify failed"));
 }

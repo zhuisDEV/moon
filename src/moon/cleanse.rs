@@ -323,11 +323,14 @@ fn call_openai_codex(config: &CleanseModelConfig, prompt: &str) -> Result<String
         .send()?;
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_default();
+        let headers = response.headers().clone();
         anyhow::bail!(
-            "openai-codex cleanse call failed with status {}: {}",
-            status,
-            truncate_with_ellipsis(body.trim(), 240)
+            "{}",
+            crate::moon::util::http_status_message(
+                "openai-codex cleanse call failed",
+                status,
+                &headers,
+            )
         );
     }
 

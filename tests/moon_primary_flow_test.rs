@@ -103,6 +103,42 @@ fn start_fake_openai_responses_server(response_body: &str) -> (thread::JoinHandl
     (handle, format!("http://{}", addr))
 }
 
+fn start_fake_openai_responses_error_server(
+    status_line: &str,
+    request_id: &str,
+    response_body: &str,
+) -> (thread::JoinHandle<()>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake error responses server");
+    let addr = listener.local_addr().expect("local addr");
+    let status_line = status_line.to_string();
+    let request_id = request_id.to_string();
+    let body = response_body.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("read timeout");
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\ncontent-type: text/plain\r\nx-request-id: {request_id}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    });
+    (handle, format!("http://{}", addr))
+}
+
 fn write_moon_env(moon_home: &Path) {
     fs::create_dir_all(moon_home).expect("mkdir moon env root");
     fs::write(moon_home.join(".env"), "\n").expect("write moon .env");
@@ -366,6 +402,55 @@ fn moon_cleanse_supports_openai_codex_oauth_provider() {
         .success()
         .stdout(contains("cleanse.provider=openai-codex"))
         .stdout(contains("cleanse.model=gpt-5.4"));
+
+    server_handle.join().expect("join server");
+}
+
+#[test]
+fn moon_cleanse_sanitizes_openai_codex_error_bodies() {
+    let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon");
+    let raw_dir = moon_home.join("raw");
+    fs::create_dir_all(&raw_dir).expect("mkdir raw");
+    let moon_home = fs::canonicalize(&moon_home).expect("canonicalize moon");
+    write_moon_env(&moon_home);
+
+    fs::write(
+        raw_dir.join("s-codex-error.jsonl"),
+        "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize the current session state.\"}]}}\n",
+    )
+    .expect("write source");
+
+    let secret_body = "codex-cleanse-secret-body";
+    let request_id = "req-cleanse-401";
+    let (server_handle, base_url) =
+        start_fake_openai_responses_error_server("401 Unauthorized", request_id, secret_body);
+
+    let assert = assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(&moon_home)
+        .env("MOON_HOME", &moon_home)
+        .env("MOON_CLEANSE_PROVIDER", "openai-codex")
+        .env("MOON_CLEANSE_MODEL", "gpt-5.4")
+        .env("OPENAI_OAUTH_TOKEN", "oauth-test-token")
+        .env("OPENAI_CODEX_BASE_URL", &base_url)
+        .arg("cleanse")
+        .arg("--session-id")
+        .arg("s-codex-error")
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8 stderr");
+    assert!(
+        stderr.contains(&format!(
+            "openai-codex cleanse call failed with status 401 Unauthorized request_id={request_id}"
+        )),
+        "stderr should report sanitized codex failure: {stderr}"
+    );
+    assert!(
+        !stdout.contains(secret_body) && !stderr.contains(secret_body),
+        "raw codex response body should not leak into command output"
+    );
 
     server_handle.join().expect("join server");
 }

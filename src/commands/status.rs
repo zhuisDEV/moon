@@ -201,6 +201,9 @@ pub fn run() -> Result<CommandReport> {
     report.detail(format!("config_path={}", config_path_disp.trim()));
     report.detail(format!("plugin_dir={}", plugin_dir_disp.trim()));
     report_launchd_working_directory(&moon_paths, &mut report);
+    for issue in crate::moon::fs_security::runtime_secret_permission_issues(&moon_paths)? {
+        report.issue(issue);
+    }
 
     report.detail(format!("plugin_present_on_disk={}", verify.present_on_disk));
     report.detail(format!(

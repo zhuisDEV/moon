@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 const OAUTH_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const DEFAULT_OPENAI_AUTH_BASE_URL: &str = "https://auth.openai.com";
@@ -313,6 +316,10 @@ fn read_credential_from_path(
 
 fn load_moon_credential() -> Result<Option<OpenAiCodexCredential>> {
     let path = moon_auth_store_path()?;
+    if let Some(parent) = path.parent() {
+        crate::moon::fs_security::harden_private_dir_if_exists(parent)?;
+    }
+    crate::moon::fs_security::harden_private_file_if_exists(&path)?;
     read_credential_from_path(&path, CredentialSource::MoonStore)
 }
 
@@ -326,7 +333,7 @@ fn persist_moon_credential(credential: &OpenAiCodexCredential) -> Result<PathBuf
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("failed to resolve moon auth directory"))?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    crate::moon::fs_security::ensure_private_dir(parent)?;
 
     let record = CodexAuthRecord {
         auth_mode: Some("chatgpt".to_string()),
@@ -339,32 +346,25 @@ fn persist_moon_credential(credential: &OpenAiCodexCredential) -> Result<PathBuf
         },
     };
     let payload = serde_json::to_string_pretty(&record)?;
-    let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, payload)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "failed to move {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    crate::moon::fs_security::write_private_file(&path, payload.as_bytes())?;
     Ok(path)
 }
 
 fn open_auth_lock() -> Result<fs::File> {
     let lock_path = moon_auth_lock_path()?;
     if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+        crate::moon::fs_security::ensure_private_dir(parent)?;
     }
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let file = options
         .open(&lock_path)
         .with_context(|| format!("failed to open {}", lock_path.display()))?;
+    crate::moon::fs_security::harden_private_file_if_exists(&lock_path)?;
     file.lock_exclusive()
         .with_context(|| format!("failed to lock {}", lock_path.display()))?;
     Ok(file)
@@ -377,18 +377,24 @@ fn build_client() -> Result<Client> {
         .context("failed to build OAuth client")
 }
 
-fn parse_oauth_error_body(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+fn parse_oauth_error_body(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> anyhow::Error {
     if let Ok(parsed) = serde_json::from_str::<OAuthTokenResponse>(body)
         && let Some(error) = parsed.error
     {
         let detail = parsed
             .error_description
             .unwrap_or_else(|| "OpenAI OAuth request failed".to_string());
-        return anyhow!("OpenAI OAuth request failed with status {status}: {error} ({detail})");
+        let prefix =
+            crate::moon::util::http_status_message("OpenAI OAuth request failed", status, headers);
+        return anyhow!("{prefix}: {error} ({detail})");
     }
     anyhow!(
-        "OpenAI OAuth request failed with status {status}: {}",
-        body.trim()
+        "{}",
+        crate::moon::util::http_status_message("OpenAI OAuth request failed", status, headers)
     )
 }
 
@@ -397,11 +403,12 @@ fn exchange_oauth_form(form: &[(&str, String)]) -> Result<OAuthTokenResponse> {
     let url = oauth_token_url()?;
     let response = client.post(url).form(form).send()?;
     let status = response.status();
+    let headers = response.headers().clone();
     let body = response
         .text()
         .context("failed to read OAuth response body")?;
     if !status.is_success() {
-        return Err(parse_oauth_error_body(status, &body));
+        return Err(parse_oauth_error_body(status, &headers, &body));
     }
     let parsed: OAuthTokenResponse =
         serde_json::from_str(&body).context("failed to parse OAuth token response")?;

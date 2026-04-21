@@ -7,6 +7,45 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-21
+
+### Added
+
+- Added owner-only runtime secret permission checks to the shared
+  `status`/`verify` path so strict verify now enforces the Moon runtime security
+  contract instead of only reporting OpenClaw/plugin state.
+- Added regression coverage for:
+  - owner-only runtime permissions on install/login artifacts
+  - strict verify failure on insecure runtime secret permissions
+  - sanitized OpenAI Codex OAuth and cleanse failure output
+
+### Changed
+
+- `moon install` and `moon update` now repair secret-bearing Moon runtime paths
+  to owner-only permissions on Unix:
+  - `$MOON_HOME/.env`
+  - `$MOON_HOME/auth/`
+  - `$MOON_HOME/auth/openai-codex.json`
+  - `$MOON_HOME/logs/`
+  - `$MOON_HOME/logs/audit.log`
+  - `$MOON_HOME/logs/distill.audit.log`
+
+### Fixed
+
+- Managed OpenAI Codex credentials are now persisted through hardened private
+  filesystem helpers instead of default world-readable writes.
+- Moon audit and distill audit logs are now opened through owner-only append
+  paths instead of inheriting ambient file modes.
+- OpenAI Codex OAuth/login, cleanse, and distill failure paths no longer echo
+  raw remote response bodies into CLI errors or Moon audit trails; they now
+  retain only status plus request id when available.
+
+### Docs
+
+- Updated `README.md`, `docs/runbook.md`, `docs/security_checklist.md`, and
+  `handoff.md` to document the runtime secret permission contract and sanitized
+  provider failure behavior.
+
 ## [1.0.16] - 2026-04-21
 
 ### Fixed

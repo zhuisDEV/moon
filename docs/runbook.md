@@ -34,6 +34,15 @@ Admin/bootstrap commands:
 5. `moon config --show`: inspect resolved config
 6. `moon health`: inspect overall runtime health
 
+Security note:
+
+1. `moon install` and `moon update` repair Moon-managed secret/runtime log paths
+   to owner-only permissions on Unix.
+2. `moon verify --strict` fails if `$MOON_HOME/.env`, the managed OAuth store,
+   or Moon audit logs are broader than owner-only.
+3. Provider failures now keep request ids when available, but no longer persist
+   arbitrary remote error bodies into Moon audit logs.
+
 ## Core Flow
 
 Record active context:
@@ -138,6 +147,11 @@ OPENAI_API_KEY=...
 `$MOON_HOME/auth/openai-codex.json`. Moon refreshes that credential
 automatically and can also reuse a fresh Codex CLI login from
 `~/.codex/auth.json` when no Moon-managed auth store exists.
+
+Unix permissions for Moon-managed auth:
+
+1. `$MOON_HOME/auth/` -> `0700`
+2. `$MOON_HOME/auth/openai-codex.json` -> `0600`
 
 ## Search
 

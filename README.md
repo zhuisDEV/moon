@@ -98,6 +98,13 @@ moon health
    - set `agents.defaults.memorySearch.enabled = false`
 5. wires Moon runtime paths into `plugins.entries.moon.config.*`
 6. configures macOS launchd autostart when running from an installed binary
+7. repairs secret-bearing Moon runtime paths to owner-only permissions:
+   - `$MOON_HOME/.env`
+   - `$MOON_HOME/auth/`
+   - `$MOON_HOME/auth/openai-codex.json`
+   - `$MOON_HOME/logs/`
+   - `$MOON_HOME/logs/audit.log`
+   - `$MOON_HOME/logs/distill.audit.log`
 
 ## Upgrade
 
@@ -115,6 +122,7 @@ moon update
 4. reruns `moon install`
 5. reruns `moon verify --strict`
 6. preserves existing `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`
+7. repairs owner-only permissions for Moon-managed secret/runtime log paths
 
 ## Login
 
@@ -128,11 +136,38 @@ Moon stores managed auth in:
 
 1. `$MOON_HOME/auth/openai-codex.json`
 
+Moon keeps the auth store owner-only on Unix:
+
+1. auth dir: `0700`
+2. auth file: `0600`
+
 Moon uses that auth for:
 
 1. `cleanse` with `MOON_CLEANSE_PROVIDER=openai-codex`
 2. remote `distill`
 3. remote wisdom synthesis
+
+## Security
+
+Moon treats these runtime paths as secret-bearing or privacy-sensitive:
+
+1. `$MOON_HOME/.env`
+2. `$MOON_HOME/auth/`
+3. `$MOON_HOME/auth/openai-codex.json`
+4. `$MOON_HOME/logs/`
+5. `$MOON_HOME/logs/audit.log`
+6. `$MOON_HOME/logs/distill.audit.log`
+
+Security contract:
+
+1. `moon install` and `moon update` repair those paths to owner-only permissions
+   on Unix (`0600` for files, `0700` for directories).
+2. `moon verify --strict` fails if any of those paths are broader than
+   owner-only.
+3. `moon status` and `moon verify` continue masking configured API keys instead
+   of printing them.
+4. Remote provider failures now log only status plus request id when available;
+   Moon no longer persists arbitrary remote error bodies into its audit paths.
 
 ## Runtime Root
 
@@ -318,13 +353,15 @@ moon distill --mode syns
 
 1. `status` includes daemon lock and OpenClaw contract diagnostics.
 2. `verify --strict` fails when plugin/runtime integration is unhealthy.
-3. `watch --daemon` is blocked from development binaries for safety.
-4. `moon install` may add a managed `MOON_HOME` block to `~/.zprofile`.
-5. macOS installed-binary mode uses launchd label `com.moon.watch`.
-6. Scheduled watcher `syns` runs once per local day at or after
+3. `verify --strict` also fails when Moon secret-bearing runtime files are not
+   owner-only.
+4. `watch --daemon` is blocked from development binaries for safety.
+5. `moon install` may add a managed `MOON_HOME` block to `~/.zprofile`.
+6. macOS installed-binary mode uses launchd label `com.moon.watch`.
+7. Scheduled watcher `syns` runs once per local day at or after
    `distill.syns_trigger_time_local`; if Moon misses the exact window, it
    catches up later the same day.
-7. Scheduled watcher `syns` uses the previous local day's
+8. Scheduled watcher `syns` uses the previous local day's
    `$MOON_HOME/memory/<day>.md` plus durable `MEMORY.md`; it does not fall back
    to the current day's daily-memory file.
 

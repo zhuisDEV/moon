@@ -25,6 +25,20 @@ fn now_epoch_secs() -> u64 {
         .as_secs()
 }
 
+#[cfg(unix)]
+fn assert_owner_only(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "expected owner-only permissions for {} but got {:03o}",
+        path.display(),
+        mode
+    );
+}
+
 fn make_jwt(email: &str, account_id: &str, exp_epoch_secs: u64) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
     let payload = URL_SAFE_NO_PAD.encode(
@@ -80,6 +94,38 @@ fn start_fake_json_server(body: String) -> (thread::JoinHandle<CapturedRequest>,
             body.len(),
             body
         );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+        request
+    });
+    (handle, format!("http://{}", addr))
+}
+
+fn start_fake_status_server(
+    status_line: &str,
+    headers: &[(&str, &str)],
+    body: String,
+) -> (thread::JoinHandle<CapturedRequest>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake status server");
+    let addr = listener.local_addr().expect("local addr");
+    let status = status_line.to_string();
+    let response_headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let request = read_request(&mut stream);
+        let mut response = format!("HTTP/1.1 {status}\r\n");
+        for (key, value) in response_headers {
+            response.push_str(&format!("{key}: {value}\r\n"));
+        }
+        response.push_str(&format!(
+            "content-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ));
         stream
             .write_all(response.as_bytes())
             .expect("write response");
@@ -178,6 +224,11 @@ fn moon_login_headless_persists_managed_openai_codex_credentials() {
         Some(refresh_token)
     );
     assert_eq!(auth_file["tokens"]["account_id"].as_str(), Some(account_id));
+    #[cfg(unix)]
+    {
+        assert_owner_only(&moon_home.join("auth"));
+        assert_owner_only(&moon_home.join("auth/openai-codex.json"));
+    }
 }
 
 #[test]
@@ -293,4 +344,47 @@ fn moon_cleanse_refreshes_expired_managed_openai_codex_token() {
         auth_file["tokens"]["access_token"].as_str(),
         Some(refreshed_access_token.as_str())
     );
+}
+
+#[test]
+fn moon_login_sanitizes_oauth_error_bodies() {
+    let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon");
+    write_moon_env(&moon_home);
+
+    let secret_body = "oauth-body-secret-token";
+    let (auth_handle, auth_base_url) = start_fake_status_server(
+        "401 Unauthorized",
+        &[
+            ("content-type", "text/plain"),
+            ("x-request-id", "req-login-401"),
+        ],
+        secret_body.to_string(),
+    );
+
+    let assert = assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .current_dir(tmp.path())
+        .env("MOON_HOME", &moon_home)
+        .env("MOON_OPENAI_OAUTH_BASE_URL", &auth_base_url)
+        .arg("login")
+        .arg("--headless")
+        .write_stdin("login-code-401\n")
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("utf8 stderr");
+    assert!(
+        stderr.contains(
+            "OpenAI OAuth request failed with status 401 Unauthorized request_id=req-login-401"
+        ),
+        "stderr should report sanitized oauth failure: {stderr}"
+    );
+    assert!(
+        !stdout.contains(secret_body) && !stderr.contains(secret_body),
+        "raw oauth response body should not leak into command output"
+    );
+
+    let captured = auth_handle.join().expect("join auth server");
+    assert_eq!(captured.path, "/oauth/token");
 }
