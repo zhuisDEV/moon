@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-04-21
+
+### Fixed
+
+- Scheduled watcher `syns` now catches up later the same local day if Moon
+  missed the exact trigger minute while the daemon was down or unhealthy.
+- Scheduled watcher `syns` now uses only the previous completed local
+  daily-memory file plus `MEMORY.md`; it no longer falls back to the current
+  day's daily-memory file.
+- When the previous-day daily-memory file is missing or empty, scheduled watcher
+  `syns` now skips cleanly and leaves the daily trigger state unchanged.
+
 ## [1.0.15] - 2026-04-21
 
 ### Changed

@@ -321,6 +321,12 @@ moon distill --mode syns
 3. `watch --daemon` is blocked from development binaries for safety.
 4. `moon install` may add a managed `MOON_HOME` block to `~/.zprofile`.
 5. macOS installed-binary mode uses launchd label `com.moon.watch`.
+6. Scheduled watcher `syns` runs once per local day at or after
+   `distill.syns_trigger_time_local`; if Moon misses the exact window, it
+   catches up later the same day.
+7. Scheduled watcher `syns` uses the previous local day's
+   `$MOON_HOME/memory/<day>.md` plus durable `MEMORY.md`; it does not fall back
+   to the current day's daily-memory file.
 
 ## Uninstall
 

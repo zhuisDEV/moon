@@ -186,8 +186,8 @@ Output contract:
 Rules:
 
 1. `assemble` is the primary control boundary before model dispatch
-2. the model-facing packet must travel through the OpenClaw `messages` lane,
-   not through routine system-prompt injection
+2. the model-facing packet must travel through the OpenClaw `messages` lane, not
+   through routine system-prompt injection
 3. `assemble` must not treat the operator artifact as the final provider-facing
    prompt
 4. `assemble` must stay focused on prompt/context composition, not background
@@ -253,7 +253,11 @@ Rules:
 
 1. uses its own synthesis model role
 2. must remain separate from `cleanse`
-3. writes durable memory outcomes, not active context recovery summaries
+3. watcher-triggered `syns` must synthesize the previous completed local daily
+   memory file, never the current day's file
+4. if the scheduled previous-day daily-memory file is missing, watcher-triggered
+   `syns` must skip rather than silently fall back to current-day memory
+5. writes durable memory outcomes, not active context recovery summaries
 
 ## Transitional Runtime Note
 

@@ -178,6 +178,13 @@ Scheduling note:
 1. Daily watcher SYNS trigger uses local time from
    `distill.syns_trigger_time_local` (`HH:MM`) in `moon.toml`.
 2. Timezone for that local trigger is `distill.residential_timezone`.
+3. Scheduled watcher SYNS catches up later the same local day if Moon missed the
+   exact trigger minute while the daemon was down or unhealthy.
+4. Scheduled watcher SYNS always synthesizes the last completed daily-memory
+   file (`$MOON_HOME/memory/<previous-local-day>.md`), never the current day's
+   file.
+5. If the previous-day daily-memory file is missing or empty, scheduled watcher
+   SYNS skips instead of falling back to the current day's file.
 
 Dry-run watcher cycle:
 

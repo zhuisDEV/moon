@@ -486,3 +486,26 @@
   - `cargo fmt --check`
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo test --all-targets --all-features`
+
+## 2026-04-21 19:00 AEST
+
+- Fixed watcher `syns` scheduling so the daily synthesis catches up later the
+  same local day if Moon missed the exact trigger minute while the daemon was
+  down or unhealthy.
+- Tightened scheduled `syns` source selection:
+  - watcher-triggered `syns` now always uses the previous completed local
+    daily-memory file under `memory/<previous-day>.md`
+  - it no longer falls back to the current day's daily-memory file
+  - if the previous-day file is missing or empty, watcher-triggered `syns` skips
+    and leaves `last_syns_trigger_epoch_secs` unchanged
+- Updated watcher regression coverage:
+  - added a catch-up test proving `syns` still runs later the same day after a
+    missed midnight window
+  - added a guard test proving scheduled `syns` skips instead of using the
+    current day's daily-memory file when the previous-day file is missing
+- Updated `README.md`, `docs/runbook.md`, and `docs/contracts.md` to document
+  the catch-up rule and previous-day-only scheduled `syns` contract.
+- Release packaging:
+  - version bump to `v1.0.16`
+  - updated `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`,
+    `assets/plugin/package.json`, and the plugin runtime version string

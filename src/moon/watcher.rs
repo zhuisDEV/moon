@@ -304,6 +304,30 @@ fn previous_day_key_for_epoch_in_timezone(epoch_secs: u64, tz: Tz) -> String {
     previous_day.format("%Y-%m-%d").to_string()
 }
 
+fn file_has_non_empty_content(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|content| !content.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn scheduled_syns_source_paths(
+    paths: &MoonPaths,
+    now_epoch_secs: u64,
+    tz: Tz,
+) -> Option<Vec<String>> {
+    let previous_day_key = previous_day_key_for_epoch_in_timezone(now_epoch_secs, tz);
+    let previous_day_source = paths.memory_dir.join(format!("{previous_day_key}.md"));
+    if !file_has_non_empty_content(&previous_day_source) {
+        return None;
+    }
+
+    let mut sources = vec![previous_day_source.display().to_string()];
+    if file_has_non_empty_content(&paths.memory_file) {
+        sources.push(paths.memory_file.display().to_string());
+    }
+    Some(sources)
+}
+
 fn syns_due_now(
     state: &crate::moon::state::MoonState,
     now_epoch_secs: u64,
@@ -315,10 +339,9 @@ fn syns_due_now(
         LocalResult::Single(v) => v,
         _ => return false,
     };
-    if now_local.hour() != trigger_hour {
-        return false;
-    }
-    if now_local.minute() < trigger_minute {
+    if now_local.hour() < trigger_hour
+        || (now_local.hour() == trigger_hour && now_local.minute() < trigger_minute)
+    {
         return false;
     }
     let today_key = now_local.format("%Y-%m-%d").to_string();
@@ -523,37 +546,37 @@ pub fn run_once_with_options(run_opts: WatchRunOptions) -> Result<WatchCycleOutc
     );
     let mut syns_result = None;
     if syns_due {
-        let yesterday_key = previous_day_key_for_epoch_in_timezone(now_epoch, tz);
-        let yesterday_source = paths.memory_dir.join(format!("{yesterday_key}.md"));
-        let sources = if yesterday_source.exists() {
-            vec![
-                yesterday_source.display().to_string(),
-                paths.memory_file.display().to_string(),
-            ]
-        } else {
-            Vec::new()
-        };
-
-        if run_opts.dry_run {
-            syns_result = Some(format!(
-                "dry-run trigger=watch-midnight sources={}",
-                sources.join(",")
-            ));
-        } else {
-            let out = run_wisdom_distillation(
-                &paths,
-                &WisdomDistillInput {
-                    trigger: "watch-midnight".to_string(),
-                    day_epoch_secs: Some(now_epoch),
-                    source_paths: sources,
-                    dry_run: false,
-                },
-            )?;
-            state.last_syns_trigger_epoch_secs = Some(now_epoch);
-            syns_result = Some(format!(
-                "provider={} summary_path={}",
-                out.provider, out.summary_path
-            ));
+        let previous_day_key = previous_day_key_for_epoch_in_timezone(now_epoch, tz);
+        let previous_day_source = paths.memory_dir.join(format!("{previous_day_key}.md"));
+        match scheduled_syns_source_paths(&paths, now_epoch, tz) {
+            Some(sources) if run_opts.dry_run => {
+                syns_result = Some(format!(
+                    "dry-run trigger=watch-midnight sources={}",
+                    sources.join(",")
+                ));
+            }
+            Some(sources) => {
+                let out = run_wisdom_distillation(
+                    &paths,
+                    &WisdomDistillInput {
+                        trigger: "watch-midnight".to_string(),
+                        day_epoch_secs: Some(now_epoch),
+                        source_paths: sources,
+                        dry_run: false,
+                    },
+                )?;
+                state.last_syns_trigger_epoch_secs = Some(now_epoch);
+                syns_result = Some(format!(
+                    "provider={} summary_path={}",
+                    out.provider, out.summary_path
+                ));
+            }
+            None => {
+                syns_result = Some(format!(
+                    "skipped reason=missing_previous_day_memory source={}",
+                    previous_day_source.display()
+                ));
+            }
         }
     }
 
