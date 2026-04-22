@@ -1,7 +1,10 @@
 use crate::moon::audit;
 use crate::moon::openai_codex_auth;
 use crate::moon::paths::MoonPaths;
-use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
+use crate::moon::util::{
+    http_status_message, now_epoch_secs, openai_codex_retry_delay, should_retry_openai_codex_error,
+    should_retry_openai_codex_status, truncate_with_ellipsis,
+};
 use anyhow::{Context, Result};
 use chrono::{Datelike, Local, TimeZone};
 use fs2::FileExt;
@@ -15,6 +18,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct DistillInput {
@@ -168,6 +173,9 @@ const MAX_PROMPT_LINES: usize = 80;
 const MAX_MODEL_LINES: usize = 80;
 const MIN_MODEL_BULLETS: usize = 3;
 const REQUEST_TIMEOUT_SECS: u64 = 45;
+const OPENAI_CODEX_REQUEST_TIMEOUT_SECS: u64 = 90;
+const OPENAI_CODEX_MAX_ATTEMPTS: usize = 3;
+const OPENAI_CODEX_RETRY_BASE_DELAY_MS: u64 = 1_000;
 const DEFAULT_DISTILL_CHUNK_BYTES: usize = 512 * 1024;
 const DEFAULT_DISTILL_MAX_CHUNKS: usize = 128;
 const DEFAULT_AUTO_CONTEXT_TOKENS: u64 = 250_000;
@@ -341,27 +349,85 @@ fn call_openai_codex_prompt(
 ) -> Result<String> {
     let url = openai_codex_url(base_url);
     let payload = openai_codex_payload(model, prompt);
-    let response = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .header("accept", "text/event-stream")
-        .json(&payload)
-        .send()?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let headers = response.headers().clone();
-        anyhow::bail!(
-            "{}",
-            crate::moon::util::http_status_message(
-                &format!("openai-codex {stage} call failed"),
-                status,
-                &headers,
-            )
-        );
+
+    for attempt in 1..=OPENAI_CODEX_MAX_ATTEMPTS {
+        let response = match client
+            .post(&url)
+            .bearer_auth(api_key)
+            .header("accept", "text/event-stream")
+            .json(&payload)
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let err = anyhow::Error::new(err)
+                    .context(format!("openai-codex {stage} transport failed"));
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let err = anyhow::anyhow!(
+                "{}",
+                http_status_message(
+                    &format!("openai-codex {stage} call failed"),
+                    status,
+                    &headers
+                )
+            );
+            if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_status(status) {
+                thread::sleep(openai_codex_retry_delay(
+                    attempt,
+                    OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                ));
+                continue;
+            }
+            return Err(err);
+        }
+
+        let body = match response.text() {
+            Ok(body) => body,
+            Err(err) => {
+                let err = anyhow::Error::new(err)
+                    .context(format!("openai-codex {stage} body read failed"));
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        let text = extract_openai_codex_text(&body)
+            .with_context(|| format!("openai-codex {} response missing text content", stage));
+        match text {
+            Ok(text) => return Ok(text),
+            Err(err) => {
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        }
     }
-    let body = response.text()?;
-    extract_openai_codex_text(&body)
-        .with_context(|| format!("openai-codex {} response missing text content", stage))
+
+    unreachable!("openai-codex distill retry loop must return or continue");
 }
 
 fn openai_codex_payload(model: &str, prompt: &str) -> Value {
@@ -1600,7 +1666,7 @@ impl Distiller for OpenAiCodexDistiller {
     fn distill(&self, input: &DistillInput) -> Result<String> {
         let prompt = build_llm_prompt(input);
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(OPENAI_CODEX_REQUEST_TIMEOUT_SECS))
             .build()?;
         call_openai_codex_prompt(
             &client,

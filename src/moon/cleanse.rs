@@ -2,12 +2,20 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::env;
+use std::thread;
+use std::time::Duration;
 
 use crate::moon::openai_codex_auth;
-use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
+use crate::moon::util::{
+    http_status_message, now_epoch_secs, openai_codex_retry_delay, should_retry_openai_codex_error,
+    should_retry_openai_codex_status, truncate_with_ellipsis,
+};
 
 const DEFAULT_CLEANSE_MODEL: &str = "gemini-3.1-flash-lite-preview";
 const REQUEST_TIMEOUT_SECS: u64 = 45;
+const OPENAI_CODEX_REQUEST_TIMEOUT_SECS: u64 = 90;
+const OPENAI_CODEX_MAX_ATTEMPTS: usize = 3;
+const OPENAI_CODEX_RETRY_BASE_DELAY_MS: u64 = 1_000;
 const MAX_SUMMARY_CHARS: usize = 16_000;
 const MAX_MODEL_LINES: usize = 120;
 const MIN_BULLET_LINES: usize = 3;
@@ -313,29 +321,81 @@ fn call_openai_codex(config: &CleanseModelConfig, prompt: &str) -> Result<String
     let payload = openai_codex_payload(&config.model, prompt);
 
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(OPENAI_CODEX_REQUEST_TIMEOUT_SECS))
         .build()?;
-    let response = client
-        .post(&url)
-        .bearer_auth(&config.api_key)
-        .header("accept", "text/event-stream")
-        .json(&payload)
-        .send()?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let headers = response.headers().clone();
-        anyhow::bail!(
-            "{}",
-            crate::moon::util::http_status_message(
-                "openai-codex cleanse call failed",
-                status,
-                &headers,
-            )
-        );
+
+    for attempt in 1..=OPENAI_CODEX_MAX_ATTEMPTS {
+        let response = match client
+            .post(&url)
+            .bearer_auth(&config.api_key)
+            .header("accept", "text/event-stream")
+            .json(&payload)
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let err = anyhow::Error::new(err).context("openai-codex cleanse transport failed");
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let err = anyhow::anyhow!(
+                "{}",
+                http_status_message("openai-codex cleanse call failed", status, &headers)
+            );
+            if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_status(status) {
+                thread::sleep(openai_codex_retry_delay(
+                    attempt,
+                    OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                ));
+                continue;
+            }
+            return Err(err);
+        }
+
+        let body = match response.text() {
+            Ok(body) => body,
+            Err(err) => {
+                let err = anyhow::Error::new(err).context("openai-codex cleanse body read failed");
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+
+        let text = extract_openai_codex_text(&body)
+            .context("openai-codex cleanse response missing text content");
+        match text {
+            Ok(text) => return Ok(text),
+            Err(err) => {
+                if attempt < OPENAI_CODEX_MAX_ATTEMPTS && should_retry_openai_codex_error(&err) {
+                    thread::sleep(openai_codex_retry_delay(
+                        attempt,
+                        OPENAI_CODEX_RETRY_BASE_DELAY_MS,
+                    ));
+                    continue;
+                }
+                return Err(err);
+            }
+        }
     }
 
-    let body = response.text()?;
-    extract_openai_codex_text(&body).context("openai-codex cleanse response missing text content")
+    unreachable!("openai-codex cleanse retry loop must return or continue");
 }
 
 fn openai_codex_payload(model: &str, prompt: &str) -> Value {

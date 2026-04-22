@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-04-22
+
+### Fixed
+
+- Moon `cleanse` and `distill` now give `openai-codex` streamed responses
+  more time to complete and retry transient timeout, overload, and
+  missing-text failures before surfacing a context-engine error.
+- This reduces intermittent `context engine assemble failed` /
+  `afterTurn failed` noise caused by provider-side stalls after the
+  OpenClaw timeout fix in `1.1.2`.
+
 ## [1.1.2] - 2026-04-22
 
 ### Fixed

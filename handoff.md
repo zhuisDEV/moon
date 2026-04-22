@@ -1,5 +1,49 @@
 # Handoff
 
+## 2026-04-22 20:01 AEST
+
+- Cut the next patch release as `v1.1.3` for the post-`1.1.2`
+  `openai-codex` provider timeout hardening work.
+- Release metadata aligned across:
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `assets/plugin/package.json`
+  - `assets/plugin/index.js`
+- Updated `CHANGELOG.md` with the `1.1.3` release note for the
+  `openai-codex` retry/timeout fix in Moon `cleanse` and `distill`.
+- Validation completed:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+
+## 2026-04-22 19:39 AEST
+
+- Hardened Moon's `openai-codex` provider calls used by context-engine
+  `cleanse` and `distill` against transient timeout and overload failures.
+- Root cause from live investigation after the local OpenClaw timeout fix:
+  - user-visible chats could succeed while adjacent `assemble` / `afterTurn`
+    hooks still failed with `error decoding response body: operation timed out`
+  - the failures were inside Moon's nested `openai-codex` HTTP call, not the
+    old OpenClaw `contextEngineTimeoutMs=20000` kill path
+- Code changes:
+  - `src/moon/util.rs`
+    - added shared helpers to classify retryable `openai-codex` statuses and
+      errors plus simple backoff calculation
+  - `src/moon/cleanse.rs`
+    - raised the internal `openai-codex` request timeout to `90s`
+    - added up to `3` attempts for transient transport, HTTP status, body-read,
+      and empty-text failures
+  - `src/moon/distill.rs`
+    - mirrored the same `90s` timeout and `3`-attempt retry behavior for the
+      `openai-codex` distill path
+- Validation completed:
+  - `cargo fmt --all`
+  - `cargo test openai_codex`
+  - `cargo test --test install_flow_test --test idempotency_test --test install_canonical_paths_test --test config_patch_test`
+
 ## 2026-04-22 19:03 AEST
 
 - Prepared the OpenClaw context-engine timeout fix for release as `v1.1.2`.

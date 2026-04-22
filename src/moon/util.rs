@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Error, Result};
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use std::io::Read;
@@ -68,6 +68,44 @@ pub fn run_command_with_timeout(cmd: &mut Command) -> Result<Output> {
     run_command_with_optional_timeout(cmd, Some(DEFAULT_EXTERNAL_COMMAND_TIMEOUT_SECS))
 }
 
+pub fn should_retry_openai_codex_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+pub fn should_retry_openai_codex_error(err: &Error) -> bool {
+    if err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|inner| inner.is_timeout() || inner.is_connect())
+    }) {
+        return true;
+    }
+
+    const TRANSIENT_NEEDLES: &[&str] = &[
+        "operation timed out",
+        "timed out",
+        "server is overloaded",
+        "temporarily overloaded",
+        "service unavailable",
+        "response missing text content",
+        "connection reset",
+        "unexpected eof",
+    ];
+
+    err.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        TRANSIENT_NEEDLES
+            .iter()
+            .any(|needle| message.contains(needle))
+    })
+}
+
+pub fn openai_codex_retry_delay(attempt: usize, base_delay_ms: u64) -> Duration {
+    Duration::from_millis(base_delay_ms.saturating_mul(attempt as u64))
+}
+
 pub fn run_command_with_optional_timeout(
     cmd: &mut Command,
     timeout_secs: Option<u64>,
@@ -121,4 +159,46 @@ fn collect_pipe_output(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Result<Ve
     handle
         .join()
         .map_err(|_| anyhow::anyhow!("failed to collect command output: reader thread panicked"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        openai_codex_retry_delay, should_retry_openai_codex_error, should_retry_openai_codex_status,
+    };
+    use anyhow::anyhow;
+    use reqwest::StatusCode;
+    use std::time::Duration;
+
+    #[test]
+    fn retryable_openai_codex_statuses_cover_rate_limit_and_5xx() {
+        assert!(should_retry_openai_codex_status(
+            StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(should_retry_openai_codex_status(
+            StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(!should_retry_openai_codex_status(StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn retryable_openai_codex_errors_cover_timeout_and_empty_sse_body() {
+        assert!(should_retry_openai_codex_error(&anyhow!(
+            "error decoding response body: operation timed out"
+        )));
+        assert!(should_retry_openai_codex_error(&anyhow!(
+            "openai-codex cleanse response missing text content"
+        )));
+        assert!(!should_retry_openai_codex_error(&anyhow!(
+            "missing provider credentials for cleanse"
+        )));
+    }
+
+    #[test]
+    fn openai_codex_retry_delay_scales_linearly() {
+        assert_eq!(
+            openai_codex_retry_delay(3, 1_000),
+            Duration::from_millis(3_000)
+        );
+    }
 }
