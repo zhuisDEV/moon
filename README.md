@@ -284,6 +284,7 @@ Global flags:
 
 1. `--json`
 2. `--allow-out-of-bounds`
+3. `--version` / `-V`
 
 Commands:
 

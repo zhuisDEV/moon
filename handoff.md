@@ -545,3 +545,26 @@
   - `docs/runbook.md`
   - `docs/security_checklist.md`
   - `CHANGELOG.md`
+
+## 2026-04-22 00:06 AEST
+
+- Restored a standard CLI version flag for Moon.
+- Implementation:
+  - added Clap version metadata in `src/cli.rs` so Moon now supports:
+    - `moon --version`
+    - `moon -V`
+- Added regression coverage in `tests/default_env_loading_test.rs` to prove the
+  version flag works through the current env-loading bootstrap path.
+- Updated `README.md` CLI global flags to include `--version` / `-V`.
+
+## 2026-04-22 00:16 AEST
+
+- Prepared the version-flag follow-up as `v1.1.1` so `moon update` on the stable
+  channel can consume it.
+- Release metadata aligned across:
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `assets/plugin/package.json`
+  - `assets/plugin/index.js`
+- Updated `CHANGELOG.md` with the `1.1.1` release note for the restored standard
+  CLI version flag.

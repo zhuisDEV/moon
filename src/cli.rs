@@ -8,6 +8,7 @@ use crate::moon::project::ProjectLane;
 #[derive(Debug, Parser)]
 #[command(name = "moon")]
 #[command(about = "MOON v1 context-control and memory CLI")]
+#[command(version)]
 pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,

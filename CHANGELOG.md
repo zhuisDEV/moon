@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-04-22
+
+### Fixed
+
+- Restored the standard Clap version flag so Moon now supports:
+  - `moon --version`
+  - `moon -V`
+
+### Docs
+
+- Updated `README.md` and `handoff.md` to document the version flag.
+
 ## [1.1.0] - 2026-04-21
 
 ### Added
