@@ -1,5 +1,49 @@
 # Handoff
 
+## 2026-04-22 19:03 AEST
+
+- Prepared the OpenClaw context-engine timeout fix for release as `v1.1.2`.
+- Release metadata aligned across:
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `assets/plugin/package.json`
+  - `assets/plugin/index.js`
+- Updated `CHANGELOG.md` with the `1.1.2` release note for the managed
+  `contextEngineTimeoutMs=120000` timeout fix.
+- Validation completed:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+
+## 2026-04-22 18:57 AEST
+
+- Patched Moon install/upgrade behavior to prevent OpenClaw from timing out
+  valid long-running `moon context-engine` runs.
+- Root cause from live investigation:
+  - OpenClaw Moon plugin defaulted `contextEngineTimeoutMs` to `20000`
+  - real `openai-codex` compaction runs on long sessions completed in about
+    `46-49s` in isolated end-to-end repros
+  - OpenClaw surfaced the resulting timeout/signal kill as
+    `moon context-engine exited with null`
+- Code changes:
+  - `src/openclaw/config.rs`
+    - added managed `contextEngineTimeoutMs = 120000` to
+      `ensure_plugin_runtime_config(...)`
+  - `assets/plugin/index.js`
+    - raised `DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS` from `20_000` to `120_000`
+  - docs updated in:
+    - `README.md`
+    - `BOOTSTRAP.md`
+    - `assets/plugin/README.md`
+  - install/config regression coverage updated in:
+    - `tests/install_flow_test.rs`
+    - `tests/idempotency_test.rs`
+    - `tests/install_canonical_paths_test.rs`
+    - `tests/config_patch_test.rs`
+
 ## 2026-04-07 00:18 AEDT
 
 - Fast-forwarded Moon from `badcd3c` to `c22d84e` (`v1.0.9`).

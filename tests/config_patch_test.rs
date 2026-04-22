@@ -105,6 +105,16 @@ fn patch_respects_existing_values_unless_forced() {
             .and_then(|v| v.get("entries"))
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("config"))
+            .and_then(|v| v.get("contextEngineTimeoutMs"))
+            .and_then(Value::as_i64),
+        Some(120_000)
+    );
+    assert_eq!(
+        cfg_1
+            .get("plugins")
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.get("moon"))
+            .and_then(|v| v.get("config"))
             .and_then(|v| v.get("fallbackMode"))
             .and_then(Value::as_str),
         Some("disabled")
@@ -150,6 +160,16 @@ fn patch_respects_existing_values_unless_forced() {
             .and_then(|v| v.get("reserveTokensFloor"))
             .and_then(Value::as_i64),
         Some(123)
+    );
+    assert_eq!(
+        cfg_2
+            .get("plugins")
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.get("moon"))
+            .and_then(|v| v.get("config"))
+            .and_then(|v| v.get("contextEngineTimeoutMs"))
+            .and_then(Value::as_i64),
+        Some(120_000)
     );
     assert_eq!(
         cfg_2

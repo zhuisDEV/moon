@@ -167,7 +167,7 @@ const DEFAULT_TOOL_PROFILES = {
   "web.fetch": { maxTokens: 7000, maxChars: 35000 },
 };
 
-const DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS = 20_000;
+const DEFAULT_CONTEXT_ENGINE_TIMEOUT_MS = 120_000;
 const DEFAULT_FALLBACK_MODE = "disabled";
 const DEFAULT_CONTEXT_PACKET_MAX_TOKENS = 1_400;
 const DEFAULT_CONTEXT_PACKET_CANDIDATE_THRESHOLD = 10;
@@ -1298,7 +1298,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.1.1",
+      version: "1.1.2",
       ownsCompaction: true,
     },
     bootstrap(params) {

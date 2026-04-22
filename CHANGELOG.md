@@ -7,6 +7,21 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-04-22
+
+### Fixed
+
+- Managed OpenClaw installs, upgrades, and the bundled Moon plugin now use
+  `contextEngineTimeoutMs=120000` instead of `20000`, preventing long
+  `moon context-engine` runs from being killed on larger sessions.
+- Added regression coverage for install, config patching, canonical-path, and
+  idempotency flows so the managed timeout remains stamped into plugin config.
+
+### Docs
+
+- Updated `README.md`, `BOOTSTRAP.md`, `assets/plugin/README.md`, and
+  `handoff.md` to document the managed context-engine timeout.
+
 ## [1.1.1] - 2026-04-22
 
 ### Fixed

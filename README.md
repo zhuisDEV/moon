@@ -96,7 +96,8 @@ moon health
    - set `plugins.slots.contextEngine = "moon"`
    - set `plugins.slots.memory = "none"`
    - set `agents.defaults.memorySearch.enabled = false`
-5. wires Moon runtime paths into `plugins.entries.moon.config.*`
+5. wires Moon runtime paths and a managed `contextEngineTimeoutMs` into
+   `plugins.entries.moon.config.*`
 6. configures macOS launchd autostart when running from an installed binary
 7. repairs secret-bearing Moon runtime paths to owner-only permissions:
    - `$MOON_HOME/.env`

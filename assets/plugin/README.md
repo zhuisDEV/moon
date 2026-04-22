@@ -58,7 +58,7 @@ Under `plugins.entries.moon.config`:
 2. `moonHome` (optional runtime root override passed as `MOON_HOME`)
 3. `memoryDir` (MOON daily-memory directory, typically `$MOON_HOME/memory`)
 4. `memoryFile` (MOON durable memory file, typically `$MOON_HOME/MEMORY.md`)
-5. `contextEngineTimeoutMs` (default `20000`)
+5. `contextEngineTimeoutMs` (default `120000`)
 6. `maxAssemblyChars` (deprecated compatibility no-op; accepted but ignored)
 7. `contextPacketMaxTokens` (gating threshold for local packet size, default
    `1400`)
@@ -81,3 +81,7 @@ Under `plugins.entries.moon.config`:
 19. `maxRetainedBytes` (default `250000`)
 20. `tools.<tool>.maxTokens`
 21. `tools.<tool>.maxChars`
+
+Managed Moon installs and upgrades now stamp `contextEngineTimeoutMs=120000`
+explicitly because real `cleanse` + packet assembly can exceed 20s on long
+sessions.

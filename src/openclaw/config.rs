@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
 pub const MIN_AGENT_CONTEXT_TOKENS: u64 = 16_000;
+pub const RECOMMENDED_CONTEXT_ENGINE_TIMEOUT_MS: u64 = 120_000;
 // OpenClaw currently validates compaction mode as `default|safeguard`.
 // Moon authority therefore uses `default` as the least-opinionated, valid mode.
 pub const MOON_AUTHORITY_COMPACTION_MODE: &str = "default";
@@ -436,6 +437,14 @@ pub fn ensure_plugin_runtime_config(
         &prefix,
         &["moonHome"],
         Value::from(normalized_moon_home.display().to_string()),
+        true,
+        &mut outcome,
+    );
+    set_path_with_prefix(
+        root,
+        &prefix,
+        &["contextEngineTimeoutMs"],
+        Value::from(RECOMMENDED_CONTEXT_ENGINE_TIMEOUT_MS),
         true,
         &mut outcome,
     );

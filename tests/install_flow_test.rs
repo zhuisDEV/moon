@@ -139,6 +139,15 @@ fn install_creates_plugin_and_stage2_config_entries() {
             .and_then(|v| v.get("entries"))
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("config"))
+            .and_then(|v| v.get("contextEngineTimeoutMs"))
+            .and_then(Value::as_i64),
+        Some(120_000)
+    );
+    assert_eq!(
+        cfg.get("plugins")
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.get("moon"))
+            .and_then(|v| v.get("config"))
             .and_then(|v| v.get("memoryDir"))
             .and_then(Value::as_str),
         Some(expected_memory_dir.to_string_lossy().as_ref())

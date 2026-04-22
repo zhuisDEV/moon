@@ -99,7 +99,7 @@ moon config --show
 1. Wires OpenClaw plugin and provenance fields.
 2. Sets `plugins.slots.contextEngine = "moon"`.
 3. Writes managed plugin runtime config (`moonPath`, `moonHome`,
-   `memoryDir`, `memoryFile`, fallback policy).
+   `contextEngineTimeoutMs`, `memoryDir`, `memoryFile`, fallback policy).
 4. Provisions MOON runtime directories under `$MOON_HOME`.
 5. On macOS (installed binary), wires launchd for transitional watcher daemon.
 6. Exports installed-runtime operator docs into `$MOON_HOME` (`README.md`,
