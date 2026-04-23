@@ -116,6 +116,15 @@ function createApi(
   pluginConfigOverrides: Record<string, unknown> = {},
   runtimeOverrides: {
     embeddedRunner?: (params: Record<string, unknown>) => Promise<unknown>;
+    resolvePath?: (value: string) => string | null | undefined;
+    runCommandWithTimeout?: (
+      argv: string[],
+      opts: { timeoutMs: number; env?: Record<string, string> },
+    ) => Promise<{ code: number; stdout: string; stderr: string }> | {
+      code: number;
+      stdout: string;
+      stderr: string;
+    };
   } = {},
 ) {
   return {
@@ -126,14 +135,17 @@ function createApi(
     },
     config: {},
     resolvePath(value: string) {
-      return value;
+      return runtimeOverrides.resolvePath?.(value) ?? value;
     },
     runtime: {
       system: {
         runCommandWithTimeout(
           argv: string[],
-          opts: { timeoutMs: number },
+          opts: { timeoutMs: number; env?: Record<string, string> },
         ) {
+          if (runtimeOverrides.runCommandWithTimeout) {
+            return runtimeOverrides.runCommandWithTimeout(argv, opts);
+          }
           callLog.push({ argv, timeoutMs: opts.timeoutMs });
           return {
             code: 0,
@@ -691,6 +703,44 @@ Deno.test("moon plugin resolves fast default curator models by provider", () => 
   assertEquals(inferredOpenAiSettings.assemblySubagentModel, "gpt-5.4-mini");
 });
 
+Deno.test("moon plugin keeps configured absolute moonPath when host resolver returns empty", () => {
+  const settings = __moonTest.resolveContextEngineSettings(
+    createApi(
+      "",
+      [],
+      {
+        moonPath: "/tmp/moon-bin/moon",
+      },
+      {
+        resolvePath: () => "",
+      },
+    ),
+  );
+
+  assertEquals(
+    settings.moonPath,
+    "/tmp/moon-bin/moon",
+    "absolute configured moonPath should not silently fall back to bare moon",
+  );
+});
+
+Deno.test("moon plugin still resolves relative moonPath through the host resolver", () => {
+  const settings = __moonTest.resolveContextEngineSettings(
+    createApi(
+      "",
+      [],
+      {
+        moonPath: "bin/moon",
+      },
+      {
+        resolvePath: (value) => `/resolved/${value}`,
+      },
+    ),
+  );
+
+  assertEquals(settings.moonPath, "/resolved/bin/moon");
+});
+
 Deno.test("moon plugin falls back to the local packet when curator fails", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
   try {
@@ -749,6 +799,48 @@ Deno.test("moon plugin falls back to the local packet when curator fails", async
     );
   } finally {
     await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("moon plugin logs executable details when launch fails before spawn", async () => {
+  const errors: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map((value) => String(value)).join(" "));
+  };
+
+  try {
+    const engine = __moonTest.createMoonContextEngine(
+      createApi(
+        "",
+        [],
+        {
+          moonPath: "/tmp/moon-bin/moon",
+          fallbackMode: "openclaw",
+        },
+        {
+          runCommandWithTimeout() {
+            throw new Error("spawn moon ENOENT");
+          },
+        },
+      ),
+    );
+
+    const result = await engine.assemble({
+      sessionId: "session-launch-error",
+      messages: [{
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+      }],
+      tokenBudget: 20_000,
+    });
+
+    assertEquals(result.messages.length, 1);
+    assertStringIncludes(errors.join("\n"), "executable=/tmp/moon-bin/moon");
+    assertStringIncludes(errors.join("\n"), "process_cwd=");
+    assertStringIncludes(errors.join("\n"), "spawn moon ENOENT");
+  } finally {
+    console.error = originalConsoleError;
   }
 });
 

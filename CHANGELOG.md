@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-04-23
+
+### Fixed
+
+- Moon's OpenClaw plugin now preserves configured absolute `moonPath` values
+  instead of sending them through host path resolution and silently falling
+  back to bare `moon`.
+- Context-engine launch failures now report the resolved executable path and
+  process cwd, making `spawn ... ENOENT` incidents diagnosable from gateway
+  logs.
+
 ## [1.1.3] - 2026-04-22
 
 ### Fixed

@@ -148,15 +148,35 @@ function resolvePathSetting(api, value) {
   }
 
   const trimmed = value.trim();
+  const normalized = trimmed === "~"
+    ? os.homedir()
+    : trimmed.startsWith("~/")
+    ? path.join(os.homedir(), trimmed.slice(2))
+    : trimmed;
+  if (path.isAbsolute(normalized)) {
+    return normalized;
+  }
+
   if (typeof api?.resolvePath === "function") {
     try {
-      return api.resolvePath(trimmed);
+      const resolved = api.resolvePath(normalized);
+      if (isNonEmptyString(resolved)) {
+        return resolved.trim();
+      }
     } catch {
-      return trimmed;
+      return normalized;
     }
   }
 
-  return trimmed;
+  return normalized;
+}
+
+function resolveProcessCwd() {
+  try {
+    return process.cwd();
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_TOOL_PROFILES = {
@@ -1196,10 +1216,19 @@ async function runMoonContextEngine(api, settings, params) {
   }
 
   try {
-    const result = await api.runtime.system.runCommandWithTimeout(argv, {
-      timeoutMs: settings.contextEngineTimeoutMs,
-      env,
-    });
+    let result;
+    try {
+      result = await api.runtime.system.runCommandWithTimeout(argv, {
+        timeoutMs: settings.contextEngineTimeoutMs,
+        env,
+      });
+    } catch (err) {
+      const processCwd = resolveProcessCwd();
+      throw new Error(
+        `moon context-engine launch failed executable=${settings.moonPath} ` +
+          `process_cwd=${processCwd ?? "unknown"} cause=${String(err)}`,
+      );
+    }
 
     if (result.code !== 0) {
       throw new Error(
