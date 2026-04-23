@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-04-23
+
+### Docs
+
+- Moved troubleshooting guidance out of `README.md` into a dedicated
+  `docs/troubleshooting.md` file so known failure modes have a stable reference
+  point.
+- Documented the `spawn moon ENOENT` incident and recovery steps in the new
+  troubleshooting file.
+- Removed the standalone resolved incident report after folding its durable
+  guidance into the troubleshooting docs.
+
 ## [1.1.4] - 2026-04-23
 
 ### Fixed

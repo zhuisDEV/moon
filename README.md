@@ -367,6 +367,11 @@ moon distill --mode syns
    `$MOON_HOME/memory/<day>.md` plus durable `MEMORY.md`; it does not fall back
    to the current day's daily-memory file.
 
+## Troubleshooting
+
+See [docs/troubleshooting.md](./docs/troubleshooting.md) for known failure
+modes, diagnostics, and recovery steps.
+
 ## Uninstall
 
 Moon now has a real uninstall command.
