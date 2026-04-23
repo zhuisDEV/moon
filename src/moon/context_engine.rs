@@ -2,19 +2,20 @@ use anyhow::{Context, Result};
 use std::fs;
 
 use crate::moon::assemble::{
-    AssembleOutput, assemble_context, embedding_index_anchor_from_state,
+    AssembleOutput, assemble_context_with_excerpt, embedding_index_anchor_from_state,
     resolve_input as resolve_assemble_input, write_assembly_output,
 };
 use crate::moon::audit;
 use crate::moon::cleanse::{CleanseInput, render_summary_document, run_cleanse};
 use crate::moon::config::{
-    MoonContextConfig, MoonHotCollectionLifecycleCommandMode, MoonHotCollectionLifecycleMode,
-    load_config,
+    MoonConfig, MoonContextConfig, MoonHotCollectionLifecycleCommandMode,
+    MoonHotCollectionLifecycleMode, load_config,
 };
 use crate::moon::context_packet::{
-    ContextPacketInput, ContextPacketOutput, build_context_packet, write_context_packet_output,
+    ContextPacketInput, ContextPacketOutput, build_context_packet_from_projection,
+    write_context_packet_output,
 };
-use crate::moon::distill::load_source_excerpt;
+use crate::moon::distill::{ProjectionSnapshot, extract_projection_snapshot};
 use crate::moon::embed;
 use crate::moon::paths::MoonPaths;
 use crate::moon::project::{self, ProjectLane, ProjectRunOptions};
@@ -55,6 +56,27 @@ pub struct CheckpointOutput {
     pub assembly: AssembleOutput,
     pub context_packet_output_path: Option<String>,
     pub context_packet: Option<ContextPacketOutput>,
+    pub raw_parse_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncCheckpointOutput {
+    pub session_id: String,
+    pub record_target_path: String,
+    pub project_output_path: String,
+    pub sync_reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedCheckpoint {
+    cfg: MoonConfig,
+    plan: record::RecordPlan,
+    state: MoonState,
+    should_cleanse: bool,
+    cleanse_reason: String,
+    hot_lifecycle_summary: String,
+    hot_prune_summary: String,
+    project_output_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +124,138 @@ struct CleanseThresholds {
 }
 
 pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<CheckpointOutput> {
+    let mut prepared = prepare_checkpoint(paths, opts)?;
+    let source_snapshot = load_checkpoint_source_snapshot(&prepared.plan)?;
+
+    let mut embed_now = "not-triggered".to_string();
+    let cleanse_summary_path = if prepared.should_cleanse {
+        let queued_epoch_secs = now_epoch_secs()?;
+        prepared.state.last_compaction_trigger_epoch_secs = Some(queued_epoch_secs);
+        embed_now = run_embed_now(paths, &mut prepared.state, &prepared.plan.session_id);
+        Some(run_cleanse_checkpoint(
+            paths,
+            &prepared.plan.session_id,
+            &prepared.plan.target_path,
+            &source_snapshot.excerpt,
+        )?)
+    } else {
+        None
+    };
+
+    let raw_source_path = prepared.plan.target_path.display().to_string();
+    let mut assemble_input = resolve_assemble_input(
+        paths,
+        Some(raw_source_path.as_str()),
+        Some(&prepared.plan.session_id),
+    )?;
+    assemble_input.embedding_index_anchor = Some(embedding_index_anchor_from_state(
+        paths,
+        &prepared.state,
+        &prepared.plan.session_id,
+    ));
+    let assembly = assemble_context_with_excerpt(&assemble_input, &source_snapshot.excerpt)?;
+    let assembly_output_path =
+        write_assembly_output(paths, &prepared.plan.session_id, &assembly.content)?;
+    let (context_packet, context_packet_output_path) = if prepared.cfg.context_packet.enabled {
+        let packet = build_context_packet_from_projection(
+            paths,
+            &prepared.state,
+            &prepared.cfg.context_packet,
+            &ContextPacketInput {
+                session_id: prepared.plan.session_id.clone(),
+                raw_source_path: prepared.plan.target_path.clone(),
+                cleanse_summary_path: cleanse_summary_path.as_ref().map(std::path::PathBuf::from),
+                replay_has_compaction_summary: opts.replay_has_compaction_summary,
+            },
+            &source_snapshot.data,
+        )?;
+        let packet_output_path =
+            write_context_packet_output(paths, &prepared.plan.session_id, &packet.content)?;
+        prepared.state.last_context_packet_session_id = Some(prepared.plan.session_id.clone());
+        prepared.state.last_context_packet_epoch_secs = Some(packet.packet_at_epoch_secs);
+        prepared.state.last_context_packet_generation = Some(packet.generation.clone());
+        prepared.state.last_context_packet_candidate_count = Some(packet.candidate_count);
+        (Some(packet), Some(packet_output_path.display().to_string()))
+    } else {
+        prepared.state.last_context_packet_session_id = None;
+        prepared.state.last_context_packet_epoch_secs = None;
+        prepared.state.last_context_packet_generation = None;
+        prepared.state.last_context_packet_candidate_count = None;
+        (None, None)
+    };
+
+    prepared.state.last_assembly_session_id = Some(prepared.plan.session_id.clone());
+    prepared.state.last_assembly_epoch_secs = Some(assembly.assembled_at_epoch_secs);
+    let _ = save(paths, &prepared.state)?;
+
+    let _ = audit::append_event(
+        paths,
+        "context-engine",
+        "ok",
+        &format!(
+            "session_id={} record={} project={} cleanse={} embed_now={} assembly={} packet={} reason={} raw_parse_count=1 hot_lifecycle={} hot_prune={}",
+            prepared.plan.session_id,
+            prepared.plan.target_path.display(),
+            prepared.project_output_path,
+            cleanse_summary_path.as_deref().unwrap_or("none"),
+            embed_now,
+            assembly_output_path.display(),
+            context_packet_output_path.as_deref().unwrap_or("none"),
+            prepared.cleanse_reason,
+            prepared.hot_lifecycle_summary,
+            prepared.hot_prune_summary
+        ),
+    );
+
+    Ok(CheckpointOutput {
+        session_id: prepared.plan.session_id,
+        record_target_path: prepared.plan.target_path.display().to_string(),
+        cleanse_summary_path,
+        embed_now: prepared.should_cleanse.then_some(embed_now),
+        cleanse_reason: prepared.cleanse_reason,
+        assembly_output_path: assembly_output_path.display().to_string(),
+        assembly,
+        context_packet_output_path,
+        context_packet,
+        raw_parse_count: 1,
+    })
+}
+
+pub fn run_sync_checkpoint(
+    paths: &MoonPaths,
+    opts: &CheckpointOptions,
+) -> Result<SyncCheckpointOutput> {
+    let prepared = prepare_checkpoint(paths, opts)?;
+    let _ = save(paths, &prepared.state)?;
+
+    let sync_reason = format!(
+        "sync-only skipped-assemble skipped-packet skipped-cleanse base_reason={}",
+        prepared.cleanse_reason
+    );
+    let _ = audit::append_event(
+        paths,
+        "context-engine-sync",
+        "ok",
+        &format!(
+            "session_id={} record={} project={} reason={} hot_lifecycle={} hot_prune={}",
+            prepared.plan.session_id,
+            prepared.plan.target_path.display(),
+            prepared.project_output_path,
+            sync_reason,
+            prepared.hot_lifecycle_summary,
+            prepared.hot_prune_summary
+        ),
+    );
+
+    Ok(SyncCheckpointOutput {
+        session_id: prepared.plan.session_id,
+        record_target_path: prepared.plan.target_path.display().to_string(),
+        project_output_path: prepared.project_output_path,
+        sync_reason,
+    })
+}
+
+fn prepare_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<PreparedCheckpoint> {
     qmd::install_runtime_env(paths);
     let cfg = load_config().unwrap_or_default();
     let plan = record::plan_record(
@@ -157,99 +311,31 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
             pruned.removed_pending_hot_collections
         );
     }
-    let mut embed_now = "not-triggered".to_string();
-    let projected_path = Some(run_project_checkpoint(
-        paths,
-        &mut state,
-        &plan.session_id,
-        &plan.target_path,
-    )?);
-    let cleanse_summary_path = if should_cleanse {
-        let queued_epoch_secs = now_epoch_secs()?;
-        state.last_compaction_trigger_epoch_secs = Some(queued_epoch_secs);
-        embed_now = run_embed_now(paths, &mut state, &plan.session_id);
-        Some(run_cleanse_checkpoint(
-            paths,
-            &plan.session_id,
-            &plan.target_path,
-        )?)
-    } else {
-        None
-    };
+    let project_output_path =
+        run_project_checkpoint(paths, &mut state, &plan.session_id, &plan.target_path)?;
 
-    let raw_source_path = plan.target_path.display().to_string();
-    let mut assemble_input = resolve_assemble_input(
-        paths,
-        Some(raw_source_path.as_str()),
-        Some(&plan.session_id),
-    )?;
-    assemble_input.embedding_index_anchor = Some(embedding_index_anchor_from_state(
-        paths,
-        &state,
-        &plan.session_id,
-    ));
-    let assembly = assemble_context(&assemble_input)?;
-    let assembly_output_path = write_assembly_output(paths, &plan.session_id, &assembly.content)?;
-    let (context_packet, context_packet_output_path) = if cfg.context_packet.enabled {
-        let packet = build_context_packet(
-            paths,
-            &state,
-            &cfg.context_packet,
-            &ContextPacketInput {
-                session_id: plan.session_id.clone(),
-                raw_source_path: plan.target_path.clone(),
-                cleanse_summary_path: cleanse_summary_path.as_ref().map(std::path::PathBuf::from),
-                replay_has_compaction_summary: opts.replay_has_compaction_summary,
-            },
-        )?;
-        let packet_output_path =
-            write_context_packet_output(paths, &plan.session_id, &packet.content)?;
-        state.last_context_packet_session_id = Some(plan.session_id.clone());
-        state.last_context_packet_epoch_secs = Some(packet.packet_at_epoch_secs);
-        state.last_context_packet_generation = Some(packet.generation.clone());
-        state.last_context_packet_candidate_count = Some(packet.candidate_count);
-        (Some(packet), Some(packet_output_path.display().to_string()))
-    } else {
-        state.last_context_packet_session_id = None;
-        state.last_context_packet_epoch_secs = None;
-        state.last_context_packet_generation = None;
-        state.last_context_packet_candidate_count = None;
-        (None, None)
-    };
-
-    state.last_assembly_session_id = Some(plan.session_id.clone());
-    state.last_assembly_epoch_secs = Some(assembly.assembled_at_epoch_secs);
-    let _ = save(paths, &state)?;
-
-    let _ = audit::append_event(
-        paths,
-        "context-engine",
-        "ok",
-        &format!(
-            "session_id={} record={} project={} cleanse={} embed_now={} assembly={} packet={} reason={} hot_lifecycle={} hot_prune={}",
-            plan.session_id,
-            plan.target_path.display(),
-            projected_path.as_deref().unwrap_or("none"),
-            cleanse_summary_path.as_deref().unwrap_or("none"),
-            embed_now,
-            assembly_output_path.display(),
-            context_packet_output_path.as_deref().unwrap_or("none"),
-            cleanse_reason,
-            hot_lifecycle_summary,
-            hot_prune_summary
-        ),
-    );
-
-    Ok(CheckpointOutput {
-        session_id: plan.session_id,
-        record_target_path: plan.target_path.display().to_string(),
-        cleanse_summary_path,
-        embed_now: should_cleanse.then_some(embed_now),
+    Ok(PreparedCheckpoint {
+        cfg,
+        plan,
+        state,
+        should_cleanse,
         cleanse_reason,
-        assembly_output_path: assembly_output_path.display().to_string(),
-        assembly,
-        context_packet_output_path,
-        context_packet,
+        hot_lifecycle_summary,
+        hot_prune_summary,
+        project_output_path,
+    })
+}
+
+fn load_checkpoint_source_snapshot(plan: &record::RecordPlan) -> Result<ProjectionSnapshot> {
+    let raw_target_path = plan
+        .target_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("record target path is not valid UTF-8"))?;
+    extract_projection_snapshot(raw_target_path).with_context(|| {
+        format!(
+            "failed to derive checkpoint source snapshot from {}",
+            plan.target_path.display()
+        )
     })
 }
 
@@ -350,21 +436,16 @@ fn run_cleanse_checkpoint(
     paths: &MoonPaths,
     session_id: &str,
     raw_target_path: &std::path::Path,
+    source_excerpt: &str,
 ) -> Result<String> {
     let raw_target_path_str = raw_target_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("record target path is not valid UTF-8"))?
         .to_string();
-    let source_excerpt = load_source_excerpt(&raw_target_path_str).with_context(|| {
-        format!(
-            "failed to derive cleanse input from {}",
-            raw_target_path.display()
-        )
-    })?;
     let output = run_cleanse(&CleanseInput {
         session_id: session_id.to_string(),
         source_path: raw_target_path_str.clone(),
-        source_excerpt,
+        source_excerpt: source_excerpt.to_string(),
     })?;
 
     fs::create_dir_all(&paths.cleanse_dir)

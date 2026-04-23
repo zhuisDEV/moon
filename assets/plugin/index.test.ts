@@ -459,6 +459,39 @@ Deno.test("moon plugin assemble injects the Moon packet into messages and keeps 
   }
 });
 
+Deno.test("moon plugin afterTurn uses sync-only context-engine mode", async () => {
+  const stdout = JSON.stringify({
+    command: "context-engine",
+    ok: true,
+    details: [
+      "context_engine.sync_only=true",
+      "context_engine.session_id=session-1",
+      "context_engine.record_target_path=/tmp/moon/raw/session-1.jsonl",
+      "context_engine.project_path=/tmp/moon/mds/history_hot_session-1/session.md",
+      "context_engine.sync_reason=sync-only skipped-assemble skipped-packet skipped-cleanse",
+    ],
+    issues: [],
+  });
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+  await engine.afterTurn({
+    sessionId: "session-1",
+    sessionFile: "/tmp/moon/session-1.jsonl",
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "sync this turn" }],
+    }],
+    tokenBudget: 20_000,
+  });
+
+  assertEquals(calls.length, 1, "afterTurn should invoke context-engine once");
+  assert(
+    calls[0].argv.includes("--sync-only"),
+    "afterTurn should use sync-only checkpoint mode",
+  );
+});
+
 Deno.test("moon plugin keeps cleanse summary in transcript compaction lane only", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "moon-plugin-test-" });
   try {

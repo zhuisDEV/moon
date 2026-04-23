@@ -1,16 +1,113 @@
 # Handoff
 
+## 2026-04-23 20:43 AEST
+
+- Implemented the optimisation MIP end to end and prepared release `v1.2.0`.
+- Rust runtime changes:
+  - `src/moon/distill.rs`
+    - added `ProjectionSnapshot` plus `extract_projection_snapshot()`
+    - raw-session parsing can now be shared instead of repeated
+  - `src/moon/assemble.rs`
+    - added `assemble_context_with_excerpt()` so callers can reuse a prepared
+      raw excerpt
+  - `src/moon/context_engine.rs`
+    - refactored checkpoint setup into shared preparation
+    - `run_checkpoint()` now parses raw session once and reuses that snapshot
+      for `cleanse`, `assemble`, and packet build
+    - added `run_sync_checkpoint()` for record/project/state refresh without
+      assembly or packet work
+  - `src/moon/context_packet.rs`
+    - replaced broad multi-source packet fanout with routed single-source-first
+      retrieval
+    - added primary source family routing:
+      - `hot`
+      - `memory`
+      - `library`
+      - `distill`
+      - bounded `semantic`
+    - added canonical-source election for duplicate evidence
+    - bounded fallback now happens only when the primary family underfills
+    - packet diagnostics now report:
+      - primary source family
+      - fallback source
+      - source read count
+      - QMD query count
+  - `src/commands/moon_assemble.rs`
+    - assemble path now parses raw session once and reuses it for packet build
+  - `src/commands/moon_context_engine.rs` and `src/cli.rs`
+    - added `moon context-engine --sync-only`
+    - added packet/source diagnostics and raw parse count reporting
+- Plugin changes:
+  - `assets/plugin/index.js`
+    - added `runMoonContextSync()`
+    - `afterTurn()` now uses `moon context-engine --sync-only`
+  - `assets/plugin/index.test.ts`
+    - added coverage proving `afterTurn()` uses sync-only mode
+- Audit result:
+  - no blocking implementation issues found after diff review and full
+    validation
+  - residual risk remains that routed source-family selection is lexical and can
+    misroute ambiguous prompts, but fallback still preserves correctness
+- Release packaging:
+  - bumped version to `v1.2.0` in:
+    - `Cargo.toml`
+    - `Cargo.lock`
+    - `assets/plugin/package.json`
+    - `assets/plugin/index.js`
+  - updated `CHANGELOG.md`
+  - rebased the release commit onto upstream `v1.1.4` and `v1.1.5` before
+    publishing
+- Validation completed:
+  - `cargo fmt --all`
+  - `deno fmt mip.md handoff.md assets/plugin/index.js assets/plugin/index.test.ts`
+  - `cargo test context_packet -- --nocapture`
+  - `cargo test checkpoint_ -- --nocapture`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+
+## 2026-04-23 20:13 AEST
+
+- Replaced `mip.md` with a new optimisation-focused control plan.
+- The new MIP supersedes the earlier active-context packet rollout plan and
+  shifts the current focus to reducing repeated work in Moon context assembly.
+- New planning direction:
+  - parse the raw session once per checkpoint
+  - stop rescanning broad source trees on routine assembles
+  - route each assemble pass to one primary source lane first
+  - search one canonical source artifact first inside that lane where possible
+  - use fallback lanes and QMD only when the primary source underfills
+  - dedupe repeated evidence before packet section budgeting
+  - split refresh-heavy sync work from the pre-dispatch hot path
+- No runtime code changed in this pass; this was a planning-doc rewrite only.
+
+## 2026-04-23 00:14 AEST
+
+- Wrote a dedicated Moon assembly curator RCA and remediation plan in:
+  - `docs/assembly-subagent-root-cause-plan.md`
+- Plan contents cover:
+  - primary root cause: recursive / re-entrant nested OpenClaw embedded runs
+    from inside Moon `contextEngine.assemble`
+  - secondary cause: curator over-coupling to full OpenClaw run/session/lock
+    machinery plus session/transcript identity mismatch
+  - root-cause fix plan: recursion guards and curator-session bypass
+  - secondary fix plan: move curator toward a direct bounded rewrite path or a
+    minimal child-run mode
+  - additional additions: observability, safety fuse, release/operator notes,
+    and validation checklist
+
 ## 2026-04-22 20:01 AEST
 
-- Cut the next patch release as `v1.1.3` for the post-`1.1.2`
-  `openai-codex` provider timeout hardening work.
+- Cut the next patch release as `v1.1.3` for the post-`1.1.2` `openai-codex`
+  provider timeout hardening work.
 - Release metadata aligned across:
   - `Cargo.toml`
   - `Cargo.lock`
   - `assets/plugin/package.json`
   - `assets/plugin/index.js`
-- Updated `CHANGELOG.md` with the `1.1.3` release note for the
-  `openai-codex` retry/timeout fix in Moon `cleanse` and `distill`.
+- Updated `CHANGELOG.md` with the `1.1.3` release note for the `openai-codex`
+  retry/timeout fix in Moon `cleanse` and `distill`.
 - Validation completed:
   - `cargo fmt --check`
   - `cargo clippy --all-targets --all-features -- -D warnings`
@@ -21,13 +118,13 @@
 
 ## 2026-04-22 19:39 AEST
 
-- Hardened Moon's `openai-codex` provider calls used by context-engine
-  `cleanse` and `distill` against transient timeout and overload failures.
+- Hardened Moon's `openai-codex` provider calls used by context-engine `cleanse`
+  and `distill` against transient timeout and overload failures.
 - Root cause from live investigation after the local OpenClaw timeout fix:
   - user-visible chats could succeed while adjacent `assemble` / `afterTurn`
     hooks still failed with `error decoding response body: operation timed out`
-  - the failures were inside Moon's nested `openai-codex` HTTP call, not the
-    old OpenClaw `contextEngineTimeoutMs=20000` kill path
+  - the failures were inside Moon's nested `openai-codex` HTTP call, not the old
+    OpenClaw `contextEngineTimeoutMs=20000` kill path
 - Code changes:
   - `src/moon/util.rs`
     - added shared helpers to classify retryable `openai-codex` statuses and

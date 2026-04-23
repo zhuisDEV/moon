@@ -1,7 +1,9 @@
 use anyhow::Result;
 
 use crate::commands::CommandReport;
-use crate::moon::context_engine::{CheckpointOptions, PressureSnapshot, run_checkpoint};
+use crate::moon::context_engine::{
+    CheckpointOptions, PressureSnapshot, run_checkpoint, run_sync_checkpoint,
+};
 use crate::moon::paths::resolve_paths;
 
 #[derive(Debug, Clone, Default)]
@@ -12,6 +14,7 @@ pub struct MoonContextEngineOptions {
     pub max_tokens: Option<u64>,
     pub force_cleanse: bool,
     pub replay_has_compaction_summary: bool,
+    pub sync_only: bool,
 }
 
 pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
@@ -33,16 +36,31 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
         }
     };
 
-    let output = run_checkpoint(
-        &paths,
-        &CheckpointOptions {
-            source_path: opts.source_path.clone(),
-            session_id: opts.session_id.clone(),
-            pressure,
-            force_cleanse: opts.force_cleanse,
-            replay_has_compaction_summary: opts.replay_has_compaction_summary,
-        },
-    )?;
+    let checkpoint_opts = CheckpointOptions {
+        source_path: opts.source_path.clone(),
+        session_id: opts.session_id.clone(),
+        pressure,
+        force_cleanse: opts.force_cleanse,
+        replay_has_compaction_summary: opts.replay_has_compaction_summary,
+    };
+
+    if opts.sync_only {
+        let output = run_sync_checkpoint(&paths, &checkpoint_opts)?;
+        report.detail("context_engine.sync_only=true".to_string());
+        report.detail(format!("context_engine.session_id={}", output.session_id));
+        report.detail(format!(
+            "context_engine.record_target_path={}",
+            output.record_target_path
+        ));
+        report.detail(format!(
+            "context_engine.project_path={}",
+            output.project_output_path
+        ));
+        report.detail(format!("context_engine.sync_reason={}", output.sync_reason));
+        return Ok(report);
+    }
+
+    let output = run_checkpoint(&paths, &checkpoint_opts)?;
 
     report.detail(format!("context_engine.session_id={}", output.session_id));
     report.detail(format!(
@@ -109,6 +127,42 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
             .as_ref()
             .map(|packet| packet.query.as_str())
             .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_primary_source_family={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.primary_source_family.as_str())
+            .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_fallback_source={}",
+        output
+            .context_packet
+            .as_ref()
+            .and_then(|packet| packet.fallback_source.as_deref())
+            .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_source_reads={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.source_read_count)
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.packet_qmd_queries={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.qmd_query_count)
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.raw_parse_count={}",
+        output.raw_parse_count
     ));
 
     Ok(report)

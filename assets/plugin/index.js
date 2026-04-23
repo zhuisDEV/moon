@@ -1303,6 +1303,88 @@ async function runMoonContextEngine(api, settings, params) {
   }
 }
 
+async function runMoonContextSync(api, settings, params) {
+  const sessionId = sanitizeSessionId(params.sessionId);
+  const sourcePath = isNonEmptyString(params.sourcePath) &&
+      fs.existsSync(params.sourcePath.trim())
+    ? params.sourcePath.trim()
+    : null;
+  const usedTokens = Number.isFinite(params.usedTokens)
+    ? Math.max(0, Math.floor(params.usedTokens))
+    : null;
+  const maxTokens = Number.isFinite(params.maxTokens)
+    ? Math.max(1, Math.floor(params.maxTokens))
+    : null;
+
+  let tempTranscript = null;
+  const effectiveSourcePath = sourcePath ||
+    (() => {
+      tempTranscript = createTempTranscript(params.messages, sessionId);
+      return tempTranscript.filePath;
+    })();
+
+  const argv = [
+    settings.moonPath,
+    "--json",
+    "--allow-out-of-bounds",
+    "context-engine",
+    "--source",
+    effectiveSourcePath,
+    "--session-id",
+    sessionId,
+    "--sync-only",
+  ];
+  if (usedTokens !== null && maxTokens !== null) {
+    argv.push(
+      "--used-tokens",
+      String(usedTokens),
+      "--max-tokens",
+      String(maxTokens),
+    );
+  }
+  if (params.replayHasCompactionSummary === true) {
+    argv.push("--replay-has-compaction-summary");
+  }
+
+  const env = { ...process.env };
+  if (isNonEmptyString(settings.moonHome)) {
+    env.MOON_HOME = settings.moonHome;
+  }
+
+  try {
+    const result = await api.runtime.system.runCommandWithTimeout(argv, {
+      timeoutMs: settings.contextEngineTimeoutMs,
+      env,
+    });
+
+    if (result.code !== 0) {
+      throw new Error(
+        result.stderr.trim() || result.stdout.trim() ||
+          `moon context-engine sync exited with ${String(result.code)}`,
+      );
+    }
+
+    const report = parseCommandReport(result.stdout);
+    if (!report) {
+      throw new Error("moon context-engine sync returned non-JSON output");
+    }
+    if (report.ok !== true) {
+      throw new Error(
+        Array.isArray(report.issues) && report.issues.length > 0
+          ? report.issues.join("; ")
+          : "moon context-engine sync reported failure",
+      );
+    }
+
+    return {
+      report,
+      syncReason: extractReportDetail(report, "context_engine.sync_reason="),
+    };
+  } finally {
+    tempTranscript?.cleanup();
+  }
+}
+
 function createMoonContextEngine(api) {
   const sessionFiles = new Map();
 
@@ -1327,7 +1409,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.1.3",
+      version: "1.2.0",
       ownsCompaction: true,
     },
     bootstrap(params) {
@@ -1409,7 +1491,7 @@ function createMoonContextEngine(api) {
       }
 
       try {
-        await runMoonContextEngine(api, settings, {
+        await runMoonContextSync(api, settings, {
           sessionId: params.sessionId,
           sourcePath: params.sessionFile,
           messages: params.messages,

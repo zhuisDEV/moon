@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::moon::config::MoonContextPacketConfig;
-use crate::moon::distill::{ProjectionData, ProjectionEntry, extract_projection_data};
+use crate::moon::distill::{ProjectionData, ProjectionEntry};
 use crate::moon::files::{file_epoch_secs, gather_files_with_extension};
 use crate::moon::paths::MoonPaths;
 use crate::moon::qmd;
@@ -15,6 +15,8 @@ use crate::moon::util::{now_epoch_secs, truncate_with_ellipsis};
 const MAX_QUERY_CHARS: usize = 240;
 const MAX_DOC_LINE_CHARS: usize = 220;
 const MAX_QMD_SNIPPET_CHARS: usize = 220;
+const PRIMARY_SOURCE_LIMIT: usize = 4;
+const FALLBACK_SOURCE_LIMIT: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct ContextPacketInput {
@@ -33,6 +35,31 @@ pub struct ContextPacketOutput {
     pub cache_hit: bool,
     pub generation: String,
     pub query: String,
+    pub primary_source_family: String,
+    pub fallback_source: Option<String>,
+    pub source_read_count: usize,
+    pub qmd_query_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFamily {
+    Hot,
+    Memory,
+    Library,
+    Distill,
+    Semantic,
+}
+
+impl SourceFamily {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hot => "hot",
+            Self::Memory => "memory",
+            Self::Library => "library",
+            Self::Distill => "distill",
+            Self::Semantic => "semantic",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +80,92 @@ struct PacketSections {
     candidate_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct PacketBuild {
+    sections: PacketSections,
+    fallback_source: Option<String>,
+    source_read_count: usize,
+    qmd_query_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedDocLine {
+    text: String,
+    score: i32,
+}
+
+#[derive(Debug, Clone)]
+struct SourceCollectionSummary {
+    candidate_count: usize,
+    positive_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CandidateCollector {
+    primary_family: SourceFamily,
+    fallback_source: Option<String>,
+    source_read_count: usize,
+    qmd_query_count: usize,
+    candidates: BTreeMap<String, PacketCandidate>,
+}
+
+impl CandidateCollector {
+    fn new(primary_family: SourceFamily) -> Self {
+        Self {
+            primary_family,
+            fallback_source: None,
+            source_read_count: 0,
+            qmd_query_count: 0,
+            candidates: BTreeMap::new(),
+        }
+    }
+
+    fn note_file_read(&mut self) {
+        self.source_read_count = self.source_read_count.saturating_add(1);
+    }
+
+    fn note_qmd_query(&mut self) {
+        self.qmd_query_count = self.qmd_query_count.saturating_add(1);
+    }
+
+    fn mark_fallback<S: Into<String>>(&mut self, source: S) {
+        if self.fallback_source.is_none() {
+            self.fallback_source = Some(source.into());
+        }
+    }
+
+    fn add_candidate(&mut self, candidate: PacketCandidate) {
+        let key = normalize_for_dedupe(&candidate.text);
+        if key.is_empty() {
+            return;
+        }
+        match self.candidates.get(&key) {
+            Some(existing) if !candidate_is_better(self.primary_family, &candidate, existing) => {}
+            _ => {
+                self.candidates.insert(key, candidate);
+            }
+        }
+    }
+
+    fn into_sorted_candidates(self) -> Vec<PacketCandidate> {
+        let mut candidates = self.candidates.into_values().collect::<Vec<_>>();
+        let primary_family = self.primary_family;
+        candidates.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| {
+                    candidate_source_preference(primary_family, right.source_kind).cmp(
+                        &candidate_source_preference(primary_family, left.source_kind),
+                    )
+                })
+                .then_with(|| left.source_label.cmp(&right.source_label))
+                .then_with(|| left.text.cmp(&right.text))
+        });
+        candidates
+    }
+}
+
 pub fn output_path(paths: &MoonPaths, session_id: &str) -> PathBuf {
     paths.context_packet_dir.join(format!("{session_id}.md"))
 }
@@ -70,6 +183,7 @@ pub fn write_context_packet_output(
     Ok(path)
 }
 
+#[cfg(test)]
 pub fn build_context_packet(
     paths: &MoonPaths,
     state: &MoonState,
@@ -80,14 +194,26 @@ pub fn build_context_packet(
         .raw_source_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("context packet raw source path is not valid UTF-8"))?;
-    let projection = extract_projection_data(raw_source_path).with_context(|| {
-        format!(
-            "failed to build context packet from {}",
-            input.raw_source_path.display()
-        )
-    })?;
-    let query = build_query_text(&projection);
-    let generation = build_packet_generation(paths, state, cfg, input, &projection, &query)?;
+    let projection =
+        crate::moon::distill::extract_projection_data(raw_source_path).with_context(|| {
+            format!(
+                "failed to build context packet from {}",
+                input.raw_source_path.display()
+            )
+        })?;
+    build_context_packet_from_projection(paths, state, cfg, input, &projection)
+}
+
+pub fn build_context_packet_from_projection(
+    paths: &MoonPaths,
+    state: &MoonState,
+    cfg: &MoonContextPacketConfig,
+    input: &ContextPacketInput,
+    projection: &ProjectionData,
+) -> Result<ContextPacketOutput> {
+    let query = build_query_text(projection);
+    let primary_family = route_source_family(&query, projection);
+    let generation = build_packet_generation(paths, state, cfg, input, projection, &query)?;
     let packet_path = output_path(paths, &input.session_id);
     if state.last_context_packet_session_id.as_deref() == Some(input.session_id.as_str())
         && state.last_context_packet_generation.as_deref() == Some(generation.as_str())
@@ -103,21 +229,37 @@ pub fn build_context_packet(
             cache_hit: true,
             generation,
             query,
+            primary_source_family: primary_family.as_str().to_string(),
+            fallback_source: None,
+            source_read_count: 0,
+            qmd_query_count: 0,
         });
     }
 
-    let query_terms = query_terms(&query, &projection);
-    let sections = build_sections(paths, state, cfg, input, &projection, &query_terms)?;
-    let content = render_packet(&sections, cfg.max_chars);
+    let query_terms = query_terms(&query, projection);
+    let build = build_sections(
+        paths,
+        state,
+        cfg,
+        input,
+        projection,
+        &query_terms,
+        primary_family,
+    )?;
+    let content = render_packet(&build.sections, cfg.max_chars);
 
     Ok(ContextPacketOutput {
         session_id: input.session_id.clone(),
         content,
         packet_at_epoch_secs: now_epoch_secs()?,
-        candidate_count: sections.candidate_count,
+        candidate_count: build.sections.candidate_count,
         cache_hit: false,
         generation,
         query,
+        primary_source_family: primary_family.as_str().to_string(),
+        fallback_source: build.fallback_source,
+        source_read_count: build.source_read_count,
+        qmd_query_count: build.qmd_query_count,
     })
 }
 
@@ -128,21 +270,27 @@ fn build_sections(
     input: &ContextPacketInput,
     projection: &ProjectionData,
     query_terms: &[String],
-) -> Result<PacketSections> {
+    primary_family: SourceFamily,
+) -> Result<PacketBuild> {
     let current_goal = latest_goal_lines(projection, 2);
     let active_work = recent_activity_lines(projection, 5);
     let mut relevant_memory = Vec::new();
     let mut open_items = Vec::new();
 
-    let mut candidates = collect_candidates(paths, state, cfg, input, projection, query_terms)?;
+    let collector = collect_candidates(
+        paths,
+        state,
+        cfg,
+        input,
+        projection,
+        query_terms,
+        primary_family,
+    )?;
+    let fallback_source = collector.fallback_source.clone();
+    let source_read_count = collector.source_read_count;
+    let qmd_query_count = collector.qmd_query_count;
+    let candidates = collector.into_sorted_candidates();
     let candidate_count = candidates.len();
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .cmp(&left.score)
-            .then_with(|| left.source_label.cmp(&right.source_label))
-            .then_with(|| left.text.cmp(&right.text))
-    });
 
     let mut used_text = BTreeSet::new();
     for candidate in &candidates {
@@ -178,13 +326,18 @@ fn build_sections(
         })
         .collect::<Vec<_>>();
 
-    Ok(PacketSections {
-        current_goal,
-        active_work,
-        relevant_memory,
-        open_items,
-        evidence,
-        candidate_count,
+    Ok(PacketBuild {
+        sections: PacketSections {
+            current_goal,
+            active_work,
+            relevant_memory,
+            open_items,
+            evidence,
+            candidate_count,
+        },
+        fallback_source,
+        source_read_count,
+        qmd_query_count,
     })
 }
 
@@ -195,8 +348,160 @@ fn collect_candidates(
     input: &ContextPacketInput,
     projection: &ProjectionData,
     query_terms: &[String],
-) -> Result<Vec<PacketCandidate>> {
-    let mut out = Vec::new();
+    primary_family: SourceFamily,
+) -> Result<CandidateCollector> {
+    let mut collector = CandidateCollector::new(primary_family);
+    let qmd_query = build_qmd_query(projection, query_terms);
+
+    match primary_family {
+        SourceFamily::Hot => {
+            let summary = collect_hot_candidates(projection, query_terms, &mut collector);
+            if summary.positive_count == 0
+                && !input.replay_has_compaction_summary
+                && let Some(path) = input.cleanse_summary_path.as_ref()
+                && path.is_file()
+            {
+                let label = "cleanse".to_string();
+                let fallback = collect_markdown_candidates_from_path(
+                    path,
+                    "cleanse",
+                    &label,
+                    query_terms,
+                    FALLBACK_SOURCE_LIMIT,
+                    &mut collector,
+                )?;
+                if fallback.candidate_count > 0 {
+                    collector.mark_fallback(label);
+                }
+            }
+        }
+        SourceFamily::Memory => {
+            let primary = collect_markdown_candidates_from_path(
+                &paths.memory_file,
+                "memory-file",
+                "memory",
+                query_terms,
+                PRIMARY_SOURCE_LIMIT,
+                &mut collector,
+            )?;
+            if primary.positive_count == 0
+                && let Some(path) = newest_daily_memory_file(paths, cfg)?
+            {
+                let label = short_source_label("memory", &path);
+                let fallback = collect_markdown_candidates_from_path(
+                    &path,
+                    "memory-daily",
+                    &label,
+                    query_terms,
+                    FALLBACK_SOURCE_LIMIT,
+                    &mut collector,
+                )?;
+                if fallback.candidate_count > 0 {
+                    collector.mark_fallback(label);
+                }
+            }
+        }
+        SourceFamily::Library => {
+            let primary = if let Some(path) = newest_library_doc(paths)? {
+                let label = short_source_label("lib", &path);
+                collect_markdown_candidates_from_path(
+                    &path,
+                    "library",
+                    &label,
+                    query_terms,
+                    PRIMARY_SOURCE_LIMIT,
+                    &mut collector,
+                )?
+            } else {
+                SourceCollectionSummary {
+                    candidate_count: 0,
+                    positive_count: 0,
+                }
+            };
+            if primary.positive_count == 0 && cfg.qmd_limit > 0 {
+                let fallback = collect_qmd_candidates(
+                    paths,
+                    LIBRARY_EMBED_COLLECTION,
+                    "qmd-lib",
+                    &qmd_query,
+                    cfg.qmd_limit,
+                    query_terms,
+                    &mut collector,
+                );
+                if fallback.candidate_count > 0 {
+                    collector.mark_fallback("qmd-lib");
+                }
+            }
+        }
+        SourceFamily::Distill => {
+            let primary = if let Some((path, _)) = newest_distill_doc(state, cfg) {
+                let label = short_source_label("distill", &path);
+                collect_markdown_candidates_from_path(
+                    &path,
+                    "distill",
+                    &label,
+                    query_terms,
+                    PRIMARY_SOURCE_LIMIT,
+                    &mut collector,
+                )?
+            } else {
+                SourceCollectionSummary {
+                    candidate_count: 0,
+                    positive_count: 0,
+                }
+            };
+            if primary.positive_count == 0
+                && let Some(path) = newest_daily_memory_file(paths, cfg)?
+            {
+                let label = short_source_label("memory", &path);
+                let fallback = collect_markdown_candidates_from_path(
+                    &path,
+                    "memory-daily",
+                    &label,
+                    query_terms,
+                    FALLBACK_SOURCE_LIMIT,
+                    &mut collector,
+                )?;
+                if fallback.candidate_count > 0 {
+                    collector.mark_fallback(label);
+                }
+            }
+        }
+        SourceFamily::Semantic => {
+            let hot = collect_qmd_candidates(
+                paths,
+                &hot_embed_collection_for_session(&input.session_id),
+                "qmd-hot",
+                &qmd_query,
+                cfg.qmd_limit,
+                query_terms,
+                &mut collector,
+            );
+            if hot.positive_count == 0 && cfg.qmd_limit > 0 {
+                let lib = collect_qmd_candidates(
+                    paths,
+                    LIBRARY_EMBED_COLLECTION,
+                    "qmd-lib",
+                    &qmd_query,
+                    cfg.qmd_limit,
+                    query_terms,
+                    &mut collector,
+                );
+                if lib.candidate_count > 0 {
+                    collector.mark_fallback("qmd-lib");
+                }
+            }
+        }
+    }
+
+    Ok(collector)
+}
+
+fn collect_hot_candidates(
+    projection: &ProjectionData,
+    query_terms: &[String],
+    collector: &mut CandidateCollector,
+) -> SourceCollectionSummary {
     let hot_candidates = projection
         .entries
         .iter()
@@ -204,107 +509,64 @@ fn collect_candidates(
         .filter_map(render_projection_candidate)
         .take(6)
         .collect::<Vec<_>>();
+    let mut summary = SourceCollectionSummary {
+        candidate_count: 0,
+        positive_count: 0,
+    };
     for text in hot_candidates.into_iter().rev() {
-        out.push(PacketCandidate {
+        if overlap_score(&text, query_terms) > 0 {
+            summary.positive_count += 1;
+        }
+        summary.candidate_count += 1;
+        collector.add_candidate(PacketCandidate {
             source_kind: "hot",
             source_label: "hot".to_string(),
-            score: score_text("hot", &text, query_terms),
+            score: score_text("hot", &text, query_terms, collector.primary_family),
             text,
         });
     }
+    summary
+}
 
-    if !input.replay_has_compaction_summary
-        && let Some(path) = input.cleanse_summary_path.as_ref()
-        && path.is_file()
-    {
-        let body = read_markdown_body(path)?;
-        for line in select_doc_lines(&body, query_terms, 4) {
-            out.push(PacketCandidate {
-                source_kind: "cleanse",
-                source_label: "cleanse".to_string(),
-                score: score_text("cleanse", &line, query_terms),
-                text: line,
-            });
-        }
+fn collect_markdown_candidates_from_path(
+    path: &Path,
+    source_kind: &'static str,
+    source_label: &str,
+    query_terms: &[String],
+    limit: usize,
+    collector: &mut CandidateCollector,
+) -> Result<SourceCollectionSummary> {
+    if !path.is_file() {
+        return Ok(SourceCollectionSummary {
+            candidate_count: 0,
+            positive_count: 0,
+        });
     }
-
-    if paths.memory_file.is_file() {
-        let body = read_markdown_body(&paths.memory_file)?;
-        for line in select_doc_lines(&body, query_terms, 4) {
-            out.push(PacketCandidate {
-                source_kind: "memory",
-                source_label: "memory".to_string(),
-                score: score_text("memory", &line, query_terms),
-                text: line,
-            });
+    collector.note_file_read();
+    let body = read_markdown_body(path)?;
+    let selected = select_doc_candidates(&body, query_terms, limit);
+    let mut summary = SourceCollectionSummary {
+        candidate_count: 0,
+        positive_count: 0,
+    };
+    for line in selected {
+        if line.score > 0 {
+            summary.positive_count += 1;
         }
+        summary.candidate_count += 1;
+        collector.add_candidate(PacketCandidate {
+            source_kind,
+            source_label: source_label.to_string(),
+            score: score_text(
+                source_kind,
+                &line.text,
+                query_terms,
+                collector.primary_family,
+            ),
+            text: line.text,
+        });
     }
-
-    for path in recent_markdown_files(&paths.memory_dir, cfg.recent_memory_files)?
-        .into_iter()
-        .filter(|path| path != &paths.memory_file)
-    {
-        let body = read_markdown_body(&path)?;
-        let label = short_source_label("memory", &path);
-        for line in select_doc_lines(&body, query_terms, 2) {
-            out.push(PacketCandidate {
-                source_kind: "memory",
-                source_label: label.clone(),
-                score: score_text("memory", &line, query_terms),
-                text: line,
-            });
-        }
-    }
-
-    for path in recent_markdown_files(&paths.mlib_dir, 3)? {
-        let body = read_markdown_body(&path)?;
-        let label = short_source_label("lib", &path);
-        for line in select_doc_lines(&body, query_terms, 2) {
-            out.push(PacketCandidate {
-                source_kind: "library",
-                source_label: label.clone(),
-                score: score_text("library", &line, query_terms),
-                text: line,
-            });
-        }
-    }
-
-    for (path, _) in recent_distill_paths(state, cfg.recent_distill_docs) {
-        if !path.is_file() {
-            continue;
-        }
-        let body = read_markdown_body(&path)?;
-        let label = short_source_label("distill", &path);
-        for line in select_doc_lines(&body, query_terms, 2) {
-            out.push(PacketCandidate {
-                source_kind: "distill",
-                source_label: label.clone(),
-                score: score_text("distill", &line, query_terms),
-                text: line,
-            });
-        }
-    }
-
-    if cfg.qmd_limit > 0 {
-        out.extend(collect_qmd_candidates(
-            paths,
-            &hot_embed_collection_for_session(&input.session_id),
-            "qmd-hot",
-            &build_qmd_query(projection, query_terms),
-            cfg.qmd_limit,
-            query_terms,
-        ));
-        out.extend(collect_qmd_candidates(
-            paths,
-            LIBRARY_EMBED_COLLECTION,
-            "qmd-lib",
-            &build_qmd_query(projection, query_terms),
-            cfg.qmd_limit,
-            query_terms,
-        ));
-    }
-
-    Ok(dedup_candidates(out))
+    Ok(summary)
 }
 
 fn collect_qmd_candidates(
@@ -314,27 +576,43 @@ fn collect_qmd_candidates(
     query: &str,
     limit: usize,
     query_terms: &[String],
-) -> Vec<PacketCandidate> {
+    collector: &mut CandidateCollector,
+) -> SourceCollectionSummary {
     if query.trim().is_empty() {
-        return Vec::new();
+        return SourceCollectionSummary {
+            candidate_count: 0,
+            positive_count: 0,
+        };
     }
     let Ok(exec) = qmd::recall_query(&paths.qmd_bin, collection_name, query, limit, Some(15))
     else {
-        return Vec::new();
+        return SourceCollectionSummary {
+            candidate_count: 0,
+            positive_count: 0,
+        };
     };
-    parse_qmd_hits(&exec.stdout)
-        .into_iter()
-        .map(|hit| PacketCandidate {
+    collector.note_qmd_query();
+    let mut summary = SourceCollectionSummary {
+        candidate_count: 0,
+        positive_count: 0,
+    };
+    for hit in parse_qmd_hits(&exec.stdout) {
+        if overlap_score(&hit.text, query_terms) > 0 {
+            summary.positive_count += 1;
+        }
+        summary.candidate_count += 1;
+        collector.add_candidate(PacketCandidate {
             source_kind: "qmd",
             source_label: if hit.source_label.is_empty() {
                 source_label.to_string()
             } else {
                 format!("{source_label}:{}", hit.source_label)
             },
-            score: score_text("qmd", &hit.text, query_terms),
+            score: score_text("qmd", &hit.text, query_terms, collector.primary_family),
             text: hit.text,
-        })
-        .collect()
+        });
+    }
+    summary
 }
 
 #[derive(Debug, Clone)]
@@ -381,38 +659,156 @@ fn build_packet_generation(
     projection: &ProjectionData,
     query: &str,
 ) -> Result<String> {
-    let memory_files = recent_markdown_files(&paths.memory_dir, cfg.recent_memory_files)?
-        .into_iter()
-        .map(|path| format!("{}:{}", path.display(), file_epoch_secs(&path)))
-        .collect::<Vec<_>>()
-        .join(",");
-    let distill_files = recent_distill_paths(state, cfg.recent_distill_docs)
-        .into_iter()
-        .map(|(path, epoch)| format!("{}:{epoch}", path.display()))
-        .collect::<Vec<_>>()
-        .join(",");
+    let primary_family = route_source_family(query, projection);
+    let mut parts = vec![
+        format!("session={}", input.session_id),
+        format!("raw={}", file_epoch_secs(&input.raw_source_path)),
+        format!(
+            "cleanse={}",
+            input
+                .cleanse_summary_path
+                .as_ref()
+                .map(|path| file_epoch_secs(path))
+                .unwrap_or(0)
+        ),
+        format!("embed={}", state.last_embed_trigger_epoch_secs.unwrap_or(0)),
+        format!("query={}", truncate_with_ellipsis(query, MAX_QUERY_CHARS)),
+        format!("topics={}", projection.topics.join(",")),
+        format!("primary={}", primary_family.as_str()),
+        format!(
+            "cfg={}/{}/{}/{}",
+            cfg.max_chars, cfg.max_candidates, cfg.qmd_limit, cfg.recent_memory_files
+        ),
+        format!("replay={}", input.replay_has_compaction_summary),
+    ];
 
-    Ok(format!(
-        "session={}::raw={}::cleanse={}::memory={}::memory_files={}::distill={}::embed={}::query={}::topics={}::cfg={}/{}/{}/{}::replay={}",
-        input.session_id,
-        file_epoch_secs(&input.raw_source_path),
-        input
-            .cleanse_summary_path
-            .as_ref()
-            .map(|path| file_epoch_secs(path))
-            .unwrap_or(0),
-        file_epoch_secs(&paths.memory_file),
-        memory_files,
-        distill_files,
-        state.last_embed_trigger_epoch_secs.unwrap_or(0),
-        truncate_with_ellipsis(query, MAX_QUERY_CHARS),
-        projection.topics.join(","),
-        cfg.max_chars,
-        cfg.max_candidates,
-        cfg.qmd_limit,
-        cfg.recent_memory_files,
-        input.replay_has_compaction_summary
-    ))
+    match primary_family {
+        SourceFamily::Hot => {
+            if !input.replay_has_compaction_summary
+                && let Some(path) = input.cleanse_summary_path.as_ref()
+            {
+                parts.push(format!("cleanse-fallback={}", file_epoch_secs(path)));
+            }
+        }
+        SourceFamily::Memory => {
+            parts.push(format!("memory={}", file_epoch_secs(&paths.memory_file)));
+            if let Some(path) = newest_daily_memory_file(paths, cfg)? {
+                parts.push(format!(
+                    "memory-daily={}:{}",
+                    path.display(),
+                    file_epoch_secs(&path)
+                ));
+            }
+        }
+        SourceFamily::Library => {
+            if let Some(path) = newest_library_doc(paths)? {
+                parts.push(format!(
+                    "library={}:{}",
+                    path.display(),
+                    file_epoch_secs(&path)
+                ));
+            }
+            parts.push(format!(
+                "qmd-lib={}",
+                state.last_embed_trigger_epoch_secs.unwrap_or(0)
+            ));
+        }
+        SourceFamily::Distill => {
+            if let Some((path, epoch)) = newest_distill_doc(state, cfg) {
+                parts.push(format!("distill={}:{}", path.display(), epoch));
+            }
+            if let Some(path) = newest_daily_memory_file(paths, cfg)? {
+                parts.push(format!(
+                    "memory-daily={}:{}",
+                    path.display(),
+                    file_epoch_secs(&path)
+                ));
+            }
+        }
+        SourceFamily::Semantic => {
+            parts.push(format!(
+                "qmd-hot={}",
+                state.last_embed_trigger_epoch_secs.unwrap_or(0)
+            ));
+            parts.push(format!(
+                "qmd-lib={}",
+                state.last_embed_trigger_epoch_secs.unwrap_or(0)
+            ));
+        }
+    }
+
+    Ok(parts.join("::"))
+}
+
+fn route_source_family(query: &str, projection: &ProjectionData) -> SourceFamily {
+    let latest_users = latest_goal_lines(projection, 2).join(" ");
+    let combined = format!("{query} {latest_users}").to_ascii_lowercase();
+
+    if looks_memory_query(&combined) {
+        return SourceFamily::Memory;
+    }
+    if looks_library_query(&combined) {
+        return SourceFamily::Library;
+    }
+    if looks_distill_query(&combined) {
+        return SourceFamily::Distill;
+    }
+    if looks_semantic_query(&combined) {
+        return SourceFamily::Semantic;
+    }
+    SourceFamily::Hot
+}
+
+fn looks_memory_query(lower: &str) -> bool {
+    [
+        "remember",
+        "recall",
+        "preference",
+        "prefer",
+        "decision",
+        "decided",
+        "agreed",
+        "rule",
+        "convention",
+        "history",
+        "why did",
+        "user likes",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn looks_library_query(lower: &str) -> bool {
+    [
+        "file", "files", "readme", "document", "docs", "contract", "spec", "api", "module",
+        "function", "codebase", "source", ".rs", ".ts", ".js", "where is",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn looks_distill_query(lower: &str) -> bool {
+    [
+        "earlier",
+        "previous work",
+        "prior work",
+        "historical",
+        "archive",
+        "distill",
+        "synthesis",
+        "last time",
+        "previous rollout",
+        "retrospective",
+        "postmortem",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+fn looks_semantic_query(lower: &str) -> bool {
+    ["similar", "related", "analogous", "closest example"]
+        .iter()
+        .any(|term| lower.contains(term))
 }
 
 fn build_query_text(projection: &ProjectionData) -> String {
@@ -533,6 +929,29 @@ fn extract_open_items_from_projection(projection: &ProjectionData, limit: usize)
         .collect()
 }
 
+fn newest_daily_memory_file(
+    paths: &MoonPaths,
+    cfg: &MoonContextPacketConfig,
+) -> Result<Option<PathBuf>> {
+    Ok(
+        recent_markdown_files(&paths.memory_dir, cfg.recent_memory_files)?
+            .into_iter()
+            .find(|path| path != &paths.memory_file),
+    )
+}
+
+fn newest_library_doc(paths: &MoonPaths) -> Result<Option<PathBuf>> {
+    Ok(recent_markdown_files(&paths.mlib_dir, 1)?
+        .into_iter()
+        .next())
+}
+
+fn newest_distill_doc(state: &MoonState, cfg: &MoonContextPacketConfig) -> Option<(PathBuf, u64)> {
+    recent_distill_paths(state, cfg.recent_distill_docs)
+        .into_iter()
+        .next()
+}
+
 fn recent_markdown_files(root: &Path, limit: usize) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     gather_files_with_extension(root, "md", true, &mut files)?;
@@ -572,7 +991,7 @@ fn strip_frontmatter(raw: &str) -> &str {
     &rest[idx + 5..]
 }
 
-fn select_doc_lines(body: &str, query_terms: &[String], limit: usize) -> Vec<String> {
+fn select_doc_candidates(body: &str, query_terms: &[String], limit: usize) -> Vec<SelectedDocLine> {
     let mut scored = body
         .lines()
         .map(str::trim)
@@ -585,15 +1004,23 @@ fn select_doc_lines(body: &str, query_terms: &[String], limit: usize) -> Vec<Str
             let score = overlap_score(&cleaned, query_terms)
                 + if looks_actionable(&cleaned) { 4 } else { 0 }
                 + if cleaned.starts_with('#') { 1 } else { 0 };
-            (score, cleaned)
+            SelectedDocLine {
+                text: cleaned,
+                score,
+            }
         })
         .collect::<Vec<_>>();
-    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.text.cmp(&right.text))
+    });
     let mut out = scored
-        .into_iter()
-        .filter(|(score, _)| *score > 0)
-        .map(|(_, line)| line)
+        .iter()
+        .filter(|line| line.score > 0)
         .take(limit)
+        .cloned()
         .collect::<Vec<_>>();
     if out.is_empty() {
         out = body
@@ -601,8 +1028,12 @@ fn select_doc_lines(body: &str, query_terms: &[String], limit: usize) -> Vec<Str
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .take(limit)
-            .map(|line| {
-                truncate_with_ellipsis(line.trim_start_matches("- ").trim(), MAX_DOC_LINE_CHARS)
+            .map(|line| SelectedDocLine {
+                text: truncate_with_ellipsis(
+                    line.trim_start_matches("- ").trim(),
+                    MAX_DOC_LINE_CHARS,
+                ),
+                score: 0,
             })
             .collect();
     }
@@ -665,19 +1096,71 @@ fn clean_line(raw: &str) -> Option<String> {
     }
 }
 
-fn score_text(kind: &str, text: &str, query_terms: &[String]) -> i64 {
+fn score_text(kind: &str, text: &str, query_terms: &[String], primary_family: SourceFamily) -> i64 {
     let base = match kind {
-        "cleanse" => 90,
-        "memory" => 75,
-        "library" => 65,
-        "distill" => 60,
-        "qmd" => 55,
-        "hot" => 50,
+        "cleanse" => 85,
+        "memory-file" => 80,
+        "memory-daily" => 72,
+        "library" => 70,
+        "distill" => 68,
+        "qmd" => 60,
+        "hot" => 58,
         _ => 40,
     };
+    let lane_bonus = match (primary_family, kind) {
+        (SourceFamily::Memory, "memory-file") => 18,
+        (SourceFamily::Memory, "memory-daily") => 12,
+        (SourceFamily::Library, "library") => 18,
+        (SourceFamily::Library, "qmd") => 8,
+        (SourceFamily::Distill, "distill") => 18,
+        (SourceFamily::Distill, "memory-daily") => 8,
+        (SourceFamily::Hot, "hot") => 18,
+        (SourceFamily::Hot, "cleanse") => 8,
+        (SourceFamily::Semantic, "qmd") => 18,
+        _ => 0,
+    };
     i64::from(
-        base + overlap_score(text, query_terms) * 5 + if looks_actionable(text) { 10 } else { 0 },
+        base + lane_bonus
+            + overlap_score(text, query_terms) * 5
+            + if looks_actionable(text) { 10 } else { 0 },
     )
+}
+
+fn candidate_source_preference(primary_family: SourceFamily, kind: &str) -> i32 {
+    match (primary_family, kind) {
+        (SourceFamily::Memory, "memory-file") => 6,
+        (SourceFamily::Memory, "memory-daily") => 5,
+        (SourceFamily::Library, "library") => 6,
+        (SourceFamily::Library, "qmd") => 5,
+        (SourceFamily::Distill, "distill") => 6,
+        (SourceFamily::Distill, "memory-daily") => 5,
+        (SourceFamily::Hot, "hot") => 6,
+        (SourceFamily::Hot, "cleanse") => 5,
+        (SourceFamily::Semantic, "qmd") => 6,
+        (_, "memory-file") => 4,
+        (_, "memory-daily") => 3,
+        (_, "library") => 3,
+        (_, "distill") => 3,
+        (_, "cleanse") => 3,
+        (_, "hot") => 2,
+        (_, "qmd") => 1,
+        _ => 0,
+    }
+}
+
+fn candidate_is_better(
+    primary_family: SourceFamily,
+    left: &PacketCandidate,
+    right: &PacketCandidate,
+) -> bool {
+    left.score > right.score
+        || (left.score == right.score
+            && candidate_source_preference(primary_family, left.source_kind)
+                > candidate_source_preference(primary_family, right.source_kind))
+        || (left.score == right.score
+            && candidate_source_preference(primary_family, left.source_kind)
+                == candidate_source_preference(primary_family, right.source_kind)
+            && left.source_label < right.source_label)
 }
 
 fn overlap_score(text: &str, query_terms: &[String]) -> i32 {
@@ -699,19 +1182,6 @@ fn looks_actionable(text: &str) -> bool {
         || lower.contains("risk")
         || lower.contains("pending")
         || lower.contains("action")
-}
-
-fn dedup_candidates(candidates: Vec<PacketCandidate>) -> Vec<PacketCandidate> {
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for candidate in candidates {
-        let key = normalize_for_dedupe(&candidate.text);
-        if key.is_empty() || !seen.insert(key) {
-            continue;
-        }
-        out.push(candidate);
-    }
-    out
 }
 
 fn normalize_for_dedupe(raw: &str) -> String {
@@ -807,5 +1277,110 @@ mod tests {
                 .content
                 .contains("Keep packet injection in messages.")
         );
+        assert_eq!(output.primary_source_family, "hot");
+    }
+
+    #[test]
+    fn context_packet_routes_memory_queries_to_memory_before_other_sources() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.raw_dir).expect("mkdir raw");
+        fs::create_dir_all(&paths.memory_dir).expect("mkdir memory");
+        fs::create_dir_all(&paths.mlib_dir).expect("mkdir mlib");
+
+        fs::write(
+            paths.raw_dir.join("s2.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"message":{"role":"user","content":[{"type":"text","text":"Remember the user's release note preference."}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"I will check memory first."}]}})
+            ),
+        )
+        .expect("write raw");
+        fs::write(
+            &paths.memory_file,
+            "# MEMORY\n- Preference: release notes should stay concise and factual.\n",
+        )
+        .expect("write memory");
+        fs::write(
+            paths.memory_dir.join("2026-04-22.md"),
+            "# Daily Memory\n- Preference: older duplicate line.\n",
+        )
+        .expect("write daily memory");
+        fs::write(
+            paths.mlib_dir.join("README.md"),
+            "# README\n- Library note: plugin config lives in assets/plugin.\n",
+        )
+        .expect("write library");
+
+        let output = build_context_packet(
+            &paths,
+            &MoonState::default(),
+            &MoonContextPacketConfig::default(),
+            &ContextPacketInput {
+                session_id: "s2".to_string(),
+                raw_source_path: paths.raw_dir.join("s2.jsonl"),
+                cleanse_summary_path: None,
+                replay_has_compaction_summary: false,
+            },
+        )
+        .expect("build packet");
+
+        assert_eq!(output.primary_source_family, "memory");
+        assert_eq!(output.fallback_source, None);
+        assert!(
+            output
+                .content
+                .contains("[memory] Preference: release notes should stay concise and factual.")
+        );
+        assert!(!output.content.contains("[lib:README]"));
+    }
+
+    #[test]
+    fn context_packet_routes_library_queries_without_memory_fanout() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.raw_dir).expect("mkdir raw");
+        fs::create_dir_all(&paths.memory_dir).expect("mkdir memory");
+        fs::create_dir_all(&paths.mlib_dir).expect("mkdir mlib");
+
+        fs::write(
+            paths.raw_dir.join("s3.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"message":{"role":"user","content":[{"type":"text","text":"Which file documents the plugin config schema?"}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"I will look in the library docs."}]}})
+            ),
+        )
+        .expect("write raw");
+        fs::write(
+            &paths.memory_file,
+            "# MEMORY\n- Preference: do not use memory for workspace file lookups.\n",
+        )
+        .expect("write memory");
+        fs::write(
+            paths.mlib_dir.join("plugin.md"),
+            "# Plugin Docs\n- Config schema is documented in assets/plugin/openclaw.plugin.json.\n",
+        )
+        .expect("write library");
+
+        let output = build_context_packet(
+            &paths,
+            &MoonState::default(),
+            &MoonContextPacketConfig::default(),
+            &ContextPacketInput {
+                session_id: "s3".to_string(),
+                raw_source_path: paths.raw_dir.join("s3.jsonl"),
+                cleanse_summary_path: None,
+                replay_has_compaction_summary: false,
+            },
+        )
+        .expect("build packet");
+
+        assert_eq!(output.primary_source_family, "library");
+        assert!(output.content.contains(
+            "[lib:plugin] Config schema is documented in assets/plugin/openclaw.plugin.json."
+        ));
+        assert!(!output.content.contains("[memory]"));
     }
 }

@@ -84,6 +84,12 @@ pub struct ProjectionData {
     pub compaction_anchors: Vec<CompactionAnchor>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProjectionSnapshot {
+    pub data: ProjectionData,
+    pub excerpt: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionAnchor {
     pub note: String,
@@ -1392,9 +1398,15 @@ impl ProjectionData {
     }
 }
 
-pub fn load_source_excerpt(path: &str) -> Result<String> {
+pub fn extract_projection_snapshot(path: &str) -> Result<ProjectionSnapshot> {
     let data = extract_projection_data(path)?;
-    Ok(data.to_excerpt())
+    let excerpt = data.to_excerpt();
+    Ok(ProjectionSnapshot { data, excerpt })
+}
+
+pub fn load_source_excerpt(path: &str) -> Result<String> {
+    let snapshot = extract_projection_snapshot(path)?;
+    Ok(snapshot.excerpt)
 }
 
 fn is_signal_line(line: &str) -> bool {

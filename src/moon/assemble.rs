@@ -116,6 +116,17 @@ pub fn assemble_context(input: &AssembleInput) -> Result<AssembleOutput> {
             input.raw_source_path.display()
         )
     })?;
+    assemble_context_with_excerpt(input, &raw_excerpt)
+}
+
+pub fn assemble_context_with_excerpt(
+    input: &AssembleInput,
+    raw_excerpt: &str,
+) -> Result<AssembleOutput> {
+    let raw_source_path = input
+        .raw_source_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("assemble raw source path is not valid UTF-8"))?;
     let cleanse_body = match input.cleanse_summary_path.as_ref() {
         Some(path) => Some(read_cleanse_body(path)?),
         None => None,
@@ -126,7 +137,7 @@ pub fn assemble_context(input: &AssembleInput) -> Result<AssembleOutput> {
         raw_source_path,
         input.cleanse_summary_path.as_ref(),
         cleanse_body.as_deref(),
-        &raw_excerpt,
+        raw_excerpt,
         input.embedding_index_anchor.as_ref(),
         assembled_at_epoch_secs,
     );

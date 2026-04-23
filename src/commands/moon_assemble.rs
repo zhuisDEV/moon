@@ -2,15 +2,16 @@ use anyhow::Result;
 
 use crate::commands::CommandReport;
 use crate::moon::assemble::{
-    assemble_context, embedding_index_anchor_from_state, output_path, resolve_input,
+    assemble_context_with_excerpt, embedding_index_anchor_from_state, output_path, resolve_input,
     write_assembly_output,
 };
 use crate::moon::audit;
 use crate::moon::config::load_config;
 use crate::moon::context_packet::{
-    ContextPacketInput, build_context_packet, output_path as context_packet_output_path,
-    write_context_packet_output,
+    ContextPacketInput, build_context_packet_from_projection,
+    output_path as context_packet_output_path, write_context_packet_output,
 };
+use crate::moon::distill::extract_projection_snapshot;
 use crate::moon::paths::resolve_paths;
 use crate::moon::state::{load, save};
 
@@ -35,7 +36,12 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
         &state,
         &input.session_id,
     ));
-    let output = assemble_context(&input)?;
+    let raw_source_path = input
+        .raw_source_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("assemble raw source path is not valid UTF-8"))?;
+    let snapshot = extract_projection_snapshot(raw_source_path)?;
+    let output = assemble_context_with_excerpt(&input, &snapshot.excerpt)?;
     let assembly_output_path = output_path(&paths, &output.session_id);
 
     let mut report = CommandReport::new("assemble");
@@ -60,13 +66,14 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
         "assemble.assembled_at_epoch_secs={}",
         output.assembled_at_epoch_secs
     ));
+    report.detail("assemble.raw_parse_count=1".to_string());
 
     let cfg = load_config().unwrap_or_default();
     let context_packet = cfg
         .context_packet
         .enabled
         .then(|| {
-            build_context_packet(
+            build_context_packet_from_projection(
                 &paths,
                 &state,
                 &cfg.context_packet,
@@ -76,6 +83,7 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
                     cleanse_summary_path: input.cleanse_summary_path.clone(),
                     replay_has_compaction_summary: opts.replay_has_compaction_summary,
                 },
+                &snapshot.data,
             )
         })
         .transpose()?;
@@ -91,6 +99,22 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
         report.detail(format!(
             "assemble.packet_candidate_count={}",
             packet.candidate_count
+        ));
+        report.detail(format!(
+            "assemble.packet_primary_source_family={}",
+            packet.primary_source_family
+        ));
+        report.detail(format!(
+            "assemble.packet_fallback_source={}",
+            packet.fallback_source.as_deref().unwrap_or("none")
+        ));
+        report.detail(format!(
+            "assemble.packet_source_reads={}",
+            packet.source_read_count
+        ));
+        report.detail(format!(
+            "assemble.packet_qmd_queries={}",
+            packet.qmd_query_count
         ));
     }
 

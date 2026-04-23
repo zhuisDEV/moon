@@ -1,602 +1,401 @@
-# MIP: Moon Active Context Packet And Subagent-Assisted Retrieval
+# MIP: Moon Context Assembly Optimisation Through Incremental And Single-Source Retrieval
 
 ## Status
 
-1. Proposed on `2026-04-20`.
-2. Implemented on `2026-04-20`.
-3. The implementation now exists in the repo:
-   - hot projection refresh runs every checkpoint
-   - Moon writes an active context packet under `$MOON_HOME/mcp/`
-   - the plugin injects that packet through the `messages` lane
-   - the plugin can run the gated Moon curator subagent when configured
-4. Verified against:
-   - Moon `main` at `1b1254b5464a473f65336c3d97420a768526d61a`
-   - OpenClaw `origin/main` at `94e2bf258d6ee35f4661c73bc3400c6bba52885a`
-5. This MIP supersedes the previous `mip.md` prompt-boundary implementation
-   record. That earlier scope is already complete and remains part of repo
-   history.
-6. This document is both the control plan and the implementation record for the
-   active-context packet rollout.
+1. Proposed on `2026-04-23`.
+2. Replaces the previous `mip.md`, whose active-context packet rollout is
+   already implemented.
+3. Verified planning baseline against Moon `main` at
+   `58b704d65a46fc345ce350004fc0f570a120f22c`.
+4. This document is a control plan only. None of the optimisation work below is
+   implemented yet.
+
+## Why This MIP Exists
+
+Moon now has the correct ownership boundary for active context assembly, but the
+hot path still repeats too much work.
+
+The current issue is not primarily packet shape. The issue is that Moon often:
+
+1. parses the same raw session more than once in one checkpoint
+2. rescans the same markdown trees on routine assembles
+3. searches several source families even when one source is enough
+4. pulls repeated evidence from multiple places and dedupes only after the work
+   has already been done
+5. keeps QMD and other external work on the common path more often than needed
+
+The next optimisation step is therefore:
+
+1. reduce repeat work first
+2. route retrieval to one source first, not many
+3. keep multi-source search as an explicit fallback, not the default
 
 ## Verified Baseline
 
-Current verified behavior:
+Current verified behavior in the repo:
 
-1. Moon owns the short-lived active checkpoint controller:
-   `record -> conditional cleanse -> assemble` in `src/moon/context_engine.rs`.
-2. Moon plugin `assemble()` currently calls `moon context-engine`, but returns
-   the incoming `messages` unchanged and does not emit routine
-   `systemPromptAddition` in `assets/plugin/index.js`.
-3. Moon plugin `compact()` appends transcript `compaction` entries from Moon
-   `cleanse` output, and OpenClaw replays those as `compactionSummary`
-   message-history context.
-4. Moon still writes an operator assembly artifact under `$MOON_HOME/mce/`.
-5. Moon `recall` is currently a direct QMD `query/search` wrapper, not an
-   integrated active-window retrieval path.
-6. Moon hot projection and immediate embed work only run when `cleanse` is
-   triggered in the current checkpoint path.
-7. OpenClaw context engines may return an ordered `messages` set plus optional
-   `systemPromptAddition`.
-8. OpenClaw also has a separate optional `active-memory` plugin that runs a
-   bounded pre-reply subagent, but this MIP keeps that plugin disabled.
-9. Moon-owned installs currently pin OpenClaw memory ownership off:
-   `plugins.slots.memory = "none"` and
-   `agents.defaults.memorySearch.enabled = false`.
+1. The Moon plugin `assemble()` shells out to `moon context-engine` before model
+   dispatch.
+2. The Moon plugin `afterTurn()` can also run `moon context-engine`, which means
+   similar work may happen both before and after a turn.
+3. `run_checkpoint()` currently executes a serial path:
+   `record -> hot lifecycle -> project -> optional cleanse -> assemble -> packet -> save`.
+4. `assemble_context()` reparses the raw session by calling
+   `load_source_excerpt()`.
+5. `run_cleanse_checkpoint()` reparses the same raw source again when cleanse
+   triggers.
+6. `build_context_packet()` currently gathers candidates from:
+   - hot projection data
+   - latest cleanse summary
+   - `MEMORY.md`
+   - recent daily memory files
+   - recent library docs
+   - recent distilled artifacts
+   - QMD hot recall
+   - QMD library recall
+7. `recent_markdown_files()` recursively gathers full markdown trees and sorts
+   the full result set before truncating to the few newest files.
+8. Duplicate evidence is suppressed late, after multi-source collection and
+   scoring have already happened.
+9. The optional curator subagent already exists and is gated, but it is not the
+   main optimisation target for this MIP.
 
 ## Problem
 
-Moon currently has the right ownership boundary, but the active assembly path is
-too thin and the searchable hot corpus is not fresh enough.
+Moon active context quality is no longer blocked by the old prompt-boundary
+problem. It is now blocked by unnecessary hot-path work.
 
-The concrete gaps are:
+The concrete inefficiencies are:
 
-1. Routine `assemble()` does not add a Moon-owned active context packet to the
-   model-facing message lane.
-2. Moon has useful memory/search surfaces, but they are not yet integrated into
-   routine active-window assembly:
-   - latest `cleanse` summary
-   - hot projection docs
-   - library projection/docs
-   - distill outputs
-   - daily memory
-   - durable `MEMORY.md`
-   - QMD-backed embedded collections
-3. Hot searchable state is refreshed only when `cleanse` runs, which makes
-   active retrieval stale between compaction events.
-4. Moon `recall` can search QMD, but that search is not yet part of the normal
-   control loop.
-5. If Moon jumps straight to a per-turn full subagent assembler, it will likely
-   add latency, cost, and nondeterminism before the local retrieval layer is
-   good enough.
+1. Repeated raw parsing: `project`, `assemble`, and `cleanse` all derive
+   overlapping data from the same session source.
+2. Repeated source scanning: memory, library, and distill trees are rescanned on
+   routine packet builds.
+3. Repeated broad retrieval: the packet builder fans out across multiple source
+   families even when the user intent points clearly to one primary source.
+4. Repeated evidence competition: the same decision or fact may arrive from hot,
+   daily memory, durable memory, distill, and QMD in the same pass.
+5. Repeated command overhead: QMD and collection-lifecycle work remain on the
+   critical path more often than needed.
+6. Repeated end-to-end orchestration: `afterTurn()` and pre-dispatch
+   `assemble()` are still too close to the same full checkpoint flow.
 
 ## Goals
 
-1. Improve Moon active context quality without returning to routine
-   `systemPromptAddition`.
-2. Keep OpenClaw `active-memory` disabled.
-3. Keep Moon as the owner of active context retrieval and memory selection.
-4. Use OpenClaw only as the host runtime for a bounded Moon-owned curator
-   subagent when needed.
-5. Prefer deterministic local retrieval and ranking first.
-6. Add a subagent only as a bounded second-stage selector or summarizer.
-7. Keep model-facing prompt content free of duplicate summaries and operator
-   telemetry.
-8. Improve performance by refreshing the hot corpus continuously and by caching
-   expensive selection work.
+1. Reduce common-case assemble latency by removing repeated parse, scan, and
+   search work.
+2. Search one primary source lane first, not many repeated source lanes.
+3. Search one canonical source artifact first inside that lane where possible.
+4. Allow deterministic fallback only when the primary source is insufficient.
+5. Keep Moon as the owner of active context assembly.
+6. Keep the current packet boundary and compaction boundary intact while the hot
+   path gets faster.
+7. Make packet evidence more compact by avoiding duplicate source coverage
+   before section selection.
 
 ## Non-Goals
 
-1. Do not move final prompt-envelope ownership from OpenClaw to Moon.
-2. Do not reintroduce routine `systemPromptAddition` for Moon assembly.
-3. Do not enable OpenClaw `active-memory`.
-4. Do not depend on OpenClaw `memory_search` or `memory_get`, because Moon-owned
-   installs intentionally disable that lane.
-5. Do not make a raw-transcript subagent the first retrieval stage.
-6. Do not duplicate the latest `cleanse` summary if the same summary is already
-   present in replayed `compactionSummary`.
+1. Do not move active context ownership from Moon to OpenClaw.
+2. Do not reintroduce routine `systemPromptAddition`.
+3. Do not expand the curator subagent role. It stays optional and secondary.
+4. Do not depend on OpenClaw memory tools or memory slots.
+5. Do not optimize for broad multi-source retrieval first. That is explicitly
+   the behavior being reduced.
 
 ## Decision
 
-Moon will adopt a two-stage active assembly design:
+Moon will move from broad repeated retrieval to incremental routed retrieval.
 
-1. Stage A: deterministic Moon-owned retrieval and packet building.
-2. Stage B: optional bounded curator subagent hosted by OpenClaw, used only when
-   gating conditions say the local packet is too broad or too ambiguous.
+The new rules are:
 
-The model-facing context will travel in the `messages` lane, not in
-`systemPromptAddition`.
-
-The final design is:
-
-1. Moon continues to write the operator assembly artifact for inspection.
-2. Moon also produces a separate model-facing `active context packet`.
-3. The Moon plugin reads that packet during `assemble()`.
-4. The plugin returns an ordered `messages` set that includes the Moon packet in
-   the message lane.
-5. `systemPromptAddition` remains empty by default.
-6. The latest `cleanse` summary continues to use the transcript compaction lane.
-7. The subagent, when enabled, never searches the raw transcript directly. It
-   only curates a bounded candidate set produced by Moon retrieval.
-
-## Clean Boundary
-
-### 1. Operator lane
-
-Moon operator artifacts stay on disk and may include:
-
-1. paths
-2. timestamps
-3. queue state
-4. embed receipts
-5. projection status
-6. debug counters
-
-These are not prompt-facing by default.
-
-### 2. Message-history lane
-
-Moon model-facing active context must use the `messages` lane.
-
-That includes:
-
-1. replayed `compactionSummary`
-2. original user and assistant history retained for the turn
-3. one Moon active context packet message when needed
-
-### 3. System-prompt lane
-
-Routine Moon `systemPromptAddition` remains unused.
-
-Reserve it only for a future case where Moon truly needs a short,
-high-priority dynamic instruction in system-prompt space.
-
-### 4. Tools lane
-
-The Moon assembly subagent must not assume OpenClaw memory tools are present.
-Any retrieval it uses must come from Moon-owned artifacts or Moon-owned helper
-commands.
+1. Parse once per checkpoint.
+2. Reuse one shared checkpoint snapshot across project, assemble, and cleanse.
+3. Route each assemble pass to one primary source lane first.
+4. Within that lane, search one canonical source artifact first where possible.
+5. Escalate to at most one fallback lane unless the prompt explicitly asks for
+   cross-source comparison.
+6. Deduplicate by evidence identity before final packet section selection.
+7. Keep QMD as a fallback or background aid, not the default first-step search
+   on common turns.
 
 ## Target Architecture
 
-### 1. Retrieval corpus
+### 1. Parse-Once Checkpoint Snapshot
 
-Moon active retrieval will read from these sources, in this order of trust:
+Introduce a shared checkpoint snapshot produced once from the raw session.
 
-1. latest replayable `cleanse` summary metadata
-2. hot session projection
-3. daily memory files under `$MOON_HOME/memory/`
-4. durable `MEMORY.md`
-5. library projection/docs
-6. distilled artifacts and synthesis outputs
-7. QMD semantic search results over Moon-managed embedded collections
+That snapshot should carry:
 
-Structured state such as pending embed collections, corpus generation, and cache
-versioning may inform ranking and invalidation, but that raw telemetry must not
-be dumped into the packet.
+1. parsed projection data
+2. raw excerpt
+3. latest goal lines
+4. active work lines
+5. extracted query intent terms
+6. source-generation metadata needed for invalidation
 
-### 2. Hot corpus freshness
+The checkpoint flow should stop re-deriving those values independently in
+multiple steps.
 
-Moon must refresh the hot session projection on every checkpoint or after-turn
-sync, not only when `cleanse` triggers.
+`run_checkpoint()` should orchestrate around one parsed session snapshot instead
+of each step calling back into raw extraction helpers separately.
 
-That means:
+### 2. Routed Source Lanes
 
-1. `project` for the hot lane becomes routine and cheap.
-2. bounded embed stays asynchronous and best-effort.
-3. stale hot-search windows stop being tied to compaction frequency.
+Moon should classify the current assemble request into one primary source lane.
 
-### 3. Active context packet
+The initial lane set should be:
 
-Moon will build a separate model-facing packet with deterministic section order.
+1. `hot`
+   - for current task status, active work, unresolved steps, current-session
+     goals
+   - primary source: current hot projection
+2. `memory`
+   - for preferences, stable decisions, durable conventions, previously agreed
+     rules
+   - primary source: `MEMORY.md`
+   - fallback source: newest relevant daily-memory file
+3. `library`
+   - for workspace or reference-document lookups
+   - primary source: library docs / library projection docs
+   - fallback source: QMD library recall
+4. `distill`
+   - for older completed work, prior outcomes, or historical summaries
+   - primary source: distilled artifacts
+   - fallback source: recent daily-memory files
+5. `semantic`
+   - reserved for explicit fallback when the routed lexical source did not
+     provide enough usable evidence
+   - primary source: QMD
 
-Suggested packet structure:
+The search contract becomes:
 
-1. `# Moon Active Context`
-2. `## Current Goal`
-3. `## Active Work`
-4. `## Relevant Memory`
-5. `## Open Items`
-6. `## Evidence`
+1. choose one primary lane
+2. search that lane first
+3. stop if confidence is sufficient
+4. search one fallback lane only if needed
+5. only perform routine multi-lane retrieval when the user explicitly asks for a
+   comparison across sources
+
+This is the core change for the current focus: search should be based on one
+source first, not multiple repeated sources.
+
+### 3. Canonical Source Election
+
+Inside a lane, Moon should prefer one canonical source artifact before opening
+adjacent artifacts that likely repeat the same information.
+
+Examples:
+
+1. Memory recall: check `MEMORY.md` first; only fall back to one recent
+   daily-memory file if durable memory underfills.
+2. Hot current-task recall: check the current hot projection first; do not also
+   query daily memory or distill by default.
+3. Library reference: check library docs first; only use QMD library recall if
+   the direct library lane underfills.
+4. Historical outcome recall: check distill first; only fall back to daily
+   memory if the distilled lane does not answer the question.
+
+Moon should not gather the same likely evidence from several source artifacts
+just to throw most of it away later.
+
+### 4. Incremental Source Manifests And Line Caches
+
+Moon should stop recursively rescanning large source trees on routine assembles.
+
+Introduce per-lane manifests that track:
+
+1. relevant file paths
+2. mtimes
+3. sizes
+4. fingerprints
+5. cached stripped markdown bodies
+6. cached selected lines or snippets keyed by lane intent
+
+The manifests should be invalidated only when:
+
+1. a source file changes
+2. a new source file appears
+3. lane-specific selection inputs change
+
+This allows common assembles to become read-mostly and index-backed rather than
+directory-scan-heavy.
+
+### 5. Pre-Dedup Evidence Clustering
+
+Moon should deduplicate before final section assembly, not only after broad
+candidate collection.
+
+Introduce a stable `EvidenceKey` based on normalized text and source-aware
+identity.
+
+The packet builder should then:
+
+1. cluster repeated evidence
+2. elect one canonical source per cluster
+3. keep conflict context only when multiple sources genuinely disagree
+4. feed section budgets with unique evidence clusters, not raw repeated rows
+
+This makes packet budgets reflect distinct facts rather than distinct copies of
+the same fact.
+
+### 6. Split Sync Work From Hot Dispatch Work
+
+Moon should separate:
+
+1. sync or refresh work that can happen after the turn
+2. minimal read-mostly work needed immediately before dispatch
+
+Target behavior:
+
+1. `afterTurn()` performs record, hot projection refresh, manifest updates, and
+   best-effort background preparation.
+2. pre-dispatch `assemble()` mostly reads the current checkpoint snapshot,
+   routes the source lane, pulls cached evidence, and renders the packet.
+3. expensive fallback work only happens when routing confidence is low or the
+   prompt explicitly demands deeper recall.
+
+The hot path should stop paying full refresh costs for work that could have been
+prepared earlier.
+
+### 7. Subagent Boundary
+
+The curator subagent remains out of the main optimisation path.
 
 Rules:
 
-1. fixed heading order
-2. omit empty sections deterministically
-3. no YAML frontmatter in the model-facing packet
-4. no absolute local paths unless directly needed for action
-5. no raw queue counters or embed receipts
-6. no duplicated `cleanse` text already present in the current replay window
-7. one packet per assemble pass
-
-### 4. Packet placement
-
-Moon plugin `assemble()` will return an ordered message set that inserts the
-Moon packet immediately before the current user prompt when the last message is a
-user turn. If there is no trailing user message, prepend the packet at the start
-of the assembled sequence.
-
-The implementation may use a synthetic assistant-context message for this entry,
-because the OpenClaw context-engine contract guarantees ordered messages but does
-not provide a separate dedicated packet role.
-
-### 5. Subagent role
-
-The subagent is not the retriever. The subagent is the curator.
-
-It may:
-
-1. select the best candidate snippets
-2. collapse duplicates
-3. resolve minor conflicts
-4. produce a shorter packet from a bounded candidate set
-
-It may not:
-
-1. search raw transcript history directly
-2. invent missing evidence
-3. rewrite the packet boundary into system-prompt space
-4. duplicate the latest `cleanse` summary verbatim
-
-### 6. Subagent host
-
-The subagent will run through OpenClaw embedded-agent runtime from the Moon
-plugin, similar in shape to OpenClaw active-memory, but owned by Moon and fed by
-Moon retrieval output.
-
-Moon CLI remains the control plane. OpenClaw provides only the bounded embedded
-run host.
-
-### 7. Gating
-
-The subagent will run only when one or more of these are true:
-
-1. candidate count exceeds the local packet budget
-2. candidate token estimate exceeds the packet budget
-3. top candidates are semantically redundant
-4. top candidates conflict across sources
-5. the current prompt is recall-heavy and local ranking confidence is low
-
-If none of those are true, Moon uses the deterministic local packet directly.
-
-### 8. Caching
-
-Moon should cache both:
-
-1. local retrieval results
-2. final curator subagent outputs
-
-Cache key inputs:
-
-1. session id
-2. normalized current prompt hash
-3. latest user-turn hash
-4. corpus generation fingerprint
-5. packet config version
-
-Invalidate when:
-
-1. latest `cleanse` summary changes
-2. hot projection changes
-3. daily memory or `MEMORY.md` changes
-4. library/distill artifacts change
-5. embedded corpus generation changes
-6. packet config changes
-
-## Configuration Plan
-
-### 1. Moon config
-
-Add a new `moon.toml` section:
-
-```toml
-[context_packet]
-enabled = true
-max_candidates = 12
-max_packet_tokens = 1400
-dedupe_cleanse = true
-include_hot_projection = true
-include_daily_memory = true
-include_memory_file = true
-include_library = true
-include_distill = true
-include_qmd = true
-```
-
-This config owns Moon retrieval and packet-building behavior.
-
-### 2. Plugin config
-
-Add Moon plugin config keys for the subagent host path:
-
-1. `assemblySubagentMode = "off" | "gated" | "always"`
-2. `assemblySubagentTimeoutMs`
-3. `assemblySubagentCacheTtlMs`
-4. optional `assemblySubagentModel`
-5. optional `assemblySubagentModelFallback`
-
-Recommended default:
-
-1. `assemblySubagentMode = "gated"`
-2. inherit current session model when no explicit model is set
-3. short timeout
-4. short TTL cache
+1. keep it disabled by default
+2. do not use it to expand search breadth
+3. only allow it after routed retrieval still produces overflow or ambiguity
+4. do not let it hide repeated-work regressions in the deterministic path
 
 ## Implementation Plan
 
-### Phase 0: Baseline And Contracts
+### Phase 1: Remove Repeated Parse Work
 
-Goal:
+1. Introduce a shared checkpoint snapshot type reused across project, assemble,
+   and cleanse.
+2. Remove duplicate `extract_projection_data()` / `load_source_excerpt()` calls
+   inside one checkpoint.
+3. Add explicit counters for:
+   - raw parse count per checkpoint
+   - source files read per assemble
+   - QMD calls per assemble
+   - fallback depth
 
-1. Define the new packet contract before code changes spread across Rust and the
-   plugin.
+Exit criteria:
 
-Concrete work:
+1. one checkpoint parses the raw source at most once
+2. assemble diagnostics report parse and source-read counts
 
-1. Rewrite this `mip.md` as the control plan.
-2. Add code comments and docs notes clarifying:
-   - operator artifact vs model-facing packet
-   - messages lane vs `systemPromptAddition`
-   - Moon-owned subagent vs OpenClaw active-memory
-3. Add packet/report field names to the implementation checklist before coding.
+### Phase 2: Remove Repeated Source Scans
 
-Completion criteria:
+1. Add source manifests for memory, library, and distill lanes.
+2. Replace recursive directory gathers on the common assemble path with manifest
+   reads.
+3. Add cached stripped-body and selected-line reuse keyed by file fingerprint.
 
-1. Coding team has one agreed contract for packet shape, placement, and
-   ownership.
+Exit criteria:
 
-### Phase 1: Fresh Hot Corpus On Every Turn
+1. common assembles do not recursively scan `memory/` or `mlib/`
+2. source reads fall to only the files actually selected for the routed lane
 
-Goal:
+### Phase 3: Add Single-Source Routing
 
-1. Make the searchable hot corpus current enough for routine active assembly.
+1. Add a query-intent router that chooses one primary lane.
+2. Add lane-specific confidence rules.
+3. Add one-lane-only common behavior.
+4. Allow one fallback lane only when confidence underfills.
+5. Move QMD to fallback-only for common paths.
 
-Concrete work:
+Exit criteria:
 
-1. Update `src/moon/context_engine.rs` so hot projection refresh is not gated on
-   `should_cleanse`.
-2. Keep `cleanse` conditional, but run hot-lane `project` on every checkpoint or
-   after-turn sync.
-3. Mark embed maintenance pending when the hot projection changes.
-4. Keep bounded embed asynchronous and failure-tolerant.
-5. Add status/audit details showing hot projection freshness separately from
-   `cleanse`.
+1. common active-work prompts hit only the `hot` lane
+2. memory prompts hit `MEMORY.md` first and do not also search unrelated lanes
+3. library prompts do not also search memory or distill by default
 
-Primary files:
+### Phase 4: Add Canonical Source Election And Pre-Dedup
 
-1. `src/moon/context_engine.rs`
-2. `src/moon/project.rs`
-3. `src/moon/embed.rs`
-4. `src/commands/moon_context_engine.rs`
+1. Introduce `EvidenceKey`.
+2. Elect canonical evidence before section budgeting.
+3. Keep only one source per repeated evidence cluster unless conflict handling
+   is explicitly needed.
 
-Completion criteria:
+Exit criteria:
 
-1. Hot projection changes on every turn where raw transcript changed.
-2. Searchable hot corpus is no longer stale between compaction events.
+1. non-compare prompts do not emit duplicate evidence clusters from multiple
+   source families
+2. packet budgets operate on distinct facts, not repeated copies
 
-### Phase 2: Deterministic Moon Retriever
+### Phase 5: Split Sync And Assemble Modes
 
-Goal:
+1. Reduce pre-dispatch `assemble()` to a fast read-mostly path.
+2. Move refresh-heavy work toward `afterTurn()` or another explicit sync mode.
+3. Ensure the fast path reuses the outputs of the sync path instead of
+   recomputing them.
 
-1. Build a local retriever that can assemble a bounded candidate set without a
-   model call.
+Exit criteria:
 
-Concrete work:
-
-1. Add a new Moon retrieval module, for example:
-   - `src/moon/context_packet.rs`
-   - `src/moon/context_retrieval.rs`
-2. Retrieve and rank evidence from:
-   - latest `cleanse`
-   - hot projection
-   - daily memory
-   - `MEMORY.md`
-   - library docs
-   - distill outputs
-   - QMD semantic hits
-3. Implement deterministic dedupe and ordering.
-4. Build a `corpus_generation_fingerprint` for cache invalidation.
-5. Write the candidate set and final local packet as separate artifacts.
-
-Primary files:
-
-1. `src/moon/context_packet.rs` or equivalent new module
-2. `src/moon/context_engine.rs`
-3. `src/moon/qmd.rs`
-4. `src/moon/paths.rs`
-5. `src/commands/moon_context_engine.rs`
-
-Completion criteria:
-
-1. Moon can build a bounded local packet without a subagent.
-2. Packet content is deterministic for identical logical inputs.
-
-### Phase 3: Packet Artifact And Plugin Message Injection
-
-Goal:
-
-1. Move from operator-only assembly to a dual-output model:
-   operator artifact plus model-facing packet.
-
-Concrete work:
-
-1. Extend the checkpoint report with:
-   - `context_engine.packet_path`
-   - `context_engine.packet_mode`
-   - `context_engine.packet_candidate_count`
-   - `context_engine.packet_cache_hit`
-2. Keep `$MOON_HOME/mce/` for the operator artifact.
-3. Add a separate packet artifact directory, for example `$MOON_HOME/mcp/` or an
-   equivalent Moon-specific path.
-4. Update `assets/plugin/index.js`:
-   - read packet artifact
-   - inject packet through returned `messages`
-   - keep `systemPromptAddition` empty
-5. Preserve the current compaction path unchanged.
-
-Primary files:
-
-1. `src/moon/assemble.rs`
-2. `src/moon/context_engine.rs`
-3. `assets/plugin/index.js`
-4. `assets/plugin/index.test.ts`
-5. `assets/plugin/openclaw.plugin.json`
-
-Completion criteria:
-
-1. Routine Moon `assemble()` now returns a Moon packet in the messages lane.
-2. Routine Moon `assemble()` still returns no `systemPromptAddition`.
-
-### Phase 4: Gated Curator Subagent
-
-Goal:
-
-1. Add a bounded Moon-owned subagent for difficult retrieval-selection cases.
-
-Concrete work:
-
-1. In `assets/plugin/index.js`, add a gated branch after local retrieval:
-   - if packet is already good enough, skip subagent
-   - if gating says packet is too broad or ambiguous, run subagent
-2. Use OpenClaw embedded-agent runtime with:
-   - lightweight bootstrap
-   - short timeout
-   - no message tool
-   - no dependency on OpenClaw memory tools
-3. Feed the subagent only:
-   - current prompt
-   - bounded candidate snippets
-   - Moon packet schema instructions
-4. Cache the subagent result with a short TTL keyed by prompt and corpus
-   generation.
-5. Fall back to the deterministic local packet on timeout or failure.
-
-Primary files:
-
-1. `assets/plugin/index.js`
-2. `assets/plugin/index.test.ts`
-3. `assets/plugin/README.md`
-
-Completion criteria:
-
-1. Subagent path is bounded, cached, and optional.
-2. Timeout or failure never breaks Moon assembly.
-
-### Phase 5: Duplicate Control, Telemetry, And Verification
-
-Goal:
-
-1. Make the new path observable and safe to operate.
-
-Concrete work:
-
-1. Add duplicate suppression against the latest replayable `cleanse` summary.
-2. Add packet diagnostics:
-   - retrieval source counts
-   - packet token estimate
-   - packet cache hit
-   - subagent used
-   - subagent latency
-   - fallback reason
-3. Update `moon status` and `moon verify` with packet diagnostics where useful.
-4. Add a stable packet hash for debugging deterministic drift.
-
-Primary files:
-
-1. `src/commands/moon_status.rs`
-2. `src/commands/verify.rs`
-3. `assets/plugin/index.js`
-4. `src/moon/context_packet.rs`
-
-Completion criteria:
-
-1. Operators can tell whether Moon used local packeting or curator subagent.
-2. Duplicate `cleanse` injection is blocked by tests.
-
-### Phase 6: Docs, Rollout, And Cleanup
-
-Goal:
-
-1. Finish the feature without leaving the old mental model half alive.
-
-Concrete work:
-
-1. Update:
-   - `README.md`
-   - `docs/runbook.md`
-   - `docs/contracts.md`
-   - `assets/plugin/README.md`
-   - `handoff.md`
-2. Mark the old operator-only description of `assemble` as outdated and
-   replace it with the dual-output model.
-3. Keep the earlier prompt-boundary rules intact in docs:
-   - no routine `systemPromptAddition`
-   - `cleanse` remains in `compactionSummary`
-4. Remove or rewrite stale comments and dead compatibility paths that no longer
-   match the final design.
-
-Completion criteria:
-
-1. Repo docs describe the shipped architecture instead of the transition state.
-
-## Test Plan
-
-### Rust tests
-
-1. hot projection updates every checkpoint even when `cleanse` does not run
-2. packet retrieval produces deterministic output for fixed inputs
-3. packet dedupe removes repeated evidence across hot/library/memory sources
-4. latest `cleanse` summary is omitted from packet when already represented in
-   replayable compaction state
-5. corpus generation fingerprint changes only when relevant sources change
-
-### Plugin tests
-
-1. `assemble()` injects the Moon packet through `messages`
-2. `assemble()` still returns no `systemPromptAddition`
-3. subagent path is skipped when local packet is within threshold
-4. subagent path runs when candidate budget or ambiguity threshold is exceeded
-5. subagent timeout falls back to the local packet
-6. subagent cache hits skip repeated embedded runs
-
-### End-to-end tests
-
-1. long session without `cleanse` still gets fresh hot-context retrieval
-2. post-`cleanse` session does not receive duplicate summary content
-3. memory edits in `$MOON_HOME/memory/` and `MEMORY.md` influence the next packet
-4. QMD-backed semantic hits can enter the packet through local retrieval
-5. OpenClaw active-memory remains disabled during the entire flow
-
-## Rollout Plan
-
-1. Ship Phase 1 and Phase 2 first behind config.
-2. Validate deterministic packet quality before turning on the subagent path.
-3. Ship Phase 3 next so the local packet reaches the messages lane.
-4. Ship Phase 4 behind `assemblySubagentMode = "gated"`.
-5. Make gated mode the default only after latency and duplicate-control metrics
-   are acceptable.
-
-## Risks
-
-1. Synthetic assistant-context packet placement could bias some models more than
-   expected.
-2. If the hot projection gets too verbose, local retrieval quality will degrade
-   even before the subagent runs.
-3. If the subagent is allowed to see too much candidate text, it will recreate
-   the same latency problem as a full per-turn assembler.
-4. If duplicate suppression against `compactionSummary` is weak, Moon will start
-   repeating itself.
+1. the common dispatch path avoids full refresh work when cached state is fresh
+2. `afterTurn()` and `assemble()` stop duplicating the same end-to-end heavy
+   work
 
 ## Acceptance Criteria
 
-This MIP is complete only when all of the following are true:
+This MIP is complete when the repo can show all of the following:
 
-1. Moon builds and uses a model-facing active context packet in the `messages`
-   lane.
-2. Routine Moon `systemPromptAddition` remains unused.
-3. Hot projection freshness is no longer gated on `cleanse`.
-4. Moon retrieval covers hot, memory, library, distill, and QMD-backed semantic
-   sources.
-5. A bounded curator subagent exists and runs only when gated.
-6. Timeout or failure falls back cleanly to deterministic local packeting.
-7. Duplicate `cleanse` injection is blocked.
-8. Docs, tests, and operator diagnostics all reflect the new architecture.
+1. One checkpoint parses the raw source at most once.
+2. Common non-compare assembles route to exactly one primary lane.
+3. Common non-compare assembles do not perform routine broad multi-source
+   fanout.
+4. QMD is not called on the common hot-lane or memory-lane happy path.
+5. `MEMORY.md`-style recall does not also search unrelated lanes unless fallback
+   is triggered.
+6. Final packets contain no duplicate evidence clusters across source families
+   for non-compare prompts.
+7. Common-path assemble latency is materially lower than the current baseline.
+
+Suggested performance targets:
+
+1. reduce common-path median assemble wall time by at least `50%`
+2. reduce common-path QMD calls by at least `75%`
+3. reduce per-assemble source-file reads to the routed lane plus at most one
+   fallback lane
+
+## Test Plan
+
+1. Unit tests for the query-intent router and lane selection.
+2. Unit tests for canonical source election and evidence clustering.
+3. Regression tests proving one raw parse per checkpoint.
+4. Regression tests proving routed memory recall checks `MEMORY.md` before daily
+   memory.
+5. Regression tests proving routed library recall does not also search memory
+   lanes by default.
+6. Regression tests proving QMD is skipped on common happy paths.
+7. Plugin tests proving pre-dispatch assembly uses the fast path while
+   after-turn sync handles refresh work.
+
+## Risks
+
+1. A wrong primary-lane decision could under-retrieve. Mitigation: deterministic
+   fallback and explicit routing diagnostics.
+2. Cached manifests could go stale. Mitigation: fingerprint-based invalidation
+   on every relevant source write.
+3. Some prompts genuinely need multi-source comparison. Mitigation: allow
+   explicit compare-mode routing rather than making multi-source fanout the
+   default.
+
+## Summary
+
+The next Moon optimisation step is not broader retrieval. It is less repeated
+work.
+
+Moon should:
+
+1. parse once
+2. scan incrementally
+3. search one source first
+4. fall back only when needed
+5. dedupe before packet budgeting
+
+That is the shortest path to lower latency, lower cost, and higher signal in the
+active context packet.

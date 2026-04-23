@@ -6,6 +6,35 @@ The format is based on Keep a Changelog and this project follows Semantic
 Versioning.
 
 ## [Unreleased]
+## [1.2.0] - 2026-04-23
+
+### Added
+
+- Added `moon context-engine --sync-only` for record/project/state refresh work
+  that does not need to rebuild assembly or the active context packet.
+
+### Changed
+
+- Moon context assembly now parses the raw session once per checkpoint and
+  reuses that snapshot for `cleanse`, `assemble`, and packet building.
+- Active context packet retrieval now routes to one primary source family first
+  instead of broad routine fanout:
+  - `hot`
+  - `memory`
+  - `library`
+  - `distill`
+  - bounded `semantic` fallback
+- The packet builder now elects one canonical source for duplicate evidence
+  before section budgeting, reducing repeated evidence across source families.
+- The bundled Moon plugin now uses `--sync-only` during `afterTurn`, keeping
+  refresh work out of the pre-dispatch assembly hot path.
+
+### Fixed
+
+- Reduced repeated context-engine work on common turns by removing duplicate raw
+  parsing and routine broad multi-source packet retrieval.
+- Reduced routine QMD usage by reserving it for routed fallback paths instead of
+  calling both hot and library recall on the common path.
 
 ## [1.1.5] - 2026-04-23
 
@@ -34,12 +63,12 @@ Versioning.
 
 ### Fixed
 
-- Moon `cleanse` and `distill` now give `openai-codex` streamed responses
-  more time to complete and retry transient timeout, overload, and
-  missing-text failures before surfacing a context-engine error.
+- Moon `cleanse` and `distill` now give `openai-codex` streamed responses more
+  time to complete and retry transient timeout, overload, and missing-text
+  failures before surfacing a context-engine error.
 - This reduces intermittent `context engine assemble failed` /
-  `afterTurn failed` noise caused by provider-side stalls after the
-  OpenClaw timeout fix in `1.1.2`.
+  `afterTurn failed` noise caused by provider-side stalls after the OpenClaw
+  timeout fix in `1.1.2`.
 
 ## [1.1.2] - 2026-04-22
 

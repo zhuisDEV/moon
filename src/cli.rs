@@ -178,6 +178,8 @@ pub struct ContextEngineArgs {
     pub force_cleanse: bool,
     #[arg(long = "replay-has-compaction-summary")]
     pub replay_has_compaction_summary: bool,
+    #[arg(long = "sync-only")]
+    pub sync_only: bool,
 }
 
 #[derive(Debug, Args)]
@@ -411,6 +413,7 @@ pub fn run() -> Result<()> {
                 max_tokens: args.max_tokens,
                 force_cleanse: args.force_cleanse,
                 replay_has_compaction_summary: args.replay_has_compaction_summary,
+                sync_only: args.sync_only,
             },
         )?,
         Command::Stop => commands::moon_stop::run()?,
