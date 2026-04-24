@@ -188,6 +188,10 @@ pub fn prune_hot_cache_for_session(
     let removed_pending_hot_collections =
         pending_before.saturating_sub(state.pending_embed_collections.len());
 
+    state
+        .hot_projection_cursors
+        .retain(|session_id, _| session_id == active_session_id);
+
     let stale_hot_collections = state
         .managed_hot_collections
         .keys()

@@ -1,5 +1,71 @@
 # Handoff
 
+## 2026-04-24 19:09 AEST
+
+- Prepared release `v1.2.1` for the active-context packet quality and unchanged
+  hot projection skip work.
+- Release metadata aligned across:
+  - `Cargo.toml`
+  - `Cargo.lock`
+  - `assets/plugin/package.json`
+  - `assets/plugin/index.js`
+- Updated `CHANGELOG.md` with the `1.2.1` release note.
+
+## 2026-04-24 18:16 AEST
+
+- Improved Moon context-engine active-context quality and reduced avoidable
+  repeated hot projection work.
+- Rust runtime changes:
+  - `src/moon/context_packet.rs`
+    - tightened packet evidence selection so weak zero-overlap markdown lines
+      are not injected as evidence
+    - excluded latest user turns from hot evidence because `Current Goal`
+      already carries them
+    - filtered `Active Work` to recent assistant/tool/result lines that overlap
+      the current query or are actionable
+    - added explicit packet coverage guidance:
+      - `enough`
+      - `current_only`
+      - `search_more`
+    - added diagnostics for coverage decision, reason, positive candidate count,
+      and top score
+    - added tests proving irrelevant recent activity and irrelevant memory lines
+      are omitted
+  - `src/moon/context_engine.rs`
+    - added hot projection cursor checks so unchanged active-session hot
+      projections skip rewrite and avoid re-marking embed maintenance pending
+    - preserved strict hot collection lifecycle behavior
+    - reports `project_status=updated|skipped-unchanged`
+  - `src/moon/state.rs`
+    - added `hot_projection_cursors` as isolated hot projection metadata
+    - this cache does not evict memory, library, distill, packet, or QMD cache
+      data
+  - `src/moon/project.rs`
+    - prunes only stale hot projection cursor metadata on session switch,
+      matching the existing hot-session cache lifecycle
+  - `src/commands/moon_context_engine.rs` and `src/commands/moon_assemble.rs`
+    - surfaced the new packet coverage diagnostics
+- Plugin changes:
+  - `assets/plugin/index.js`
+    - updated the optional assembly curator prompt to preserve the new
+      `Context Coverage` section when curation is enabled
+- Cache rule:
+  - no new broad retrieval cache was added
+  - the new cache state is only a byte/line cursor for deciding whether the
+    current session's hot projection file needs to be regenerated
+  - existing old-cache retention semantics are unchanged except for hot-session
+    metadata following the existing strict hot lifecycle
+- Validation completed:
+  - `cargo fmt --all`
+  - `deno fmt handoff.md`
+  - `cargo test context_packet_ -- --nocapture`
+  - `cargo test checkpoint_records_and_assembles_without_cleanse_below_trigger -- --nocapture`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `cargo test --all-targets --all-features`
+
 ## 2026-04-23 20:43 AEST
 
 - Implemented the optimisation MIP end to end and prepared release `v1.2.0`.

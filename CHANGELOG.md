@@ -6,6 +6,31 @@ The format is based on Keep a Changelog and this project follows Semantic
 Versioning.
 
 ## [Unreleased]
+
+## [1.2.1] - 2026-04-24
+
+### Added
+
+- Added active-context packet coverage diagnostics so Moon can report whether
+  injected context is enough, current-turn-only, or should be followed by live
+  search/read work.
+- Added `project_status=updated|skipped-unchanged` diagnostics to
+  `moon context-engine`.
+
+### Changed
+
+- Tightened active-context packet selection to omit weak zero-overlap evidence,
+  avoid duplicating latest user turns as hot evidence, and keep recent activity
+  relevant to the current query or actionable work.
+- The optional assembly curator prompt now preserves the packet's
+  `Context Coverage` section.
+
+### Fixed
+
+- Repeated context-engine sync/assemble passes now skip regenerating unchanged
+  active-session hot projections and avoid re-marking embed maintenance pending
+  when the copied raw transcript is unchanged.
+
 ## [1.2.0] - 2026-04-23
 
 ### Added
@@ -53,8 +78,8 @@ Versioning.
 ### Fixed
 
 - Moon's OpenClaw plugin now preserves configured absolute `moonPath` values
-  instead of sending them through host path resolution and silently falling
-  back to bare `moon`.
+  instead of sending them through host path resolution and silently falling back
+  to bare `moon`.
 - Context-engine launch failures now report the resolved executable path and
   process cwd, making `spawn ... ENOENT` incidents diagnosable from gateway
   logs.

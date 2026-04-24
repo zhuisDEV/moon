@@ -56,6 +56,10 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
             "context_engine.project_path={}",
             output.project_output_path
         ));
+        report.detail(format!(
+            "context_engine.project_status={}",
+            output.project_status
+        ));
         report.detail(format!("context_engine.sync_reason={}", output.sync_reason));
         return Ok(report);
     }
@@ -66,6 +70,14 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
     report.detail(format!(
         "context_engine.record_target_path={}",
         output.record_target_path
+    ));
+    report.detail(format!(
+        "context_engine.project_path={}",
+        output.project_output_path
+    ));
+    report.detail(format!(
+        "context_engine.project_status={}",
+        output.project_status
     ));
     report.detail(format!(
         "context_engine.cleanse_summary_path={}",
@@ -158,6 +170,38 @@ pub fn run(opts: &MoonContextEngineOptions) -> Result<CommandReport> {
             .context_packet
             .as_ref()
             .map(|packet| packet.qmd_query_count)
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.packet_coverage_decision={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.coverage_decision.as_str())
+            .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_coverage_reason={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.coverage_reason.as_str())
+            .unwrap_or("none")
+    ));
+    report.detail(format!(
+        "context_engine.packet_positive_candidate_count={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.positive_candidate_count)
+            .unwrap_or(0)
+    ));
+    report.detail(format!(
+        "context_engine.packet_top_score={}",
+        output
+            .context_packet
+            .as_ref()
+            .map(|packet| packet.top_score)
             .unwrap_or(0)
     ));
     report.detail(format!(

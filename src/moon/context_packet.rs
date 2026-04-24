@@ -39,6 +39,10 @@ pub struct ContextPacketOutput {
     pub fallback_source: Option<String>,
     pub source_read_count: usize,
     pub qmd_query_count: usize,
+    pub coverage_decision: String,
+    pub coverage_reason: String,
+    pub positive_candidate_count: usize,
+    pub top_score: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +75,12 @@ struct PacketCandidate {
 }
 
 #[derive(Debug, Clone)]
+struct CoverageReport {
+    decision: &'static str,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
 struct PacketSections {
     current_goal: Vec<String>,
     active_work: Vec<String>,
@@ -78,6 +88,7 @@ struct PacketSections {
     open_items: Vec<String>,
     evidence: Vec<String>,
     candidate_count: usize,
+    coverage: CoverageReport,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +97,8 @@ struct PacketBuild {
     fallback_source: Option<String>,
     source_read_count: usize,
     qmd_query_count: usize,
+    positive_candidate_count: usize,
+    top_score: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +111,20 @@ struct SelectedDocLine {
 struct SourceCollectionSummary {
     candidate_count: usize,
     positive_count: usize,
+}
+
+impl SourceCollectionSummary {
+    fn empty() -> Self {
+        Self {
+            candidate_count: 0,
+            positive_count: 0,
+        }
+    }
+
+    fn note_candidate(&mut self) {
+        self.candidate_count = self.candidate_count.saturating_add(1);
+        self.positive_count = self.positive_count.saturating_add(1);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +260,10 @@ pub fn build_context_packet_from_projection(
             fallback_source: None,
             source_read_count: 0,
             qmd_query_count: 0,
+            coverage_decision: "cached".to_string(),
+            coverage_reason: "reused previous packet generation".to_string(),
+            positive_candidate_count: 0,
+            top_score: 0,
         });
     }
 
@@ -260,6 +291,10 @@ pub fn build_context_packet_from_projection(
         fallback_source: build.fallback_source,
         source_read_count: build.source_read_count,
         qmd_query_count: build.qmd_query_count,
+        coverage_decision: build.sections.coverage.decision.to_string(),
+        coverage_reason: build.sections.coverage.reason,
+        positive_candidate_count: build.positive_candidate_count,
+        top_score: build.top_score,
     })
 }
 
@@ -273,7 +308,7 @@ fn build_sections(
     primary_family: SourceFamily,
 ) -> Result<PacketBuild> {
     let current_goal = latest_goal_lines(projection, 2);
-    let active_work = recent_activity_lines(projection, 5);
+    let active_work = recent_activity_lines(projection, query_terms, 5);
     let mut relevant_memory = Vec::new();
     let mut open_items = Vec::new();
 
@@ -291,6 +326,18 @@ fn build_sections(
     let qmd_query_count = collector.qmd_query_count;
     let candidates = collector.into_sorted_candidates();
     let candidate_count = candidates.len();
+    let positive_candidate_count = candidate_count;
+    let top_score = candidates
+        .iter()
+        .map(|candidate| candidate.score)
+        .max()
+        .unwrap_or(0);
+    let coverage = evaluate_coverage(
+        primary_family,
+        fallback_source.as_deref(),
+        candidate_count,
+        top_score,
+    );
 
     let mut used_text = BTreeSet::new();
     for candidate in &candidates {
@@ -334,10 +381,13 @@ fn build_sections(
             open_items,
             evidence,
             candidate_count,
+            coverage,
         },
         fallback_source,
         source_read_count,
         qmd_query_count,
+        positive_candidate_count,
+        top_score,
     })
 }
 
@@ -413,10 +463,7 @@ fn collect_candidates(
                     &mut collector,
                 )?
             } else {
-                SourceCollectionSummary {
-                    candidate_count: 0,
-                    positive_count: 0,
-                }
+                SourceCollectionSummary::empty()
             };
             if primary.positive_count == 0 && cfg.qmd_limit > 0 {
                 let fallback = collect_qmd_candidates(
@@ -445,10 +492,7 @@ fn collect_candidates(
                     &mut collector,
                 )?
             } else {
-                SourceCollectionSummary {
-                    candidate_count: 0,
-                    positive_count: 0,
-                }
+                SourceCollectionSummary::empty()
             };
             if primary.positive_count == 0
                 && let Some(path) = newest_daily_memory_file(paths, cfg)?
@@ -506,22 +550,21 @@ fn collect_hot_candidates(
         .entries
         .iter()
         .rev()
+        .filter(|entry| entry.role != "user")
         .filter_map(render_projection_candidate)
         .take(6)
         .collect::<Vec<_>>();
-    let mut summary = SourceCollectionSummary {
-        candidate_count: 0,
-        positive_count: 0,
-    };
+    let mut summary = SourceCollectionSummary::empty();
     for text in hot_candidates.into_iter().rev() {
-        if overlap_score(&text, query_terms) > 0 {
-            summary.positive_count += 1;
+        if !candidate_is_relevant("hot", collector.primary_family, &text, query_terms) {
+            continue;
         }
-        summary.candidate_count += 1;
+        let score = score_text("hot", &text, query_terms, collector.primary_family);
+        summary.note_candidate();
         collector.add_candidate(PacketCandidate {
             source_kind: "hot",
             source_label: "hot".to_string(),
-            score: score_text("hot", &text, query_terms, collector.primary_family),
+            score,
             text,
         });
     }
@@ -537,32 +580,32 @@ fn collect_markdown_candidates_from_path(
     collector: &mut CandidateCollector,
 ) -> Result<SourceCollectionSummary> {
     if !path.is_file() {
-        return Ok(SourceCollectionSummary {
-            candidate_count: 0,
-            positive_count: 0,
-        });
+        return Ok(SourceCollectionSummary::empty());
     }
     collector.note_file_read();
     let body = read_markdown_body(path)?;
     let selected = select_doc_candidates(&body, query_terms, limit);
-    let mut summary = SourceCollectionSummary {
-        candidate_count: 0,
-        positive_count: 0,
-    };
+    let mut summary = SourceCollectionSummary::empty();
     for line in selected {
-        if line.score > 0 {
-            summary.positive_count += 1;
+        if !candidate_is_relevant(
+            source_kind,
+            collector.primary_family,
+            &line.text,
+            query_terms,
+        ) {
+            continue;
         }
-        summary.candidate_count += 1;
+        let score = score_text(
+            source_kind,
+            &line.text,
+            query_terms,
+            collector.primary_family,
+        );
+        summary.note_candidate();
         collector.add_candidate(PacketCandidate {
             source_kind,
             source_label: source_label.to_string(),
-            score: score_text(
-                source_kind,
-                &line.text,
-                query_terms,
-                collector.primary_family,
-            ),
+            score,
             text: line.text,
         });
     }
@@ -579,28 +622,20 @@ fn collect_qmd_candidates(
     collector: &mut CandidateCollector,
 ) -> SourceCollectionSummary {
     if query.trim().is_empty() {
-        return SourceCollectionSummary {
-            candidate_count: 0,
-            positive_count: 0,
-        };
+        return SourceCollectionSummary::empty();
     }
     let Ok(exec) = qmd::recall_query(&paths.qmd_bin, collection_name, query, limit, Some(15))
     else {
-        return SourceCollectionSummary {
-            candidate_count: 0,
-            positive_count: 0,
-        };
+        return SourceCollectionSummary::empty();
     };
     collector.note_qmd_query();
-    let mut summary = SourceCollectionSummary {
-        candidate_count: 0,
-        positive_count: 0,
-    };
+    let mut summary = SourceCollectionSummary::empty();
     for hit in parse_qmd_hits(&exec.stdout) {
-        if overlap_score(&hit.text, query_terms) > 0 {
-            summary.positive_count += 1;
+        if !candidate_is_relevant("qmd", collector.primary_family, &hit.text, query_terms) {
+            continue;
         }
-        summary.candidate_count += 1;
+        let score = score_text("qmd", &hit.text, query_terms, collector.primary_family);
+        summary.note_candidate();
         collector.add_candidate(PacketCandidate {
             source_kind: "qmd",
             source_label: if hit.source_label.is_empty() {
@@ -608,7 +643,7 @@ fn collect_qmd_candidates(
             } else {
                 format!("{source_label}:{}", hit.source_label)
             },
-            score: score_text("qmd", &hit.text, query_terms, collector.primary_family),
+            score,
             text: hit.text,
         });
     }
@@ -886,13 +921,18 @@ fn latest_goal_lines(projection: &ProjectionData, limit: usize) -> Vec<String> {
         .collect()
 }
 
-fn recent_activity_lines(projection: &ProjectionData, limit: usize) -> Vec<String> {
+fn recent_activity_lines(
+    projection: &ProjectionData,
+    query_terms: &[String],
+    limit: usize,
+) -> Vec<String> {
     projection
         .entries
         .iter()
         .rev()
         .filter(|entry| entry.role != "user")
         .filter_map(render_projection_candidate)
+        .filter(|line| candidate_is_relevant("hot", SourceFamily::Hot, line, query_terms))
         .take(limit)
         .collect::<Vec<_>>()
         .into_iter()
@@ -1022,21 +1062,7 @@ fn select_doc_candidates(body: &str, query_terms: &[String], limit: usize) -> Ve
         .take(limit)
         .cloned()
         .collect::<Vec<_>>();
-    if out.is_empty() {
-        out = body
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .take(limit)
-            .map(|line| SelectedDocLine {
-                text: truncate_with_ellipsis(
-                    line.trim_start_matches("- ").trim(),
-                    MAX_DOC_LINE_CHARS,
-                ),
-                score: 0,
-            })
-            .collect();
-    }
+    out.retain(|line| !line.text.trim().is_empty());
     out
 }
 
@@ -1048,6 +1074,14 @@ fn render_packet(sections: &PacketSections, max_chars: usize) -> String {
     append_section(&mut out, "Relevant Memory", &sections.relevant_memory);
     append_section(&mut out, "Open Items", &sections.open_items);
     append_section(&mut out, "Evidence", &sections.evidence);
+    append_section(
+        &mut out,
+        "Context Coverage",
+        &[format!(
+            "decision={} reason={}",
+            sections.coverage.decision, sections.coverage.reason
+        )],
+    );
     truncate_with_ellipsis(out.trim_end(), max_chars)
 }
 
@@ -1124,6 +1158,60 @@ fn score_text(kind: &str, text: &str, query_terms: &[String], primary_family: So
             + overlap_score(text, query_terms) * 5
             + if looks_actionable(text) { 10 } else { 0 },
     )
+}
+
+fn candidate_is_relevant(
+    kind: &str,
+    primary_family: SourceFamily,
+    text: &str,
+    query_terms: &[String],
+) -> bool {
+    if query_terms.is_empty() {
+        return false;
+    }
+    if overlap_score(text, query_terms) > 0 {
+        return true;
+    }
+    if kind == "hot" && looks_actionable(text) {
+        return true;
+    }
+    kind == "qmd" && primary_family == SourceFamily::Semantic
+}
+
+fn evaluate_coverage(
+    primary_family: SourceFamily,
+    fallback_source: Option<&str>,
+    candidate_count: usize,
+    top_score: i64,
+) -> CoverageReport {
+    if candidate_count > 0 {
+        let via = fallback_source.unwrap_or("primary");
+        return CoverageReport {
+            decision: "enough",
+            reason: format!(
+                "primary={} source={} candidates={} top_score={}",
+                primary_family.as_str(),
+                via,
+                candidate_count,
+                top_score
+            ),
+        };
+    }
+
+    let decision = match primary_family {
+        SourceFamily::Hot => "current_only",
+        SourceFamily::Memory
+        | SourceFamily::Library
+        | SourceFamily::Distill
+        | SourceFamily::Semantic => "search_more",
+    };
+    CoverageReport {
+        decision,
+        reason: format!(
+            "primary={} candidates=0 top_score=0",
+            primary_family.as_str()
+        ),
+    }
 }
 
 fn candidate_source_preference(primary_family: SourceFamily, kind: &str) -> i32 {
@@ -1382,5 +1470,83 @@ mod tests {
             "[lib:plugin] Config schema is documented in assets/plugin/openclaw.plugin.json."
         ));
         assert!(!output.content.contains("[memory]"));
+    }
+
+    #[test]
+    fn context_packet_omits_irrelevant_recent_activity() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.raw_dir).expect("mkdir raw");
+
+        fs::write(
+            paths.raw_dir.join("s4.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"message":{"role":"user","content":[{"type":"text","text":"Implement the context packet quality gate."}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"The unrelated calendar summary discussed lunch scheduling."}]}})
+            ),
+        )
+        .expect("write raw");
+
+        let output = build_context_packet(
+            &paths,
+            &MoonState::default(),
+            &MoonContextPacketConfig::default(),
+            &ContextPacketInput {
+                session_id: "s4".to_string(),
+                raw_source_path: paths.raw_dir.join("s4.jsonl"),
+                cleanse_summary_path: None,
+                replay_has_compaction_summary: false,
+            },
+        )
+        .expect("build packet");
+
+        assert_eq!(output.primary_source_family, "hot");
+        assert_eq!(output.candidate_count, 0);
+        assert_eq!(output.coverage_decision, "current_only");
+        assert!(output.content.contains("decision=current_only"));
+        assert!(!output.content.contains("lunch scheduling"));
+    }
+
+    #[test]
+    fn context_packet_marks_memory_miss_as_search_more_without_junk_evidence() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.raw_dir).expect("mkdir raw");
+        fs::create_dir_all(&paths.memory_dir).expect("mkdir memory");
+
+        fs::write(
+            paths.raw_dir.join("s5.jsonl"),
+            format!(
+                "{}\n",
+                json!({"message":{"role":"user","content":[{"type":"text","text":"Recall the release cadence preference."}]}})
+            ),
+        )
+        .expect("write raw");
+        fs::write(
+            &paths.memory_file,
+            "# MEMORY\n- Favorite color is blue.\n- Preferred editor theme is light.\n",
+        )
+        .expect("write memory");
+
+        let output = build_context_packet(
+            &paths,
+            &MoonState::default(),
+            &MoonContextPacketConfig::default(),
+            &ContextPacketInput {
+                session_id: "s5".to_string(),
+                raw_source_path: paths.raw_dir.join("s5.jsonl"),
+                cleanse_summary_path: None,
+                replay_has_compaction_summary: false,
+            },
+        )
+        .expect("build packet");
+
+        assert_eq!(output.primary_source_family, "memory");
+        assert_eq!(output.candidate_count, 0);
+        assert_eq!(output.coverage_decision, "search_more");
+        assert!(output.content.contains("decision=search_more"));
+        assert!(!output.content.contains("Favorite color"));
+        assert!(!output.content.contains("editor theme"));
     }
 }

@@ -116,6 +116,19 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
             "assemble.packet_qmd_queries={}",
             packet.qmd_query_count
         ));
+        report.detail(format!(
+            "assemble.packet_coverage_decision={}",
+            packet.coverage_decision
+        ));
+        report.detail(format!(
+            "assemble.packet_coverage_reason={}",
+            packet.coverage_reason
+        ));
+        report.detail(format!(
+            "assemble.packet_positive_candidate_count={}",
+            packet.positive_candidate_count
+        ));
+        report.detail(format!("assemble.packet_top_score={}", packet.top_score));
     }
 
     if opts.dry_run {

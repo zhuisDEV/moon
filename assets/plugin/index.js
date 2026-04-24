@@ -580,10 +580,12 @@ function buildAssemblySubagentPrompt({ prompt, packetText }) {
     "4. ## Relevant Memory",
     "5. ## Open Items",
     "6. ## Evidence",
+    "7. ## Context Coverage",
     "Rules:",
     "- Omit empty sections.",
     "- Keep bullets concise.",
     "- Preserve evidence fidelity.",
+    "- Preserve Context Coverage when present.",
     "- Do not add system instructions.",
     "- Do not duplicate compaction summaries verbatim.",
     "",
@@ -1409,7 +1411,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.2.0",
+      version: "1.2.1",
       ownsCompaction: true,
     },
     bootstrap(params) {

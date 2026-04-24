@@ -22,7 +22,8 @@ use crate::moon::project::{self, ProjectLane, ProjectRunOptions};
 use crate::moon::qmd;
 use crate::moon::record;
 use crate::moon::state::{
-    MoonState, hot_embed_collection_for_session, hot_projection_dir_for_collection, load,
+    MoonState, RawSessionCursor, hot_embed_collection_for_session,
+    hot_projection_dir_for_collection, hot_projection_path_for_session, load,
     remove_embedded_projection_collection, save,
 };
 use crate::moon::util::now_epoch_secs;
@@ -49,6 +50,8 @@ pub struct CheckpointOptions {
 pub struct CheckpointOutput {
     pub session_id: String,
     pub record_target_path: String,
+    pub project_output_path: String,
+    pub project_status: String,
     pub cleanse_summary_path: Option<String>,
     pub embed_now: Option<String>,
     pub cleanse_reason: String,
@@ -64,6 +67,7 @@ pub struct SyncCheckpointOutput {
     pub session_id: String,
     pub record_target_path: String,
     pub project_output_path: String,
+    pub project_status: String,
     pub sync_reason: String,
 }
 
@@ -77,6 +81,13 @@ struct PreparedCheckpoint {
     hot_lifecycle_summary: String,
     hot_prune_summary: String,
     project_output_path: String,
+    project_status: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectCheckpointOutput {
+    path: String,
+    status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,10 +204,11 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
         "context-engine",
         "ok",
         &format!(
-            "session_id={} record={} project={} cleanse={} embed_now={} assembly={} packet={} reason={} raw_parse_count=1 hot_lifecycle={} hot_prune={}",
+            "session_id={} record={} project={} project_status={} cleanse={} embed_now={} assembly={} packet={} reason={} raw_parse_count=1 hot_lifecycle={} hot_prune={}",
             prepared.plan.session_id,
             prepared.plan.target_path.display(),
             prepared.project_output_path,
+            prepared.project_status,
             cleanse_summary_path.as_deref().unwrap_or("none"),
             embed_now,
             assembly_output_path.display(),
@@ -210,6 +222,8 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
     Ok(CheckpointOutput {
         session_id: prepared.plan.session_id,
         record_target_path: prepared.plan.target_path.display().to_string(),
+        project_output_path: prepared.project_output_path,
+        project_status: prepared.project_status,
         cleanse_summary_path,
         embed_now: prepared.should_cleanse.then_some(embed_now),
         cleanse_reason: prepared.cleanse_reason,
@@ -237,10 +251,11 @@ pub fn run_sync_checkpoint(
         "context-engine-sync",
         "ok",
         &format!(
-            "session_id={} record={} project={} reason={} hot_lifecycle={} hot_prune={}",
+            "session_id={} record={} project={} project_status={} reason={} hot_lifecycle={} hot_prune={}",
             prepared.plan.session_id,
             prepared.plan.target_path.display(),
             prepared.project_output_path,
+            prepared.project_status,
             sync_reason,
             prepared.hot_lifecycle_summary,
             prepared.hot_prune_summary
@@ -251,6 +266,7 @@ pub fn run_sync_checkpoint(
         session_id: prepared.plan.session_id,
         record_target_path: prepared.plan.target_path.display().to_string(),
         project_output_path: prepared.project_output_path,
+        project_status: prepared.project_status,
         sync_reason,
     })
 }
@@ -311,8 +327,7 @@ fn prepare_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Pre
             pruned.removed_pending_hot_collections
         );
     }
-    let project_output_path =
-        run_project_checkpoint(paths, &mut state, &plan.session_id, &plan.target_path)?;
+    let project = run_project_checkpoint(paths, &mut state, &plan.session_id, &plan.target_path)?;
 
     Ok(PreparedCheckpoint {
         cfg,
@@ -322,7 +337,8 @@ fn prepare_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Pre
         cleanse_reason,
         hot_lifecycle_summary,
         hot_prune_summary,
-        project_output_path,
+        project_output_path: project.path,
+        project_status: project.status,
     })
 }
 
@@ -470,11 +486,19 @@ fn run_project_checkpoint(
     state: &mut MoonState,
     session_id: &str,
     raw_target_path: &std::path::Path,
-) -> Result<String> {
+) -> Result<ProjectCheckpointOutput> {
     let source_path = raw_target_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("record target path is not valid UTF-8"))?
         .to_string();
+    let cursor = raw_session_cursor(raw_target_path)?;
+    let target_path = hot_projection_path_for_session(paths, session_id);
+    if state.hot_projection_cursors.get(session_id) == Some(&cursor) && target_path.is_file() {
+        return Ok(ProjectCheckpointOutput {
+            path: target_path.display().to_string(),
+            status: "skipped-unchanged".to_string(),
+        });
+    }
     let output = project::run_and_mark_embed_pending(
         paths,
         state,
@@ -486,7 +510,27 @@ fn run_project_checkpoint(
         },
     )
     .with_context(|| format!("project checkpoint failed for session `{session_id}`"))?;
-    Ok(output.target_path.display().to_string())
+    state
+        .hot_projection_cursors
+        .insert(session_id.to_string(), cursor);
+    Ok(ProjectCheckpointOutput {
+        path: output.target_path.display().to_string(),
+        status: "updated".to_string(),
+    })
+}
+
+fn raw_session_cursor(path: &std::path::Path) -> Result<RawSessionCursor> {
+    let bytes = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let lines = if raw.is_empty() {
+        0
+    } else {
+        raw.lines().count() as u64
+    };
+    Ok(RawSessionCursor { bytes, lines })
 }
 
 fn run_embed_now(paths: &MoonPaths, state: &mut MoonState, session_id: &str) -> String {
@@ -817,6 +861,7 @@ exit 0
 
         assert_eq!(output.session_id, "session-a");
         assert!(output.record_target_path.ends_with("/raw/session-a.jsonl"));
+        assert_eq!(output.project_status, "updated");
         assert!(output.cleanse_summary_path.is_none());
         assert!(output.cleanse_reason.starts_with("below-trigger"));
         assert!(output.assembly_output_path.ends_with("/mce/session-a.md"));
@@ -851,6 +896,22 @@ exit 0
         let state = load(&paths).expect("load state");
         assert_eq!(state.last_session_id.as_deref(), Some("session-a"));
         assert_eq!(state.last_usage_ratio, Some(59_000.0 / 200_000.0));
+
+        let second = run_checkpoint(
+            &paths,
+            &CheckpointOptions {
+                source_path: Some(source.display().to_string()),
+                session_id: Some("session-a".to_string()),
+                pressure: Some(PressureSnapshot {
+                    used_tokens: 59_000,
+                    max_tokens: 200_000,
+                }),
+                force_cleanse: false,
+                replay_has_compaction_summary: false,
+            },
+        )
+        .expect("run checkpoint again");
+        assert_eq!(second.project_status, "skipped-unchanged");
     }
 
     #[test]

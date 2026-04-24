@@ -13,7 +13,7 @@ pub const LIBRARY_EMBED_COLLECTION: &str = "history_lib";
 
 pub type EmbeddedProjectionEntries = BTreeMap<String, u64>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct RawSessionCursor {
     pub bytes: u64,
@@ -45,6 +45,7 @@ pub struct MoonState {
     pub embedded_projections: BTreeMap<String, u64>,
     pub pending_embed_collections: BTreeMap<String, u64>,
     pub managed_hot_collections: BTreeMap<String, u64>,
+    pub hot_projection_cursors: BTreeMap<String, RawSessionCursor>,
     pub raw_session_cursors: BTreeMap<String, RawSessionCursor>,
     pub inbound_seen_files: BTreeMap<String, u64>,
 }
@@ -73,6 +74,7 @@ impl Default for MoonState {
             embedded_projections: BTreeMap::new(),
             pending_embed_collections: BTreeMap::new(),
             managed_hot_collections: BTreeMap::new(),
+            hot_projection_cursors: BTreeMap::new(),
             raw_session_cursors: BTreeMap::new(),
             inbound_seen_files: BTreeMap::new(),
         }
@@ -369,6 +371,7 @@ mod tests {
         assert!(parsed.embedded_projections.is_empty());
         assert!(parsed.pending_embed_collections.is_empty());
         assert!(parsed.managed_hot_collections.is_empty());
+        assert!(parsed.hot_projection_cursors.is_empty());
         assert!(parsed.raw_session_cursors.is_empty());
     }
 
