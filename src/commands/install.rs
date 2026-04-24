@@ -12,7 +12,7 @@ use crate::assets::{write_runtime_docs, write_runtime_skills};
 use crate::commands::CommandReport;
 use crate::commands::moon_stop;
 use crate::moon::config::load_context_policy_if_explicit_env;
-use crate::moon::state::state_file_path;
+use crate::moon::state::{clear_last_usage_ratio, state_file_path};
 use crate::openclaw::config::{
     ConfigPatchOptions, apply_config_patches, ensure_moon_owned_memory_contract,
     ensure_plugin_enabled, ensure_plugin_install_record, ensure_plugin_runtime_config,
@@ -164,6 +164,15 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     }
 
     ensure_runtime_root_layout(&moon_paths, opts, &mut report)?;
+    if opts.apply && !opts.dry_run {
+        match clear_last_usage_ratio(&moon_paths) {
+            Ok(true) => report.detail(
+                "state.last_usage_ratio=cleared reason=runtime-token-source-refresh".to_string(),
+            ),
+            Ok(false) => report.detail("state.last_usage_ratio=already_unknown".to_string()),
+            Err(err) => report.issue(format!("failed to clear stale usage ratio: {err:#}")),
+        }
+    }
     ensure_runtime_docs_and_skills(&paths, &moon_paths, opts, &mut report)?;
     if let Err(err) = ensure_shell_profile_moon_home(&moon_paths, opts, &mut report) {
         report.issue(format!("shell profile setup failed: {err:#}"));

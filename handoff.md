@@ -1,5 +1,27 @@
 # Handoff
 
+## 2026-04-24 21:29 AEST
+
+- Prepared release `v1.2.2` for Moon/OpenClaw context-window usage alignment.
+- Plugin pressure handling now prefers OpenClaw runtime token snapshots:
+  - `runtimeContext.currentTokenCount`
+  - `runtimeContext.promptCache.lastCallUsage` as input + cache read + cache
+    write
+  - `runtimeContext.tokenBudget` for the active model window when present
+- When no trusted runtime used-token snapshot exists, the plugin now omits
+  cleanse pressure instead of sending a message-envelope estimate that can
+  overwrite Moon state with an inflated `last_usage_ratio`.
+- `moon install` now clears persisted `last_usage_ratio` state during runtime
+  refresh so stale pre-upgrade usage does not remain visible after install.
+- Fallback estimated-token reporting now counts visible prompt/message content
+  and ignores non-prompt metadata envelopes.
+- Added plugin regression coverage for the stale usage mismatch class:
+  - runtime `currentTokenCount` wins over metadata-heavy messages
+  - last-call prompt/cache usage derives pressure correctly
+  - no trusted runtime count means no `--used-tokens`/`--max-tokens` pressure
+  - visible-message estimates ignore metadata envelopes
+- Added Rust state coverage for clearing stale usage-ratio snapshots.
+
 ## 2026-04-24 19:09 AEST
 
 - Prepared release `v1.2.1` for the active-context packet quality and unchanged

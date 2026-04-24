@@ -850,11 +850,162 @@ function estimateMessageTokens(messages) {
     return 0;
   }
 
-  try {
-    return estimateTokens(JSON.stringify(messages));
-  } catch {
-    return 0;
+  return estimateTokens(
+    messages
+      .map((message) => extractVisibleMessageText(message))
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+}
+
+function tokenCountFromValue(value, { allowZero = false } = {}) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
   }
+  const rounded = Math.floor(parsed);
+  if (rounded > 0 || (allowZero && rounded === 0)) {
+    return rounded;
+  }
+  return null;
+}
+
+function textFromJsonValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!isObject(value) && !Array.isArray(value)) {
+    return "";
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function extractVisibleContentText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => extractVisibleContentText(item))
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (!isObject(content)) {
+    return "";
+  }
+
+  const parts = [];
+  for (const key of ["text", "input_text", "summary", "result", "output"]) {
+    if (typeof content[key] === "string") {
+      parts.push(content[key]);
+    }
+  }
+  if (Array.isArray(content.content) || typeof content.content === "string") {
+    parts.push(extractVisibleContentText(content.content));
+  }
+  if (isNonEmptyString(content.name)) {
+    parts.push(`name: ${content.name.trim()}`);
+  }
+  if (content.arguments !== undefined) {
+    parts.push(textFromJsonValue(content.arguments));
+  }
+  if (content.input !== undefined && content.input !== content.content) {
+    parts.push(textFromJsonValue(content.input));
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
+function extractVisibleMessageText(message) {
+  if (!isObject(message)) {
+    return "";
+  }
+
+  const parts = [];
+  if (isNonEmptyString(message.role)) {
+    parts.push(`role: ${message.role.trim()}`);
+  }
+  if (isNonEmptyString(message.name)) {
+    parts.push(`name: ${message.name.trim()}`);
+  }
+  parts.push(extractVisibleContentText(message.content));
+  if (typeof message.summary === "string") {
+    parts.push(message.summary);
+  }
+  if (Array.isArray(message.toolCalls)) {
+    parts.push(extractVisibleContentText(message.toolCalls));
+  }
+  if (message.toolCall !== undefined) {
+    parts.push(extractVisibleContentText(message.toolCall));
+  }
+  if (message.function_call !== undefined) {
+    parts.push(extractVisibleContentText(message.function_call));
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
+function derivePromptTokensFromUsage(usage) {
+  if (!isObject(usage)) {
+    return null;
+  }
+  const input = tokenCountFromValue(usage.input, { allowZero: true }) ?? 0;
+  const cacheRead = tokenCountFromValue(usage.cacheRead, { allowZero: true }) ??
+    0;
+  const cacheWrite =
+    tokenCountFromValue(usage.cacheWrite, { allowZero: true }) ?? 0;
+  const promptTokens = input + cacheRead + cacheWrite;
+  return promptTokens > 0 ? promptTokens : null;
+}
+
+function resolveRuntimeUsedTokens(runtimeContext) {
+  if (!isObject(runtimeContext)) {
+    return null;
+  }
+
+  const currentTokenCount = tokenCountFromValue(
+    runtimeContext.currentTokenCount,
+  );
+  if (currentTokenCount !== null) {
+    return {
+      usedTokens: currentTokenCount,
+      source: "runtime-current-token-count",
+    };
+  }
+
+  const promptTokens = derivePromptTokensFromUsage(
+    runtimeContext.promptCache?.lastCallUsage,
+  );
+  if (promptTokens !== null) {
+    return {
+      usedTokens: promptTokens,
+      source: "runtime-last-call-usage",
+    };
+  }
+
+  return null;
+}
+
+function resolveRuntimeTokenBudget(params) {
+  return tokenCountFromValue(params?.runtimeContext?.tokenBudget) ??
+    tokenCountFromValue(params?.tokenBudget);
+}
+
+function resolveTrustedPressure(params) {
+  const runtimePressure = resolveRuntimeUsedTokens(params?.runtimeContext);
+  if (!runtimePressure) {
+    return {
+      usedTokens: null,
+      maxTokens: resolveRuntimeTokenBudget(params),
+      source: "unavailable",
+    };
+  }
+  return {
+    ...runtimePressure,
+    maxTokens: resolveRuntimeTokenBudget(params),
+  };
 }
 
 function logMoonPluginError(api, message) {
@@ -1411,7 +1562,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.2.1",
+      version: "1.2.2",
       ownsCompaction: true,
     },
     bootstrap(params) {
@@ -1427,15 +1578,16 @@ function createMoonContextEngine(api) {
     },
     async assemble(params) {
       const settings = resolveContextEngineSettings(api);
-      const usedTokens = estimateMessageTokens(params.messages);
+      const pressure = resolveTrustedPressure(params);
+      const estimatedTokens = estimateMessageTokens(params.messages);
       try {
         const output = await runMoonContextEngine(api, settings, {
           sessionId: params.sessionId,
           sessionKey: params.sessionKey,
           sourcePath: knownSessionFile(params.sessionId),
           messages: params.messages,
-          usedTokens,
-          maxTokens: params.tokenBudget,
+          usedTokens: pressure.usedTokens,
+          maxTokens: pressure.maxTokens,
           replayHasCompactionSummary: messagesContainCompactionSummary(
             params.messages,
           ),
@@ -1480,7 +1632,7 @@ function createMoonContextEngine(api) {
         );
         return {
           messages: Array.isArray(params.messages) ? params.messages : [],
-          estimatedTokens: usedTokens,
+          estimatedTokens,
         };
       }
     },
@@ -1493,12 +1645,13 @@ function createMoonContextEngine(api) {
       }
 
       try {
+        const pressure = resolveTrustedPressure(params);
         await runMoonContextSync(api, settings, {
           sessionId: params.sessionId,
           sourcePath: params.sessionFile,
           messages: params.messages,
-          usedTokens: estimateMessageTokens(params.messages),
-          maxTokens: params.tokenBudget,
+          usedTokens: pressure.usedTokens,
+          maxTokens: pressure.maxTokens,
           replayHasCompactionSummary: messagesContainCompactionSummary(
             params.messages,
           ),
@@ -1518,21 +1671,23 @@ function createMoonContextEngine(api) {
       const settings = resolveContextEngineSettings(api);
 
       try {
+        const pressure = resolveTrustedPressure(params);
+        const currentTokenCount =
+          tokenCountFromValue(params.currentTokenCount) ??
+            pressure.usedTokens;
         const output = await runMoonContextEngine(api, settings, {
           sessionId: params.sessionId,
           sourcePath: params.sessionFile || knownSessionFile(params.sessionId),
           messages: [],
-          usedTokens: Number.isFinite(params.currentTokenCount)
-            ? params.currentTokenCount
-            : null,
-          maxTokens: params.tokenBudget,
+          usedTokens: currentTokenCount,
+          maxTokens: pressure.maxTokens,
           forceCleanse: params.force === true,
           replayHasCompactionSummary: true,
         });
 
         const compacted = appendMoonCompactionEntry(params.sessionFile, {
           tokenBudget: params.tokenBudget,
-          tokensBefore: params.currentTokenCount,
+          tokensBefore: currentTokenCount,
           sessionId: params.sessionId,
           cleanseSummaryPath: output.cleanseSummaryPath,
           cleanseSummaryText: output.cleanseSummaryText,
@@ -1617,7 +1772,9 @@ export const __moonTest = {
   appendMoonCompactionEntry,
   buildMoonPacketMessage,
   createMoonContextEngine,
+  derivePromptTokensFromUsage,
   extractMessageText,
+  estimateMessageTokens,
   extractReportDetail,
   injectMoonPacketMessage,
   isRecallHeavyPrompt,
@@ -1626,6 +1783,8 @@ export const __moonTest = {
   parseJsonlEntries,
   parseCommandReport,
   resolveContextEngineSettings,
+  resolveRuntimeUsedTokens,
+  resolveTrustedPressure,
   serializeMessagesAsJsonl,
   stripFrontMatter,
   logMoonPluginError,

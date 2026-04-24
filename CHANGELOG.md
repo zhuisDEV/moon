@@ -7,6 +7,22 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-04-24
+
+### Fixed
+
+- Moon's OpenClaw plugin now uses OpenClaw runtime token snapshots for cleanse
+  pressure when available, including `currentTokenCount` and last-call
+  prompt/cache usage.
+- The plugin no longer turns metadata-heavy message JSON into cleanse pressure
+  when no trusted runtime token count is available, preventing stale inflated
+  `last_usage_ratio` state from repeatedly triggering cleanse.
+- Fallback token estimates now count visible prompt content instead of the full
+  message envelope.
+- `moon install` now clears any persisted `last_usage_ratio` snapshot so an
+  upgrade starts from unknown usage until OpenClaw provides a fresh runtime
+  count.
+
 ## [1.2.1] - 2026-04-24
 
 ### Added

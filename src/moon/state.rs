@@ -351,9 +351,41 @@ pub fn save(paths: &MoonPaths, state: &MoonState) -> Result<PathBuf> {
     Ok(file)
 }
 
+pub fn clear_last_usage_ratio(paths: &MoonPaths) -> Result<bool> {
+    let mut state = load(paths)?;
+    if state.last_usage_ratio.is_none() {
+        return Ok(false);
+    }
+    state.last_usage_ratio = None;
+    save(paths, &state)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::MoonState;
+    use super::{MoonState, clear_last_usage_ratio, load, save};
+    use crate::moon::paths::MoonPaths;
+    use std::path::{Path, PathBuf};
+
+    fn test_paths(root: &Path) -> MoonPaths {
+        MoonPaths {
+            moon_home: root.to_path_buf(),
+            raw_dir: root.join("raw"),
+            mds_dir: root.join("mds"),
+            mlib_dir: root.join("mlib"),
+            cleanse_dir: root.join("cleanse"),
+            memory_dir: root.join("memory"),
+            memory_file: root.join("MEMORY.md"),
+            logs_dir: root.join("logs"),
+            context_engine_dir: root.join("mce"),
+            context_packet_dir: root.join("mcp"),
+            openclaw_sessions_dir: root.join("sessions"),
+            qmd_bin: PathBuf::from("qmd"),
+            qmd_db: root.join("qmd/index.sqlite"),
+            qmd_config_dir: root.join("qmd/config"),
+            moon_home_is_explicit: true,
+        }
+    }
 
     #[test]
     fn deserializes_v1_state_with_embed_defaults() {
@@ -386,5 +418,21 @@ mod tests {
         assert!(!super::is_hot_embed_collection("history"));
         assert!(super::is_hot_embed_collection("history_hot"));
         assert!(super::is_hot_embed_collection("history_hot_abc"));
+    }
+
+    #[test]
+    fn clear_last_usage_ratio_removes_stale_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = test_paths(temp.path());
+        let mut state = MoonState {
+            last_usage_ratio: Some(0.887615),
+            ..MoonState::default()
+        };
+        save(&paths, &state).expect("save state");
+
+        assert!(clear_last_usage_ratio(&paths).expect("clear stale ratio"));
+        state = load(&paths).expect("reload state");
+        assert_eq!(state.last_usage_ratio, None);
+        assert!(!clear_last_usage_ratio(&paths).expect("already clear"));
     }
 }

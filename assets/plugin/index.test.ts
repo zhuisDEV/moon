@@ -37,6 +37,14 @@ function assertStringIncludes(
   }
 }
 
+function argValue(argv: string[], flag: string): string | null {
+  const index = argv.indexOf(flag);
+  if (index < 0) {
+    return null;
+  }
+  return argv[index + 1] ?? null;
+}
+
 async function readPluginManifest() {
   const manifestUrl = new URL("./openclaw.plugin.json", import.meta.url);
   return JSON.parse(await Deno.readTextFile(manifestUrl));
@@ -489,6 +497,136 @@ Deno.test("moon plugin afterTurn uses sync-only context-engine mode", async () =
   assert(
     calls[0].argv.includes("--sync-only"),
     "afterTurn should use sync-only checkpoint mode",
+  );
+});
+
+Deno.test("moon plugin afterTurn prefers OpenClaw runtime context tokens for cleanse pressure", async () => {
+  const stdout = JSON.stringify({
+    command: "context-engine",
+    ok: true,
+    details: [
+      "context_engine.sync_only=true",
+      "context_engine.session_id=session-1",
+      "context_engine.record_target_path=/tmp/moon/raw/session-1.jsonl",
+      "context_engine.project_path=/tmp/moon/mds/history_hot_session-1/session.md",
+      "context_engine.sync_reason=sync-only skipped-assemble skipped-packet skipped-cleanse",
+    ],
+    issues: [],
+  });
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+  await engine.afterTurn({
+    sessionId: "session-1",
+    sessionFile: "/tmp/moon/session-1.jsonl",
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "small visible prompt" }],
+      metadata: "x".repeat(250_000),
+    }],
+    tokenBudget: 20_000,
+    runtimeContext: {
+      currentTokenCount: 48_105,
+      tokenBudget: 200_000,
+    },
+  });
+
+  assertEquals(calls.length, 1, "afterTurn should invoke context-engine once");
+  assertEquals(argValue(calls[0].argv, "--used-tokens"), "48105");
+  assertEquals(argValue(calls[0].argv, "--max-tokens"), "200000");
+});
+
+Deno.test("moon plugin afterTurn derives runtime pressure from last-call usage", async () => {
+  const stdout = JSON.stringify({
+    command: "context-engine",
+    ok: true,
+    details: [
+      "context_engine.sync_only=true",
+      "context_engine.session_id=session-1",
+      "context_engine.record_target_path=/tmp/moon/raw/session-1.jsonl",
+      "context_engine.project_path=/tmp/moon/mds/history_hot_session-1/session.md",
+      "context_engine.sync_reason=sync-only skipped-assemble skipped-packet skipped-cleanse",
+    ],
+    issues: [],
+  });
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+  await engine.afterTurn({
+    sessionId: "session-1",
+    sessionFile: "/tmp/moon/session-1.jsonl",
+    messages: [{
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+    }],
+    tokenBudget: 200_000,
+    runtimeContext: {
+      promptCache: {
+        lastCallUsage: {
+          input: 1_000,
+          output: 44,
+          cacheRead: 500,
+          cacheWrite: 200,
+          total: 1_744,
+        },
+      },
+    },
+  });
+
+  assertEquals(argValue(calls[0].argv, "--used-tokens"), "1700");
+  assertEquals(argValue(calls[0].argv, "--max-tokens"), "200000");
+});
+
+Deno.test("moon plugin skips cleanse pressure when no trusted runtime token count exists", async () => {
+  const stdout = JSON.stringify({
+    command: "context-engine",
+    ok: true,
+    details: [
+      "context_engine.sync_only=true",
+      "context_engine.session_id=session-1",
+      "context_engine.record_target_path=/tmp/moon/raw/session-1.jsonl",
+      "context_engine.project_path=/tmp/moon/mds/history_hot_session-1/session.md",
+      "context_engine.sync_reason=sync-only skipped-assemble skipped-packet skipped-cleanse",
+    ],
+    issues: [],
+  });
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+  await engine.afterTurn({
+    sessionId: "session-1",
+    sessionFile: "/tmp/moon/session-1.jsonl",
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "small visible prompt" }],
+      metadata: "x".repeat(250_000),
+    }],
+    tokenBudget: 200_000,
+  });
+
+  assert(
+    !calls[0].argv.includes("--used-tokens"),
+    "metadata-heavy message JSON must not become cleanse pressure",
+  );
+  assert(
+    !calls[0].argv.includes("--max-tokens"),
+    "max tokens should only be sent with trusted used tokens",
+  );
+});
+
+Deno.test("moon plugin visible-message token estimate ignores non-prompt metadata envelope", () => {
+  const estimated = __moonTest.estimateMessageTokens([{
+    role: "user",
+    content: [{ type: "text", text: "small visible prompt" }],
+    metadata: "x".repeat(250_000),
+    details: {
+      providerTrace: "y".repeat(250_000),
+    },
+  }]);
+
+  assert(
+    estimated < 50,
+    `visible estimate should stay small, got ${estimated}`,
   );
 });
 
