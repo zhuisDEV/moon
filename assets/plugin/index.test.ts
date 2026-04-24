@@ -246,6 +246,16 @@ Deno.test("moon plugin owns compaction and appends a Moon compaction entry", asy
       calls[0].argv.includes("--force-cleanse"),
       "compact should force Moon cleanse",
     );
+    assertEquals(
+      argValue(calls[0].argv, "--used-tokens"),
+      null,
+      "compact should not turn untrusted currentTokenCount into cleanse pressure",
+    );
+    assertEquals(
+      argValue(calls[0].argv, "--max-tokens"),
+      null,
+      "compact should not send max tokens without trusted provider usage",
+    );
 
     const entries = __moonTest.parseJsonlEntries(
       await Deno.readTextFile(sessionFile),
@@ -299,8 +309,9 @@ Deno.test("moon plugin requests OpenClaw fallback when Moon does not emit a clea
       ],
       issues: [],
     });
+    const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
     const engine = __moonTest.createMoonContextEngine(
-      createApi(stdout, [], {
+      createApi(stdout, calls, {
         fallbackMode: "openclaw",
         compactFallbackOnSkip: true,
       }),
@@ -318,7 +329,7 @@ Deno.test("moon plugin requests OpenClaw fallback when Moon does not emit a clea
         sessionId: "session-1",
         sessionFile,
         tokenBudget: 20_000,
-        currentTokenCount: 5_000,
+        currentTokenCount: 189_133,
         force: false,
       });
 
@@ -333,6 +344,8 @@ Deno.test("moon plugin requests OpenClaw fallback when Moon does not emit a clea
         "moon->openclaw fallback trigger=compact-skip",
       );
       assertStringIncludes(result.reason ?? "", "moon cleanse did not trigger");
+      assertEquals(argValue(calls[0].argv, "--used-tokens"), null);
+      assertEquals(argValue(calls[0].argv, "--max-tokens"), null);
     } finally {
       console.error = originalConsoleError;
     }
@@ -500,7 +513,7 @@ Deno.test("moon plugin afterTurn uses sync-only context-engine mode", async () =
   );
 });
 
-Deno.test("moon plugin afterTurn prefers OpenClaw runtime context tokens for cleanse pressure", async () => {
+Deno.test("moon plugin afterTurn ignores untrusted currentTokenCount without provider usage", async () => {
   const stdout = JSON.stringify({
     command: "context-engine",
     ok: true,
@@ -532,8 +545,8 @@ Deno.test("moon plugin afterTurn prefers OpenClaw runtime context tokens for cle
   });
 
   assertEquals(calls.length, 1, "afterTurn should invoke context-engine once");
-  assertEquals(argValue(calls[0].argv, "--used-tokens"), "48105");
-  assertEquals(argValue(calls[0].argv, "--max-tokens"), "200000");
+  assertEquals(argValue(calls[0].argv, "--used-tokens"), null);
+  assertEquals(argValue(calls[0].argv, "--max-tokens"), null);
 });
 
 Deno.test("moon plugin afterTurn derives runtime pressure from last-call usage", async () => {
@@ -574,6 +587,49 @@ Deno.test("moon plugin afterTurn derives runtime pressure from last-call usage",
   });
 
   assertEquals(argValue(calls[0].argv, "--used-tokens"), "1700");
+  assertEquals(argValue(calls[0].argv, "--max-tokens"), "200000");
+});
+
+Deno.test("moon plugin afterTurn prefers provider usage over inflated currentTokenCount", async () => {
+  const stdout = JSON.stringify({
+    command: "context-engine",
+    ok: true,
+    details: [
+      "context_engine.sync_only=true",
+      "context_engine.session_id=session-1",
+      "context_engine.record_target_path=/tmp/moon/raw/session-1.jsonl",
+      "context_engine.project_path=/tmp/moon/mds/history_hot_session-1/session.md",
+      "context_engine.sync_reason=sync-only skipped-assemble skipped-packet skipped-cleanse",
+    ],
+    issues: [],
+  });
+  const calls: Array<{ argv: string[]; timeoutMs: number }> = [];
+  const engine = __moonTest.createMoonContextEngine(createApi(stdout, calls));
+
+  await engine.afterTurn({
+    sessionId: "session-1",
+    sessionFile: "/tmp/moon/session-1.jsonl",
+    messages: [{
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+    }],
+    tokenBudget: 200_000,
+    runtimeContext: {
+      currentTokenCount: 189_133,
+      tokenBudget: 200_000,
+      promptCache: {
+        lastCallUsage: {
+          input: 64_587,
+          output: 106,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 64_693,
+        },
+      },
+    },
+  });
+
+  assertEquals(argValue(calls[0].argv, "--used-tokens"), "64587");
   assertEquals(argValue(calls[0].argv, "--max-tokens"), "200000");
 });
 

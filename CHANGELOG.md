@@ -7,6 +7,19 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-04-24
+
+### Fixed
+
+- Moon's OpenClaw plugin now treats provider `promptCache.lastCallUsage` as the
+  only trusted active-window pressure source.
+- Untrusted `currentTokenCount` estimates are no longer forwarded to
+  `moon context-engine` as `--used-tokens`, preventing transcript-level
+  estimates from inflating `last_usage_ratio` and triggering unnecessary
+  cleanse.
+- Forced compaction can still retain `currentTokenCount` as a local
+  `tokensBefore` metric, but it no longer drives Moon cleanse thresholds.
+
 ## [1.2.2] - 2026-04-24
 
 ### Fixed

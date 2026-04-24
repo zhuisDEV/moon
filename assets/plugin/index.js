@@ -965,16 +965,6 @@ function resolveRuntimeUsedTokens(runtimeContext) {
     return null;
   }
 
-  const currentTokenCount = tokenCountFromValue(
-    runtimeContext.currentTokenCount,
-  );
-  if (currentTokenCount !== null) {
-    return {
-      usedTokens: currentTokenCount,
-      source: "runtime-current-token-count",
-    };
-  }
-
   const promptTokens = derivePromptTokensFromUsage(
     runtimeContext.promptCache?.lastCallUsage,
   );
@@ -1006,6 +996,13 @@ function resolveTrustedPressure(params) {
     ...runtimePressure,
     maxTokens: resolveRuntimeTokenBudget(params),
   };
+}
+
+function resolveCompactionMetricTokenCount(params) {
+  return resolveRuntimeUsedTokens(params?.runtimeContext)?.usedTokens ??
+    tokenCountFromValue(params?.currentTokenCount) ??
+    tokenCountFromValue(params?.runtimeContext?.currentTokenCount) ??
+    null;
 }
 
 function logMoonPluginError(api, message) {
@@ -1562,7 +1559,7 @@ function createMoonContextEngine(api) {
     info: {
       id: "moon",
       name: "Moon Context Engine",
-      version: "1.2.2",
+      version: "1.2.3",
       ownsCompaction: true,
     },
     bootstrap(params) {
@@ -1672,14 +1669,13 @@ function createMoonContextEngine(api) {
 
       try {
         const pressure = resolveTrustedPressure(params);
-        const currentTokenCount =
-          tokenCountFromValue(params.currentTokenCount) ??
-            pressure.usedTokens;
+        const currentTokenCount = pressure.usedTokens ??
+          resolveCompactionMetricTokenCount(params);
         const output = await runMoonContextEngine(api, settings, {
           sessionId: params.sessionId,
           sourcePath: params.sessionFile || knownSessionFile(params.sessionId),
           messages: [],
-          usedTokens: currentTokenCount,
+          usedTokens: pressure.usedTokens,
           maxTokens: pressure.maxTokens,
           forceCleanse: params.force === true,
           replayHasCompactionSummary: true,
@@ -1687,7 +1683,7 @@ function createMoonContextEngine(api) {
 
         const compacted = appendMoonCompactionEntry(params.sessionFile, {
           tokenBudget: params.tokenBudget,
-          tokensBefore: currentTokenCount,
+          tokensBefore: currentTokenCount ?? 0,
           sessionId: params.sessionId,
           cleanseSummaryPath: output.cleanseSummaryPath,
           cleanseSummaryText: output.cleanseSummaryText,

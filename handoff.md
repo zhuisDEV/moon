@@ -1,5 +1,37 @@
 # Handoff
 
+## 2026-04-24 22:08 AEST
+
+- Prepared release `v1.2.3` for the remaining Moon/OpenClaw usage-pressure
+  mismatch.
+- Root cause from live session `843ed391-6ab4-401f-aa98-1b528f65020b`:
+  - OpenClaw provider usage reported `64,587` prompt tokens and matched
+    `/status` at about `65k/200k`.
+  - Moon stored `last_usage_ratio=0.945665`, which implies `189,133/200,000`.
+  - The inflated value came from an untrusted `currentTokenCount` estimate path,
+    not from provider `promptCache.lastCallUsage`.
+- Plugin pressure handling changed:
+  - `promptCache.lastCallUsage` is now the only trusted source for
+    `--used-tokens`.
+  - `currentTokenCount` is no longer forwarded to `moon context-engine` as
+    cleanse pressure.
+  - forced compaction may still keep `currentTokenCount` as a local
+    `tokensBefore` metric, but it cannot update Moon `last_usage_ratio` or trip
+    cleanse thresholds.
+- Added plugin regression coverage proving:
+  - current-token-count alone sends no pressure
+  - provider last-call usage still sends pressure
+  - provider usage wins over the observed inflated `189,133` estimate
+  - compact skip/fallback does not forward inflated current-token pressure
+- Validation completed:
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts CHANGELOG.md handoff.md`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `cargo fmt --all -- --check`
+  - `cargo test checkpoint_records_and_assembles_without_cleanse_below_trigger -- --nocapture`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+
 ## 2026-04-24 21:29 AEST
 
 - Prepared release `v1.2.2` for Moon/OpenClaw context-window usage alignment.
