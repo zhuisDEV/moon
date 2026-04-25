@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use chrono::{Duration, LocalResult, NaiveDate, TimeZone};
+use chrono_tz::Tz;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,6 +19,7 @@ const MAX_DOC_LINE_CHARS: usize = 220;
 const MAX_QMD_SNIPPET_CHARS: usize = 220;
 const PRIMARY_SOURCE_LIMIT: usize = 4;
 const FALLBACK_SOURCE_LIMIT: usize = 2;
+const PACKET_GENERATION_VERSION: u8 = 1;
 
 #[derive(Debug, Clone)]
 pub struct ContextPacketInput {
@@ -24,6 +27,7 @@ pub struct ContextPacketInput {
     pub raw_source_path: PathBuf,
     pub cleanse_summary_path: Option<PathBuf>,
     pub replay_has_compaction_summary: bool,
+    pub residential_timezone: String,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +103,21 @@ struct PacketBuild {
     qmd_query_count: usize,
     positive_candidate_count: usize,
     top_score: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TemporalQueryHint {
+    target_local_day: Option<NaiveDate>,
+    target_day_token: Option<String>,
+    channel_hint: Option<String>,
+    relative_day: Option<RelativeDayHint>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelativeDayHint {
+    Yesterday,
+    Today,
+    Tomorrow,
 }
 
 #[derive(Debug, Clone)]
@@ -239,8 +258,11 @@ pub fn build_context_packet_from_projection(
     projection: &ProjectionData,
 ) -> Result<ContextPacketOutput> {
     let query = build_query_text(projection);
+    let residential_tz = parse_residential_tz(&input.residential_timezone);
+    let temporal_hint = extract_temporal_hint(&query, projection, residential_tz);
     let primary_family = route_source_family(&query, projection);
-    let generation = build_packet_generation(paths, state, cfg, input, projection, &query)?;
+    let generation =
+        build_packet_generation(paths, state, cfg, input, projection, &query, &temporal_hint)?;
     let packet_path = output_path(paths, &input.session_id);
     if state.last_context_packet_session_id.as_deref() == Some(input.session_id.as_str())
         && state.last_context_packet_generation.as_deref() == Some(generation.as_str())
@@ -267,7 +289,7 @@ pub fn build_context_packet_from_projection(
         });
     }
 
-    let query_terms = query_terms(&query, projection);
+    let query_terms = query_terms(&query, projection, &temporal_hint);
     let build = build_sections(
         paths,
         state,
@@ -276,6 +298,8 @@ pub fn build_context_packet_from_projection(
         projection,
         &query_terms,
         primary_family,
+        &temporal_hint,
+        residential_tz,
     )?;
     let content = render_packet(&build.sections, cfg.max_chars);
 
@@ -306,6 +330,8 @@ fn build_sections(
     projection: &ProjectionData,
     query_terms: &[String],
     primary_family: SourceFamily,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
 ) -> Result<PacketBuild> {
     let current_goal = latest_goal_lines(projection, 2);
     let active_work = recent_activity_lines(projection, query_terms, 5);
@@ -320,11 +346,21 @@ fn build_sections(
         projection,
         query_terms,
         primary_family,
+        temporal_hint,
+        residential_tz,
     )?;
     let fallback_source = collector.fallback_source.clone();
     let source_read_count = collector.source_read_count;
     let qmd_query_count = collector.qmd_query_count;
-    let candidates = collector.into_sorted_candidates();
+    let candidates = apply_session_focus(
+        apply_primary_filters(
+            collector.into_sorted_candidates(),
+            temporal_hint,
+            residential_tz,
+        ),
+        &input.session_id,
+        temporal_hint,
+    );
     let candidate_count = candidates.len();
     let positive_candidate_count = candidate_count;
     let top_score = candidates
@@ -352,12 +388,12 @@ fn build_sections(
                 truncate_with_ellipsis(&candidate.text, MAX_DOC_LINE_CHARS)
             ));
         }
-        if open_items.len() < 6 && looks_actionable(&candidate.text) {
+        if open_items.len() < 6 && looks_actionable_open_item(&candidate.text) {
             open_items.push(truncate_with_ellipsis(&candidate.text, MAX_DOC_LINE_CHARS));
         }
     }
 
-    if open_items.is_empty() {
+    if open_items.is_empty() && !has_primary_constraints(temporal_hint) {
         open_items = extract_open_items_from_projection(projection, 4);
     }
 
@@ -399,13 +435,21 @@ fn collect_candidates(
     projection: &ProjectionData,
     query_terms: &[String],
     primary_family: SourceFamily,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
 ) -> Result<CandidateCollector> {
     let mut collector = CandidateCollector::new(primary_family);
     let qmd_query = build_qmd_query(projection, query_terms);
 
     match primary_family {
         SourceFamily::Hot => {
-            let summary = collect_hot_candidates(projection, query_terms, &mut collector);
+            let summary = collect_hot_candidates(
+                projection,
+                query_terms,
+                temporal_hint,
+                residential_tz,
+                &mut collector,
+            );
             if summary.positive_count == 0
                 && !input.replay_has_compaction_summary
                 && let Some(path) = input.cleanse_summary_path.as_ref()
@@ -418,6 +462,8 @@ fn collect_candidates(
                     &label,
                     query_terms,
                     FALLBACK_SOURCE_LIMIT,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -432,8 +478,33 @@ fn collect_candidates(
                 "memory",
                 query_terms,
                 PRIMARY_SOURCE_LIMIT,
+                temporal_hint,
+                residential_tz,
                 &mut collector,
             )?;
+            if primary.positive_count == 0
+                && let Some(target_day) = temporal_hint.target_local_day
+            {
+                let target_daily_path = paths
+                    .memory_dir
+                    .join(format!("{}.md", target_day.format("%Y-%m-%d")));
+                if target_daily_path.is_file() && target_daily_path != paths.memory_file {
+                    let label = short_source_label("memory", &target_daily_path);
+                    let targeted = collect_markdown_candidates_from_path(
+                        &target_daily_path,
+                        "memory-daily",
+                        &label,
+                        query_terms,
+                        PRIMARY_SOURCE_LIMIT,
+                        temporal_hint,
+                        residential_tz,
+                        &mut collector,
+                    )?;
+                    if targeted.candidate_count > 0 {
+                        collector.mark_fallback(label);
+                    }
+                }
+            }
             if primary.positive_count == 0
                 && let Some(path) = newest_daily_memory_file(paths, cfg)?
             {
@@ -444,6 +515,8 @@ fn collect_candidates(
                     &label,
                     query_terms,
                     FALLBACK_SOURCE_LIMIT,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -460,6 +533,8 @@ fn collect_candidates(
                     &label,
                     query_terms,
                     PRIMARY_SOURCE_LIMIT,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 )?
             } else {
@@ -473,6 +548,8 @@ fn collect_candidates(
                     &qmd_query,
                     cfg.qmd_limit,
                     query_terms,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 );
                 if fallback.candidate_count > 0 {
@@ -489,11 +566,36 @@ fn collect_candidates(
                     &label,
                     query_terms,
                     PRIMARY_SOURCE_LIMIT,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 )?
             } else {
                 SourceCollectionSummary::empty()
             };
+            if primary.positive_count == 0
+                && let Some(target_day) = temporal_hint.target_local_day
+            {
+                let target_daily_path = paths
+                    .memory_dir
+                    .join(format!("{}.md", target_day.format("%Y-%m-%d")));
+                if target_daily_path.is_file() && target_daily_path != paths.memory_file {
+                    let label = short_source_label("memory", &target_daily_path);
+                    let targeted = collect_markdown_candidates_from_path(
+                        &target_daily_path,
+                        "memory-daily",
+                        &label,
+                        query_terms,
+                        FALLBACK_SOURCE_LIMIT,
+                        temporal_hint,
+                        residential_tz,
+                        &mut collector,
+                    )?;
+                    if targeted.candidate_count > 0 {
+                        collector.mark_fallback(label);
+                    }
+                }
+            }
             if primary.positive_count == 0
                 && let Some(path) = newest_daily_memory_file(paths, cfg)?
             {
@@ -504,6 +606,8 @@ fn collect_candidates(
                     &label,
                     query_terms,
                     FALLBACK_SOURCE_LIMIT,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -519,6 +623,8 @@ fn collect_candidates(
                 &qmd_query,
                 cfg.qmd_limit,
                 query_terms,
+                temporal_hint,
+                residential_tz,
                 &mut collector,
             );
             if hot.positive_count == 0 && cfg.qmd_limit > 0 {
@@ -529,6 +635,8 @@ fn collect_candidates(
                     &qmd_query,
                     cfg.qmd_limit,
                     query_terms,
+                    temporal_hint,
+                    residential_tz,
                     &mut collector,
                 );
                 if lib.candidate_count > 0 {
@@ -544,6 +652,8 @@ fn collect_candidates(
 fn collect_hot_candidates(
     projection: &ProjectionData,
     query_terms: &[String],
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
     collector: &mut CandidateCollector,
 ) -> SourceCollectionSummary {
     let hot_candidates = projection
@@ -556,10 +666,26 @@ fn collect_hot_candidates(
         .collect::<Vec<_>>();
     let mut summary = SourceCollectionSummary::empty();
     for text in hot_candidates.into_iter().rev() {
-        if !candidate_is_relevant("hot", collector.primary_family, &text, query_terms) {
+        if !candidate_is_relevant(
+            "hot",
+            "hot",
+            collector.primary_family,
+            &text,
+            query_terms,
+            temporal_hint,
+            residential_tz,
+        ) {
             continue;
         }
-        let score = score_text("hot", &text, query_terms, collector.primary_family);
+        let score = score_text(
+            "hot",
+            "hot",
+            &text,
+            query_terms,
+            collector.primary_family,
+            temporal_hint,
+            residential_tz,
+        );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
             source_kind: "hot",
@@ -577,6 +703,8 @@ fn collect_markdown_candidates_from_path(
     source_label: &str,
     query_terms: &[String],
     limit: usize,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
     collector: &mut CandidateCollector,
 ) -> Result<SourceCollectionSummary> {
     if !path.is_file() {
@@ -584,22 +712,35 @@ fn collect_markdown_candidates_from_path(
     }
     collector.note_file_read();
     let body = read_markdown_body(path)?;
-    let selected = select_doc_candidates(&body, query_terms, limit);
+    let selected = select_doc_candidates(
+        &body,
+        query_terms,
+        limit,
+        source_label,
+        temporal_hint,
+        residential_tz,
+    );
     let mut summary = SourceCollectionSummary::empty();
     for line in selected {
         if !candidate_is_relevant(
             source_kind,
+            source_label,
             collector.primary_family,
             &line.text,
             query_terms,
+            temporal_hint,
+            residential_tz,
         ) {
             continue;
         }
         let score = score_text(
             source_kind,
+            source_label,
             &line.text,
             query_terms,
             collector.primary_family,
+            temporal_hint,
+            residential_tz,
         );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
@@ -619,6 +760,8 @@ fn collect_qmd_candidates(
     query: &str,
     limit: usize,
     query_terms: &[String],
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
     collector: &mut CandidateCollector,
 ) -> SourceCollectionSummary {
     if query.trim().is_empty() {
@@ -631,18 +774,35 @@ fn collect_qmd_candidates(
     collector.note_qmd_query();
     let mut summary = SourceCollectionSummary::empty();
     for hit in parse_qmd_hits(&exec.stdout) {
-        if !candidate_is_relevant("qmd", collector.primary_family, &hit.text, query_terms) {
+        let resolved_label = if hit.source_label.is_empty() {
+            source_label.to_string()
+        } else {
+            format!("{source_label}:{}", hit.source_label)
+        };
+        if !candidate_is_relevant(
+            "qmd",
+            &resolved_label,
+            collector.primary_family,
+            &hit.text,
+            query_terms,
+            temporal_hint,
+            residential_tz,
+        ) {
             continue;
         }
-        let score = score_text("qmd", &hit.text, query_terms, collector.primary_family);
+        let score = score_text(
+            "qmd",
+            &resolved_label,
+            &hit.text,
+            query_terms,
+            collector.primary_family,
+            temporal_hint,
+            residential_tz,
+        );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
             source_kind: "qmd",
-            source_label: if hit.source_label.is_empty() {
-                source_label.to_string()
-            } else {
-                format!("{source_label}:{}", hit.source_label)
-            },
+            source_label: resolved_label,
             score,
             text: hit.text,
         });
@@ -693,9 +853,11 @@ fn build_packet_generation(
     input: &ContextPacketInput,
     projection: &ProjectionData,
     query: &str,
+    temporal_hint: &TemporalQueryHint,
 ) -> Result<String> {
     let primary_family = route_source_family(query, projection);
     let mut parts = vec![
+        format!("v={PACKET_GENERATION_VERSION}"),
         format!("session={}", input.session_id),
         format!("raw={}", file_epoch_secs(&input.raw_source_path)),
         format!(
@@ -709,6 +871,21 @@ fn build_packet_generation(
         format!("embed={}", state.last_embed_trigger_epoch_secs.unwrap_or(0)),
         format!("query={}", truncate_with_ellipsis(query, MAX_QUERY_CHARS)),
         format!("topics={}", projection.topics.join(",")),
+        format!("tz={}", input.residential_timezone),
+        format!(
+            "target_day={}",
+            temporal_hint
+                .target_day_token
+                .clone()
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "target_channel={}",
+            temporal_hint
+                .channel_hint
+                .clone()
+                .unwrap_or_else(|| "none".to_string())
+        ),
         format!("primary={}", primary_family.as_str()),
         format!(
             "cfg={}/{}/{}/{}",
@@ -866,8 +1043,251 @@ fn build_qmd_query(projection: &ProjectionData, query_terms: &[String]) -> Strin
     truncate_with_ellipsis(&terms.join(" "), MAX_QUERY_CHARS)
 }
 
-fn query_terms(query: &str, projection: &ProjectionData) -> Vec<String> {
+fn parse_residential_tz(raw: &str) -> Tz {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        chrono_tz::UTC
+    } else {
+        trimmed.parse::<Tz>().unwrap_or(chrono_tz::UTC)
+    }
+}
+
+fn extract_temporal_hint(
+    query: &str,
+    projection: &ProjectionData,
+    residential_tz: Tz,
+) -> TemporalQueryHint {
+    let anchor_local_day = projection
+        .time_end_epoch
+        .and_then(|epoch| local_day_for_epoch(epoch, residential_tz))
+        .or_else(|| {
+            projection
+                .time_start_epoch
+                .and_then(|epoch| local_day_for_epoch(epoch, residential_tz))
+        })
+        .or_else(|| {
+            Some(
+                residential_tz
+                    .from_utc_datetime(&chrono::Utc::now().naive_utc())
+                    .date_naive(),
+            )
+        });
+
+    let lower = query.to_ascii_lowercase();
+    let explicit_day = extract_iso_date(query);
+    let relative_day = if lower.contains("yesterday") || lower.contains("last night") {
+        Some(RelativeDayHint::Yesterday)
+    } else if lower.contains("today") {
+        Some(RelativeDayHint::Today)
+    } else if lower.contains("tomorrow") {
+        Some(RelativeDayHint::Tomorrow)
+    } else {
+        None
+    };
+    let relative_day_target = match relative_day {
+        Some(RelativeDayHint::Yesterday) => anchor_local_day.map(|day| day - Duration::days(1)),
+        Some(RelativeDayHint::Today) => anchor_local_day,
+        Some(RelativeDayHint::Tomorrow) => anchor_local_day.map(|day| day + Duration::days(1)),
+        None => None,
+    };
+    let target_local_day = explicit_day.or(relative_day_target);
+    let target_day_token = target_local_day.map(|day| day.format("%Y-%m-%d").to_string());
+    let channel_hint = extract_discord_channel(query).or_else(|| {
+        projection
+            .entries
+            .iter()
+            .rev()
+            .take(8)
+            .find_map(|entry| extract_discord_channel(&entry.content))
+    });
+
+    TemporalQueryHint {
+        target_local_day,
+        target_day_token,
+        channel_hint,
+        relative_day,
+    }
+}
+
+fn local_day_for_epoch(epoch_secs: u64, residential_tz: Tz) -> Option<NaiveDate> {
+    match residential_tz.timestamp_opt(epoch_secs as i64, 0) {
+        LocalResult::Single(dt) => Some(dt.date_naive()),
+        _ => None,
+    }
+}
+
+fn extract_iso_date(raw: &str) -> Option<NaiveDate> {
+    raw.split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '-')
+                .to_string()
+        })
+        .find_map(|token| {
+            if token.len() != 10 {
+                return None;
+            }
+            if !matches!(token.as_bytes().get(4), Some(b'-'))
+                || !matches!(token.as_bytes().get(7), Some(b'-'))
+            {
+                return None;
+            }
+            NaiveDate::parse_from_str(&token, "%Y-%m-%d").ok()
+        })
+}
+
+fn extract_discord_channel(raw: &str) -> Option<String> {
+    if let Some(value) = extract_token_after(raw, "channel=") {
+        return Some(value);
+    }
+    if let Some(value) = extract_token_after(raw, "channel_id=") {
+        return Some(value);
+    }
+    if let Some(value) = extract_token_after(raw, "channel id:") {
+        return Some(value);
+    }
+
+    let lower = raw.to_ascii_lowercase();
+    let marker = "\"group_channel\"";
+    let idx = lower.find(marker)?;
+    let rest = raw.get(idx + marker.len()..)?.trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    let value = rest.get(..end)?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn extract_token_after(raw: &str, marker: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let start = lower.find(&marker.to_ascii_lowercase())? + marker.len();
+    let rest = raw.get(start..)?.trim_start();
+    let token = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '#' | '_' | '-' | ':'))
+        .collect::<String>();
+    let token = token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '#')
+        .to_string();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+fn normalize_channel(raw: &str) -> String {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if let Some(stripped) = trimmed.strip_prefix("channel:") {
+        stripped.trim().to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn parse_candidate_timestamp(text: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let trimmed = text.trim_start();
+    let tail = trimmed.strip_prefix('[')?;
+    let end = tail.find(']')?;
+    let raw_ts = tail.get(..end)?;
+    chrono::DateTime::parse_from_rfc3339(raw_ts).ok()
+}
+
+fn candidate_local_day(text: &str, source_label: &str, residential_tz: Tz) -> Option<NaiveDate> {
+    parse_candidate_timestamp(text)
+        .map(|dt| dt.with_timezone(&residential_tz).date_naive())
+        .or_else(|| extract_iso_date(source_label))
+        .or_else(|| extract_iso_date(text))
+}
+
+fn candidate_channel(text: &str, source_label: &str) -> Option<String> {
+    extract_discord_channel(text).or_else(|| extract_discord_channel(source_label))
+}
+
+fn temporal_alignment_score(
+    source_label: &str,
+    text: &str,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
+) -> i64 {
+    let Some(target_day) = temporal_hint.target_local_day else {
+        return 0;
+    };
+    let Some(candidate_day) = candidate_local_day(text, source_label, residential_tz) else {
+        return 0;
+    };
+    let delta_days = (candidate_day - target_day).num_days().abs();
+    if delta_days > 0 && line_mentions_relative_day(text, temporal_hint.relative_day) {
+        return 10;
+    }
+    match delta_days {
+        0 => 24,
+        1 => 8,
+        2 => 2,
+        _ => -18,
+    }
+}
+
+fn channel_alignment_score(
+    source_label: &str,
+    text: &str,
+    temporal_hint: &TemporalQueryHint,
+) -> i64 {
+    let Some(target_channel) = temporal_hint.channel_hint.as_ref() else {
+        return 0;
+    };
+    let Some(candidate) = candidate_channel(text, source_label) else {
+        return 0;
+    };
+    if normalize_channel(&candidate) == normalize_channel(target_channel) {
+        18
+    } else {
+        -30
+    }
+}
+
+fn recap_penalty(text: &str) -> i64 {
+    let lower = text.to_ascii_lowercase();
+    let mut penalty = 0i64;
+    for phrase in [
+        "the original message was",
+        "the original line was",
+        "original msg was",
+        "[[reply_to_current]]",
+        "i can also reconstruct the surrounding wording",
+    ] {
+        if lower.contains(phrase) {
+            penalty += 12;
+        }
+    }
+    -penalty
+}
+
+fn line_mentions_relative_day(text: &str, relative_day: Option<RelativeDayHint>) -> bool {
+    let Some(relative_day) = relative_day else {
+        return false;
+    };
+    let lower = text.to_ascii_lowercase();
+    match relative_day {
+        RelativeDayHint::Yesterday => lower.contains("yesterday") || lower.contains("last night"),
+        RelativeDayHint::Today => lower.contains("today"),
+        RelativeDayHint::Tomorrow => lower.contains("tomorrow"),
+    }
+}
+
+fn query_terms(
+    query: &str,
+    projection: &ProjectionData,
+    temporal_hint: &TemporalQueryHint,
+) -> Vec<String> {
     let mut out = tokenize(query);
+    if let Some(target_day) = temporal_hint.target_day_token.as_ref() {
+        out.push(target_day.clone());
+    }
+    if let Some(channel) = temporal_hint.channel_hint.as_ref() {
+        let normalized = normalize_channel(channel);
+        out.extend(tokenize(&normalized));
+    }
     if out.len() < 4 {
         out.extend(
             projection
@@ -932,7 +1352,17 @@ fn recent_activity_lines(
         .rev()
         .filter(|entry| entry.role != "user")
         .filter_map(render_projection_candidate)
-        .filter(|line| candidate_is_relevant("hot", SourceFamily::Hot, line, query_terms))
+        .filter(|line| {
+            candidate_is_relevant(
+                "hot",
+                "hot",
+                SourceFamily::Hot,
+                line,
+                query_terms,
+                &TemporalQueryHint::default(),
+                chrono_tz::UTC,
+            )
+        })
         .take(limit)
         .collect::<Vec<_>>()
         .into_iter()
@@ -1031,7 +1461,14 @@ fn strip_frontmatter(raw: &str) -> &str {
     &rest[idx + 5..]
 }
 
-fn select_doc_candidates(body: &str, query_terms: &[String], limit: usize) -> Vec<SelectedDocLine> {
+fn select_doc_candidates(
+    body: &str,
+    query_terms: &[String],
+    limit: usize,
+    source_label: &str,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
+) -> Vec<SelectedDocLine> {
     let mut scored = body
         .lines()
         .map(str::trim)
@@ -1043,7 +1480,21 @@ fn select_doc_candidates(body: &str, query_terms: &[String], limit: usize) -> Ve
             let cleaned = truncate_with_ellipsis(line, MAX_DOC_LINE_CHARS);
             let score = overlap_score(&cleaned, query_terms)
                 + if looks_actionable(&cleaned) { 4 } else { 0 }
-                + if cleaned.starts_with('#') { 1 } else { 0 };
+                + if cleaned.starts_with('#') { 1 } else { 0 }
+                + i32::try_from(temporal_alignment_score(
+                    source_label,
+                    &cleaned,
+                    temporal_hint,
+                    residential_tz,
+                ))
+                .unwrap_or(0)
+                + i32::try_from(channel_alignment_score(
+                    source_label,
+                    &cleaned,
+                    temporal_hint,
+                ))
+                .unwrap_or(0)
+                + i32::try_from(recap_penalty(&cleaned)).unwrap_or(0);
             SelectedDocLine {
                 text: cleaned,
                 score,
@@ -1082,7 +1533,7 @@ fn render_packet(sections: &PacketSections, max_chars: usize) -> String {
             sections.coverage.decision, sections.coverage.reason
         )],
     );
-    truncate_with_ellipsis(out.trim_end(), max_chars)
+    truncate_packet_text(out.trim_end(), max_chars)
 }
 
 fn append_section(out: &mut String, title: &str, lines: &[String]) {
@@ -1098,6 +1549,20 @@ fn append_section(out: &mut String, title: &str, lines: &[String]) {
         out.push('\n');
     }
     out.push('\n');
+}
+
+fn truncate_packet_text(input: &str, max_chars: usize) -> String {
+    let clean: String = input
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .collect();
+    if clean.chars().count() > max_chars {
+        let mut s: String = clean.chars().take(max_chars).collect();
+        s.push('…');
+        s
+    } else {
+        clean
+    }
 }
 
 fn short_source_label(prefix: &str, path: &Path) -> String {
@@ -1130,7 +1595,15 @@ fn clean_line(raw: &str) -> Option<String> {
     }
 }
 
-fn score_text(kind: &str, text: &str, query_terms: &[String], primary_family: SourceFamily) -> i64 {
+fn score_text(
+    kind: &str,
+    source_label: &str,
+    text: &str,
+    query_terms: &[String],
+    primary_family: SourceFamily,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
+) -> i64 {
     let base = match kind {
         "cleanse" => 85,
         "memory-file" => 80,
@@ -1153,19 +1626,34 @@ fn score_text(kind: &str, text: &str, query_terms: &[String], primary_family: So
         (SourceFamily::Semantic, "qmd") => 18,
         _ => 0,
     };
-    i64::from(
+    let mut score = i64::from(
         base + lane_bonus
             + overlap_score(text, query_terms) * 5
             + if looks_actionable(text) { 10 } else { 0 },
-    )
+    );
+    score += temporal_alignment_score(source_label, text, temporal_hint, residential_tz);
+    score += channel_alignment_score(source_label, text, temporal_hint);
+    score += recap_penalty(text);
+    if text.to_ascii_lowercase().contains("[discord ") {
+        score += 6;
+    }
+    score
 }
 
 fn candidate_is_relevant(
     kind: &str,
+    source_label: &str,
     primary_family: SourceFamily,
     text: &str,
     query_terms: &[String],
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
 ) -> bool {
+    if has_primary_constraints(temporal_hint)
+        && candidate_matches_primary(text, source_label, temporal_hint, residential_tz)
+    {
+        return true;
+    }
     if query_terms.is_empty() {
         return false;
     }
@@ -1272,6 +1760,108 @@ fn looks_actionable(text: &str) -> bool {
         || lower.contains("action")
 }
 
+fn looks_actionable_open_item(text: &str) -> bool {
+    if !looks_actionable(text) {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    !(lower.contains("providers declare their own auth/readiness")
+        || lower.contains("use action=\"list\"")
+        || lower.contains("generated images are delivered automatically")
+        || lower.contains("[tool-input]"))
+}
+
+fn has_primary_constraints(temporal_hint: &TemporalQueryHint) -> bool {
+    temporal_hint.target_local_day.is_some() || temporal_hint.channel_hint.is_some()
+}
+
+fn apply_primary_filters(
+    candidates: Vec<PacketCandidate>,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
+) -> Vec<PacketCandidate> {
+    if !has_primary_constraints(temporal_hint) {
+        return candidates;
+    }
+
+    let primary = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate_matches_primary(
+                &candidate.text,
+                &candidate.source_label,
+                temporal_hint,
+                residential_tz,
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if primary.is_empty() {
+        candidates
+    } else {
+        primary
+    }
+}
+
+fn apply_session_focus(
+    candidates: Vec<PacketCandidate>,
+    session_id: &str,
+    temporal_hint: &TemporalQueryHint,
+) -> Vec<PacketCandidate> {
+    if session_id.trim().is_empty() || !has_primary_constraints(temporal_hint) {
+        return candidates;
+    }
+
+    let needle = session_id.trim().to_ascii_lowercase();
+    let focused = candidates
+        .iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.source_kind,
+                "hot" | "memory-file" | "memory-daily" | "cleanse"
+            ) || candidate
+                .source_label
+                .to_ascii_lowercase()
+                .contains(&needle)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if focused.is_empty() {
+        candidates
+    } else {
+        focused
+    }
+}
+
+fn candidate_matches_primary(
+    text: &str,
+    source_label: &str,
+    temporal_hint: &TemporalQueryHint,
+    residential_tz: Tz,
+) -> bool {
+    if let Some(target_day) = temporal_hint.target_local_day {
+        let Some(candidate_day) = candidate_local_day(text, source_label, residential_tz) else {
+            return false;
+        };
+        if candidate_day != target_day
+            && !line_mentions_relative_day(text, temporal_hint.relative_day)
+        {
+            return false;
+        }
+    }
+
+    if let Some(target_channel) = temporal_hint.channel_hint.as_ref() {
+        let Some(candidate_channel) = candidate_channel(text, source_label) else {
+            return false;
+        };
+        if normalize_channel(&candidate_channel) != normalize_channel(target_channel) {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn normalize_for_dedupe(raw: &str) -> String {
     raw.split_whitespace()
         .map(|part| part.to_ascii_lowercase())
@@ -1348,6 +1938,7 @@ mod tests {
                 raw_source_path: paths.raw_dir.join("s1.jsonl"),
                 cleanse_summary_path: Some(cleanse_path),
                 replay_has_compaction_summary: true,
+                residential_timezone: "UTC".to_string(),
             },
         )
         .expect("build packet");
@@ -1410,6 +2001,7 @@ mod tests {
                 raw_source_path: paths.raw_dir.join("s2.jsonl"),
                 cleanse_summary_path: None,
                 replay_has_compaction_summary: false,
+                residential_timezone: "UTC".to_string(),
             },
         )
         .expect("build packet");
@@ -1461,6 +2053,7 @@ mod tests {
                 raw_source_path: paths.raw_dir.join("s3.jsonl"),
                 cleanse_summary_path: None,
                 replay_has_compaction_summary: false,
+                residential_timezone: "UTC".to_string(),
             },
         )
         .expect("build packet");
@@ -1497,6 +2090,7 @@ mod tests {
                 raw_source_path: paths.raw_dir.join("s4.jsonl"),
                 cleanse_summary_path: None,
                 replay_has_compaction_summary: false,
+                residential_timezone: "UTC".to_string(),
             },
         )
         .expect("build packet");
@@ -1538,6 +2132,7 @@ mod tests {
                 raw_source_path: paths.raw_dir.join("s5.jsonl"),
                 cleanse_summary_path: None,
                 replay_has_compaction_summary: false,
+                residential_timezone: "UTC".to_string(),
             },
         )
         .expect("build packet");

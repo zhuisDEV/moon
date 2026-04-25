@@ -82,6 +82,7 @@ pub fn run(opts: &MoonAssembleOptions) -> Result<CommandReport> {
                     raw_source_path: input.raw_source_path.clone(),
                     cleanse_summary_path: input.cleanse_summary_path.clone(),
                     replay_has_compaction_summary: opts.replay_has_compaction_summary,
+                    residential_timezone: cfg.distill.residential_timezone.clone(),
                 },
                 &snapshot.data,
             )

@@ -177,6 +177,7 @@ pub fn run_checkpoint(paths: &MoonPaths, opts: &CheckpointOptions) -> Result<Che
                 raw_source_path: prepared.plan.target_path.clone(),
                 cleanse_summary_path: cleanse_summary_path.as_ref().map(std::path::PathBuf::from),
                 replay_has_compaction_summary: opts.replay_has_compaction_summary,
+                residential_timezone: prepared.cfg.distill.residential_timezone.clone(),
             },
             &source_snapshot.data,
         )?;

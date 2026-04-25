@@ -406,13 +406,71 @@ fn normalize_projection_text(raw: &str) -> Option<String> {
     let collapsed = collapsed.trim();
     if collapsed.is_empty() {
         None
+    } else if should_suppress_projection_text(collapsed) {
+        None
     } else {
         Some(truncate_with_ellipsis(collapsed, 240))
     }
+}
+
+fn should_suppress_projection_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("more characters truncated") {
+        return true;
+    }
+    if lower.contains("providers declare their own auth/readiness")
+        || lower.contains("use action=\"list\" to inspect registered providers")
+        || lower.contains(
+            "generated images are delivered automatically from the tool result as media paths",
+        )
+    {
+        return true;
+    }
+    longest_base64ish_run(text) >= 320
+}
+
+fn longest_base64ish_run(text: &str) -> usize {
+    let mut longest = 0usize;
+    let mut current = 0usize;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '_' | '-') {
+            current += 1;
+            if current > longest {
+                longest = current;
+            }
+        } else {
+            current = 0;
+        }
+    }
+    longest
 }
 
 fn render_timestamp(epoch: Option<u64>) -> Option<String> {
     let epoch = epoch?;
     let dt = Utc.timestamp_opt(epoch as i64, 0).single()?;
     Some(dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn normalize_projection_text_filters_noise_blobs_and_boilerplate() {
+        assert!(super::normalize_projection_text(
+            "Providers declare their own auth/readiness; use action=\"list\" to inspect registered providers."
+        )
+        .is_none());
+        assert!(
+            super::normalize_projection_text("x [... 107543 more characters truncated]").is_none()
+        );
+        assert!(super::normalize_projection_text(&format!("result={}", "A".repeat(420))).is_none());
+    }
+
+    #[test]
+    fn normalize_projection_text_keeps_meaningful_content() {
+        let text = super::normalize_projection_text(
+            "Found target thread in session 734c93a6-0ae0-4c40-90b6-be5cacbcd43f line 39.",
+        )
+        .expect("should keep meaningful line");
+        assert!(text.contains("Found target thread"));
+    }
 }
