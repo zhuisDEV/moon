@@ -19,7 +19,7 @@ const MAX_DOC_LINE_CHARS: usize = 220;
 const MAX_QMD_SNIPPET_CHARS: usize = 220;
 const PRIMARY_SOURCE_LIMIT: usize = 4;
 const FALLBACK_SOURCE_LIMIT: usize = 2;
-const PACKET_GENERATION_VERSION: u8 = 1;
+const PACKET_GENERATION_VERSION: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct ContextPacketInput {
@@ -130,6 +130,14 @@ struct SelectedDocLine {
 struct SourceCollectionSummary {
     candidate_count: usize,
     positive_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateQuery<'a> {
+    query_terms: &'a [String],
+    primary_family: SourceFamily,
+    temporal_hint: &'a TemporalQueryHint,
+    residential_tz: Tz,
 }
 
 impl SourceCollectionSummary {
@@ -290,17 +298,13 @@ pub fn build_context_packet_from_projection(
     }
 
     let query_terms = query_terms(&query, projection, &temporal_hint);
-    let build = build_sections(
-        paths,
-        state,
-        cfg,
-        input,
-        projection,
-        &query_terms,
+    let candidate_query = CandidateQuery {
+        query_terms: &query_terms,
         primary_family,
-        &temporal_hint,
+        temporal_hint: &temporal_hint,
         residential_tz,
-    )?;
+    };
+    let build = build_sections(paths, state, cfg, input, projection, &candidate_query)?;
     let content = render_packet(&build.sections, cfg.max_chars);
 
     Ok(ContextPacketOutput {
@@ -328,38 +332,25 @@ fn build_sections(
     cfg: &MoonContextPacketConfig,
     input: &ContextPacketInput,
     projection: &ProjectionData,
-    query_terms: &[String],
-    primary_family: SourceFamily,
-    temporal_hint: &TemporalQueryHint,
-    residential_tz: Tz,
+    query: &CandidateQuery<'_>,
 ) -> Result<PacketBuild> {
     let current_goal = latest_goal_lines(projection, 2);
-    let active_work = recent_activity_lines(projection, query_terms, 5);
+    let active_work = recent_activity_lines(projection, query.query_terms, 5);
     let mut relevant_memory = Vec::new();
     let mut open_items = Vec::new();
 
-    let collector = collect_candidates(
-        paths,
-        state,
-        cfg,
-        input,
-        projection,
-        query_terms,
-        primary_family,
-        temporal_hint,
-        residential_tz,
-    )?;
+    let collector = collect_candidates(paths, state, cfg, input, projection, query)?;
     let fallback_source = collector.fallback_source.clone();
     let source_read_count = collector.source_read_count;
     let qmd_query_count = collector.qmd_query_count;
     let candidates = apply_session_focus(
         apply_primary_filters(
             collector.into_sorted_candidates(),
-            temporal_hint,
-            residential_tz,
+            query.temporal_hint,
+            query.residential_tz,
         ),
         &input.session_id,
-        temporal_hint,
+        query.temporal_hint,
     );
     let candidate_count = candidates.len();
     let positive_candidate_count = candidate_count;
@@ -369,7 +360,7 @@ fn build_sections(
         .max()
         .unwrap_or(0);
     let coverage = evaluate_coverage(
-        primary_family,
+        query.primary_family,
         fallback_source.as_deref(),
         candidate_count,
         top_score,
@@ -393,7 +384,7 @@ fn build_sections(
         }
     }
 
-    if open_items.is_empty() && !has_primary_constraints(temporal_hint) {
+    if open_items.is_empty() && !has_primary_constraints(query.temporal_hint) {
         open_items = extract_open_items_from_projection(projection, 4);
     }
 
@@ -433,23 +424,14 @@ fn collect_candidates(
     cfg: &MoonContextPacketConfig,
     input: &ContextPacketInput,
     projection: &ProjectionData,
-    query_terms: &[String],
-    primary_family: SourceFamily,
-    temporal_hint: &TemporalQueryHint,
-    residential_tz: Tz,
+    query: &CandidateQuery<'_>,
 ) -> Result<CandidateCollector> {
-    let mut collector = CandidateCollector::new(primary_family);
-    let qmd_query = build_qmd_query(projection, query_terms);
+    let mut collector = CandidateCollector::new(query.primary_family);
+    let qmd_query = build_qmd_query(projection, query.query_terms);
 
-    match primary_family {
+    match query.primary_family {
         SourceFamily::Hot => {
-            let summary = collect_hot_candidates(
-                projection,
-                query_terms,
-                temporal_hint,
-                residential_tz,
-                &mut collector,
-            );
+            let summary = collect_hot_candidates(projection, query, &mut collector);
             if summary.positive_count == 0
                 && !input.replay_has_compaction_summary
                 && let Some(path) = input.cleanse_summary_path.as_ref()
@@ -460,10 +442,8 @@ fn collect_candidates(
                     path,
                     "cleanse",
                     &label,
-                    query_terms,
                     FALLBACK_SOURCE_LIMIT,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -476,14 +456,12 @@ fn collect_candidates(
                 &paths.memory_file,
                 "memory-file",
                 "memory",
-                query_terms,
                 PRIMARY_SOURCE_LIMIT,
-                temporal_hint,
-                residential_tz,
+                query,
                 &mut collector,
             )?;
             if primary.positive_count == 0
-                && let Some(target_day) = temporal_hint.target_local_day
+                && let Some(target_day) = query.temporal_hint.target_local_day
             {
                 let target_daily_path = paths
                     .memory_dir
@@ -494,10 +472,8 @@ fn collect_candidates(
                         &target_daily_path,
                         "memory-daily",
                         &label,
-                        query_terms,
                         PRIMARY_SOURCE_LIMIT,
-                        temporal_hint,
-                        residential_tz,
+                        query,
                         &mut collector,
                     )?;
                     if targeted.candidate_count > 0 {
@@ -513,10 +489,8 @@ fn collect_candidates(
                     &path,
                     "memory-daily",
                     &label,
-                    query_terms,
                     FALLBACK_SOURCE_LIMIT,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -531,10 +505,8 @@ fn collect_candidates(
                     &path,
                     "library",
                     &label,
-                    query_terms,
                     PRIMARY_SOURCE_LIMIT,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 )?
             } else {
@@ -547,9 +519,7 @@ fn collect_candidates(
                     "qmd-lib",
                     &qmd_query,
                     cfg.qmd_limit,
-                    query_terms,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 );
                 if fallback.candidate_count > 0 {
@@ -564,17 +534,15 @@ fn collect_candidates(
                     &path,
                     "distill",
                     &label,
-                    query_terms,
                     PRIMARY_SOURCE_LIMIT,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 )?
             } else {
                 SourceCollectionSummary::empty()
             };
             if primary.positive_count == 0
-                && let Some(target_day) = temporal_hint.target_local_day
+                && let Some(target_day) = query.temporal_hint.target_local_day
             {
                 let target_daily_path = paths
                     .memory_dir
@@ -585,10 +553,8 @@ fn collect_candidates(
                         &target_daily_path,
                         "memory-daily",
                         &label,
-                        query_terms,
                         FALLBACK_SOURCE_LIMIT,
-                        temporal_hint,
-                        residential_tz,
+                        query,
                         &mut collector,
                     )?;
                     if targeted.candidate_count > 0 {
@@ -604,10 +570,8 @@ fn collect_candidates(
                     &path,
                     "memory-daily",
                     &label,
-                    query_terms,
                     FALLBACK_SOURCE_LIMIT,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 )?;
                 if fallback.candidate_count > 0 {
@@ -622,9 +586,7 @@ fn collect_candidates(
                 "qmd-hot",
                 &qmd_query,
                 cfg.qmd_limit,
-                query_terms,
-                temporal_hint,
-                residential_tz,
+                query,
                 &mut collector,
             );
             if hot.positive_count == 0 && cfg.qmd_limit > 0 {
@@ -634,9 +596,7 @@ fn collect_candidates(
                     "qmd-lib",
                     &qmd_query,
                     cfg.qmd_limit,
-                    query_terms,
-                    temporal_hint,
-                    residential_tz,
+                    query,
                     &mut collector,
                 );
                 if lib.candidate_count > 0 {
@@ -651,9 +611,7 @@ fn collect_candidates(
 
 fn collect_hot_candidates(
     projection: &ProjectionData,
-    query_terms: &[String],
-    temporal_hint: &TemporalQueryHint,
-    residential_tz: Tz,
+    query: &CandidateQuery<'_>,
     collector: &mut CandidateCollector,
 ) -> SourceCollectionSummary {
     let hot_candidates = projection
@@ -671,9 +629,9 @@ fn collect_hot_candidates(
             "hot",
             collector.primary_family,
             &text,
-            query_terms,
-            temporal_hint,
-            residential_tz,
+            query.query_terms,
+            query.temporal_hint,
+            query.residential_tz,
         ) {
             continue;
         }
@@ -681,10 +639,10 @@ fn collect_hot_candidates(
             "hot",
             "hot",
             &text,
-            query_terms,
+            query.query_terms,
             collector.primary_family,
-            temporal_hint,
-            residential_tz,
+            query.temporal_hint,
+            query.residential_tz,
         );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
@@ -701,10 +659,8 @@ fn collect_markdown_candidates_from_path(
     path: &Path,
     source_kind: &'static str,
     source_label: &str,
-    query_terms: &[String],
     limit: usize,
-    temporal_hint: &TemporalQueryHint,
-    residential_tz: Tz,
+    query: &CandidateQuery<'_>,
     collector: &mut CandidateCollector,
 ) -> Result<SourceCollectionSummary> {
     if !path.is_file() {
@@ -714,11 +670,11 @@ fn collect_markdown_candidates_from_path(
     let body = read_markdown_body(path)?;
     let selected = select_doc_candidates(
         &body,
-        query_terms,
+        query.query_terms,
         limit,
         source_label,
-        temporal_hint,
-        residential_tz,
+        query.temporal_hint,
+        query.residential_tz,
     );
     let mut summary = SourceCollectionSummary::empty();
     for line in selected {
@@ -727,9 +683,9 @@ fn collect_markdown_candidates_from_path(
             source_label,
             collector.primary_family,
             &line.text,
-            query_terms,
-            temporal_hint,
-            residential_tz,
+            query.query_terms,
+            query.temporal_hint,
+            query.residential_tz,
         ) {
             continue;
         }
@@ -737,10 +693,10 @@ fn collect_markdown_candidates_from_path(
             source_kind,
             source_label,
             &line.text,
-            query_terms,
+            query.query_terms,
             collector.primary_family,
-            temporal_hint,
-            residential_tz,
+            query.temporal_hint,
+            query.residential_tz,
         );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
@@ -759,9 +715,7 @@ fn collect_qmd_candidates(
     source_label: &str,
     query: &str,
     limit: usize,
-    query_terms: &[String],
-    temporal_hint: &TemporalQueryHint,
-    residential_tz: Tz,
+    candidate_query: &CandidateQuery<'_>,
     collector: &mut CandidateCollector,
 ) -> SourceCollectionSummary {
     if query.trim().is_empty() {
@@ -784,9 +738,9 @@ fn collect_qmd_candidates(
             &resolved_label,
             collector.primary_family,
             &hit.text,
-            query_terms,
-            temporal_hint,
-            residential_tz,
+            candidate_query.query_terms,
+            candidate_query.temporal_hint,
+            candidate_query.residential_tz,
         ) {
             continue;
         }
@@ -794,10 +748,10 @@ fn collect_qmd_candidates(
             "qmd",
             &resolved_label,
             &hit.text,
-            query_terms,
+            candidate_query.query_terms,
             collector.primary_family,
-            temporal_hint,
-            residential_tz,
+            candidate_query.temporal_hint,
+            candidate_query.residential_tz,
         );
         summary.note_candidate();
         collector.add_candidate(PacketCandidate {
@@ -1281,6 +1235,7 @@ fn query_terms(
     temporal_hint: &TemporalQueryHint,
 ) -> Vec<String> {
     let mut out = tokenize(query);
+    let has_current_query = !query.trim().is_empty();
     if let Some(target_day) = temporal_hint.target_day_token.as_ref() {
         out.push(target_day.clone());
     }
@@ -1289,42 +1244,165 @@ fn query_terms(
         out.extend(tokenize(&normalized));
     }
     if out.len() < 4 {
-        out.extend(
-            projection
-                .keywords
-                .iter()
-                .flat_map(|value| tokenize(value))
-                .collect::<Vec<_>>(),
-        );
+        if has_current_query {
+            out.extend(recent_projection_terms(projection, 6));
+        } else {
+            out.extend(projection.keywords.iter().flat_map(|value| tokenize(value)));
+        }
     }
     out.sort();
     out.dedup();
     out
 }
 
-fn tokenize(raw: &str) -> Vec<String> {
-    raw.split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|part| part.trim().to_ascii_lowercase())
-        .filter(|part| part.len() >= 3)
-        .filter(|part| {
-            !matches!(
-                part.as_str(),
-                "the"
-                    | "and"
-                    | "for"
-                    | "that"
-                    | "with"
-                    | "from"
-                    | "this"
-                    | "keep"
-                    | "moon"
-                    | "openclaw"
-                    | "into"
-                    | "have"
-                    | "will"
-            )
-        })
+fn recent_projection_terms(projection: &ProjectionData, limit: usize) -> Vec<String> {
+    projection
+        .entries
+        .iter()
+        .rev()
+        .filter(|entry| entry.role == "user" || entry.role == "assistant")
+        .take(limit)
+        .flat_map(|entry| tokenize(&entry.content))
         .collect()
+}
+
+fn tokenize(raw: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut ascii = String::new();
+    let mut cjk = String::new();
+    let mut unicode = String::new();
+
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            flush_cjk_terms(&mut cjk, &mut terms);
+            flush_unicode_term(&mut unicode, &mut terms);
+            ascii.push(ch.to_ascii_lowercase());
+        } else if is_cjk_char(ch) {
+            flush_ascii_term(&mut ascii, &mut terms);
+            flush_unicode_term(&mut unicode, &mut terms);
+            cjk.push(ch);
+        } else if ch.is_alphanumeric() {
+            flush_ascii_term(&mut ascii, &mut terms);
+            flush_cjk_terms(&mut cjk, &mut terms);
+            unicode.extend(ch.to_lowercase());
+        } else {
+            flush_ascii_term(&mut ascii, &mut terms);
+            flush_cjk_terms(&mut cjk, &mut terms);
+            flush_unicode_term(&mut unicode, &mut terms);
+        }
+    }
+
+    flush_ascii_term(&mut ascii, &mut terms);
+    flush_cjk_terms(&mut cjk, &mut terms);
+    flush_unicode_term(&mut unicode, &mut terms);
+    terms
+}
+
+fn flush_ascii_term(token: &mut String, terms: &mut Vec<String>) {
+    if token.len() >= 3 && !is_ascii_stopword(token) {
+        terms.push(std::mem::take(token));
+    } else {
+        token.clear();
+    }
+}
+
+fn flush_unicode_term(token: &mut String, terms: &mut Vec<String>) {
+    if token.chars().count() >= 2 {
+        terms.push(std::mem::take(token));
+    } else {
+        token.clear();
+    }
+}
+
+fn flush_cjk_terms(token: &mut String, terms: &mut Vec<String>) {
+    let chars = token.chars().collect::<Vec<_>>();
+    match chars.len() {
+        0 => {}
+        1 => {
+            if !is_cjk_stop_char(chars[0]) {
+                terms.push(chars[0].to_string());
+            }
+        }
+        _ => {
+            for pair in chars.windows(2) {
+                terms.push(pair.iter().collect());
+            }
+            for ch in chars {
+                if !is_cjk_stop_char(ch) {
+                    terms.push(ch.to_string());
+                }
+            }
+        }
+    }
+    token.clear();
+}
+
+fn is_ascii_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "and"
+            | "for"
+            | "that"
+            | "with"
+            | "from"
+            | "this"
+            | "keep"
+            | "moon"
+            | "openclaw"
+            | "into"
+            | "have"
+            | "will"
+    )
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x3040..=0x30FF
+            | 0xAC00..=0xD7AF
+    )
+}
+
+fn is_cjk_stop_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '的' | '了'
+            | '是'
+            | '在'
+            | '有'
+            | '和'
+            | '或'
+            | '但'
+            | '也'
+            | '就'
+            | '都'
+            | '很'
+            | '还'
+            | '没'
+            | '不'
+            | '我'
+            | '你'
+            | '他'
+            | '她'
+            | '它'
+            | '们'
+            | '这'
+            | '那'
+            | '个'
+            | '一'
+            | '上'
+            | '下'
+            | '到'
+            | '请'
+            | '吗'
+            | '呢'
+            | '啊'
+            | '吧'
+    )
 }
 
 fn latest_goal_lines(projection: &ProjectionData, limit: usize) -> Vec<String> {
@@ -2100,6 +2178,47 @@ mod tests {
         assert_eq!(output.coverage_decision, "current_only");
         assert!(output.content.contains("decision=current_only"));
         assert!(!output.content.contains("lunch scheduling"));
+    }
+
+    #[test]
+    fn context_packet_keeps_chinese_topic_switch_from_reusing_stale_english_terms() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = test_paths(tmp.path());
+        fs::create_dir_all(&paths.raw_dir).expect("mkdir raw");
+
+        fs::write(
+            paths.raw_dir.join("s-topic-switch.jsonl"),
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                json!({"message":{"role":"user","content":[{"type":"text","text":"Can you set commands.native=true and restart the gateway?"}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"I will inspect commands.native and the Discord gateway status."}]}}),
+                json!({"message":{"role":"user","content":[{"type":"text","text":"JJ鼻涕白，打喷嚏。晚上鼻塞，白天也打喷嚏。"}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"晚上可以先做白萝卜雪梨汤，清淡补水。"}]}}),
+                json!({"message":{"role":"user","content":[{"type":"text","text":"我们在讨论汤，请不要打岔到吃药上。"}]}}),
+                json!({"message":{"role":"assistant","content":[{"type":"text","text":"收到，我们只聊汤，不扯吃药。"}]}}),
+                json!({"message":{"role":"user","content":[{"type":"text","text":"请继续"}]}})
+            ),
+        )
+        .expect("write raw");
+
+        let output = build_context_packet(
+            &paths,
+            &MoonState::default(),
+            &MoonContextPacketConfig::default(),
+            &ContextPacketInput {
+                session_id: "s-topic-switch".to_string(),
+                raw_source_path: paths.raw_dir.join("s-topic-switch.jsonl"),
+                cleanse_summary_path: None,
+                replay_has_compaction_summary: false,
+                residential_timezone: "Australia/Sydney".to_string(),
+            },
+        )
+        .expect("build packet");
+
+        assert!(output.content.contains("我们在讨论汤"));
+        assert!(output.content.contains("我们只聊汤"));
+        assert!(!output.content.contains("commands.native"));
+        assert!(!output.content.contains("gateway status"));
     }
 
     #[test]

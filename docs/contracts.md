@@ -196,6 +196,10 @@ Rules:
    contract
 6. normal-path Moon summary content should reach the model through the verified
    transcript compaction lane, not through routine system-prompt injection
+7. replayed `# Moon Active Context` packets are synthetic prior output and must
+   be excluded from projection parsing on the primary path
+8. old active packets may be consulted only by an explicit recovery fallback
+   with separate gating, never as blended primary projection input
 
 ## Search Support Contracts
 

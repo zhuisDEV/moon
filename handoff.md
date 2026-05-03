@@ -1,5 +1,72 @@
 # Handoff
 
+## 2026-05-04 09:02 AEST
+
+- Prepared release `v1.2.5` for the active-context topic-switch weighting fix.
+- Incident from the live Discord conversation:
+  - user discussed Discord slash command config (`commands.native`, gateway
+    status)
+  - user then started a new topic about a child's night-time nasal congestion
+    and soup suggestions in Chinese
+  - after the user explicitly said the topic was soup, the agent later answered
+    with stale Discord command/gateway status
+- Root cause:
+  - Moon active packet retrieval built query terms from recent user turns, but
+    the tokenizer was mostly ASCII-oriented.
+  - The Chinese/CJK soup-topic turns produced weak or no useful current-query
+    terms.
+  - Sparse-query fallback reused keywords from the whole session, allowing stale
+    English terms from the prior Discord command topic to dominate relevance
+    scoring.
+  - A second reinforcement risk existed when injected `# Moon Active Context`
+    packets were replayed into projection parsing and could be treated as real
+    assistant history.
+- Context boundary decision:
+  - old active packets are valid as injected model-facing context for the
+    current provider call
+  - old active packets are not valid primary source material when Moon builds
+    the next active packet from projection data
+  - old packets may only be consulted through an explicit, separately gated
+    recovery fallback for damaged/compacted transcripts
+  - primary flow must stay current transcript/projection first; fallback must
+    not be mixed into that path
+- Implementation:
+  - `src/moon/context_packet.rs`
+    - added CJK-aware tokenization for active packet query terms
+    - changed sparse current-query expansion to borrow terms from the recent
+      conversation tail instead of whole-session keywords
+    - bumped active packet generation to `v=2` so stale packet caches are not
+      reused under the new scoring rules
+    - refactored packet candidate helpers through a shared query context so
+      clippy stays clean
+    - added regression coverage for the observed topic-switch shape: English
+      Discord config topic, then Chinese soup topic, then "please continue"
+  - `src/moon/distill.rs`
+    - filters replayed `# Moon Active Context` packets as synthetic projection
+      noise
+    - added regression coverage proving replayed active packets do not enter
+      projection entries
+  - `src/moon/project.rs`
+    - cleaned a duplicated branch found by the release clippy pass
+  - release metadata bumped to `1.2.5` in `Cargo.toml`, `Cargo.lock`,
+    `assets/plugin/package.json`, and plugin runtime info
+  - release-facing docs updated:
+    - `CHANGELOG.md`
+    - `README.md`
+    - `assets/plugin/README.md`
+    - `docs/contracts.md`
+    - `docs/runbook.md`
+    - `docs/troubleshooting.md`
+    - `handoff.md`
+- Validation completed:
+  - `cargo fmt --all -- --check`
+  - `deno fmt --check assets/plugin/index.js assets/plugin/index.test.ts assets/plugin/openclaw.plugin.json assets/plugin/README.md CHANGELOG.md README.md docs/contracts.md docs/runbook.md docs/troubleshooting.md RELEASE.md SUPPORT.md SECURITY.md handoff.md`
+  - `deno lint assets/plugin/index.js assets/plugin/index.test.ts`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets --all-features`
+  - `deno test --allow-read --allow-write --allow-env --allow-run assets/plugin/index.test.ts`
+  - `git diff --check`
+
 ## 2026-04-24 22:08 AEST
 
 - Prepared release `v1.2.3` for the remaining Moon/OpenClaw usage-pressure

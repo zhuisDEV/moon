@@ -69,6 +69,18 @@ Moon now uses three distinct surfaces:
 The plugin can also run a gated Moon-owned curator subagent over the packet when
 configured, but deterministic local retrieval stays the first stage.
 
+Active context packets have a one-way boundary:
+
+1. the plugin may inject the current packet into the OpenClaw `messages` lane
+   for the model call
+2. Moon projection parsing treats replayed `# Moon Active Context` packets as
+   synthetic noise, not real conversation history
+3. old packets may only be used through an explicit recovery fallback, not mixed
+   into normal active-context scoring
+
+This keeps topic switches from being pulled back toward stale packet text while
+preserving the packet as the intended model-facing hint for the current turn.
+
 ## Install
 
 Source install:

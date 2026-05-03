@@ -1411,6 +1411,9 @@ fn is_projection_noise_entry(entry: &ProjectionEntry) -> bool {
         return false;
     }
 
+    if is_moon_active_context_packet(&combined) {
+        return true;
+    }
     if is_no_reply_marker(&combined) {
         return true;
     }
@@ -1437,6 +1440,23 @@ fn is_projection_noise_entry(entry: &ProjectionEntry) -> bool {
     }
 
     false
+}
+
+fn is_moon_active_context_packet(text: &str) -> bool {
+    let Some(first_line) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return false;
+    };
+    if is_moon_active_context_heading(first_line) {
+        return true;
+    }
+
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    is_moon_active_context_heading(&collapsed)
+}
+
+fn is_moon_active_context_heading(text: &str) -> bool {
+    let normalized = text.trim_start_matches('#').trim().to_ascii_lowercase();
+    normalized == "moon active context" || normalized.starts_with("moon active context ")
 }
 
 fn extract_keywords(entries: &[ProjectionEntry]) -> Vec<String> {
@@ -4545,6 +4565,42 @@ mod tests {
                 .content
                 .contains("Decision: keep trigger ratio")
         );
+    }
+
+    #[test]
+    fn extract_projection_data_filters_replayed_moon_active_context_packet() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("moon-projection-active-packet-{stamp}.jsonl"));
+        let path_str = path.to_string_lossy().to_string();
+
+        let packet = json!({
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "# Moon Active Context\n\n## Current Goal\n- Stale commands.native gateway task."
+                }]
+            }
+        });
+        let user = json!({
+            "message": {
+                "role": "user",
+                "content": [{"type":"text","text":"请继续讨论晚上的汤。"}]
+            }
+        });
+        fs::write(&path, format!("{packet}\n{user}\n")).expect("write test file");
+
+        let data = super::extract_projection_data(&path_str).expect("extract projection data");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(data.filtered_noise_count, 1);
+        assert_eq!(data.entries.len(), 1);
+        assert_eq!(data.entries[0].role, "user");
+        assert!(data.entries[0].content.contains("晚上的汤"));
     }
 
     #[test]

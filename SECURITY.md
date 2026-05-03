@@ -34,4 +34,5 @@ The project will review reports and determine:
 
 This project is under active development.
 
-Security fixes, when accepted, are expected to land on the current main development line rather than long-term maintenance branches.
+Security fixes, when accepted, are expected to land on the current main
+development line rather than long-term maintenance branches.

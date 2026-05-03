@@ -28,6 +28,16 @@ Model-facing summary rule:
 3. Moon `cleanse` summaries travel through transcript `compaction` entries
 4. OpenClaw replays those entries as `compactionSummary` message-history context
 
+Synthetic packet replay rule:
+
+1. injected `# Moon Active Context` packets are prompt hints for the current
+   provider call
+2. if a prior packet appears in a later transcript replay, Moon filters it from
+   projection parsing
+3. old active packets are not primary source material for building the next
+   packet; use a separately gated recovery fallback if a damaged transcript
+   truly needs one
+
 Compaction rule:
 
 1. if `moon context-engine` does not emit a readable `cleanse` summary, the

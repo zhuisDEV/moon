@@ -404,9 +404,7 @@ fn normalize_projection_text(raw: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let collapsed = collapsed.trim();
-    if collapsed.is_empty() {
-        None
-    } else if should_suppress_projection_text(collapsed) {
+    if collapsed.is_empty() || should_suppress_projection_text(collapsed) {
         None
     } else {
         Some(truncate_with_ellipsis(collapsed, 240))

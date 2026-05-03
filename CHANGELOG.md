@@ -7,6 +7,33 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-05-04
+
+### Fixed
+
+- Active context packet retrieval now tokenizes CJK text, so Chinese topic
+  switches provide usable current-query terms instead of letting stale
+  whole-session English keywords dominate relevance scoring.
+- Sparse current prompts now borrow extra query terms only from the recent
+  conversation tail. Whole-session keyword fallback remains reserved for cases
+  where no current query text exists.
+- Replayed synthetic `# Moon Active Context` packets are filtered from
+  projection parsing, preventing Moon's own injected packet from becoming source
+  material for the next active packet.
+- Bumped the active packet generation version so old cached packets are not
+  reused across the corrected scoring rules.
+
+## [1.2.4] - 2026-04-25
+
+### Fixed
+
+- Improved active context retrieval accuracy with temporal, channel, and session
+  focus for packet candidates.
+- Added targeted daily-memory fallback for date-specific memory/distill misses.
+- Tightened projection parsing and projection text suppression around
+  Discord-wrapped messages, tool-input signals, status chatter, and large tool
+  blobs so packet evidence stays focused on conversation signal.
+
 ## [1.2.3] - 2026-04-24
 
 ### Fixed

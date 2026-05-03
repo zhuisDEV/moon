@@ -89,6 +89,9 @@ Execution note:
 1. `assemble` is the explicit pre-dispatch boundary.
 2. It writes the operator artifact to `$MOON_HOME/mce/`.
 3. It also writes the model-facing active context packet to `$MOON_HOME/mcp/`.
+4. Replayed `# Moon Active Context` packets are filtered before projection, so
+   old packet text does not reinforce stale topics during normal context
+   scoring.
 
 Run the integrated checkpoint controller:
 
