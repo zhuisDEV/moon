@@ -5,7 +5,27 @@ use tempfile::tempdir;
 
 fn write_fake_openclaw(bin_path: &Path, log_path: &Path) {
     let script = format!(
-        "#!/usr/bin/env bash\necho \"$@\" >> \"{}\"\nif [ \"$1\" = \"plugins\" ] && [ \"$2\" = \"list\" ]; then\n  echo '[{{\"id\":\"moon\"}}]'\nfi\nexit 0\n",
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "$@" >> "{}"
+if [ "$1" = "plugins" ] && [ "$2" = "install" ]; then
+  src="${{@: -1}}"
+  source_real="$(cd "$src" && pwd -P)"
+  target="$OPENCLAW_STATE_DIR/extensions/moon"
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source_real" "$target"
+  target_real="$(cd "$target" && pwd -P)"
+  mkdir -p "$OPENCLAW_STATE_DIR/plugins"
+  cat > "$OPENCLAW_STATE_DIR/plugins/installs.json" <<JSON
+{{"installRecords":{{"moon":{{"source":"path","sourcePath":"$source_real","installPath":"$target_real"}}}},"plugins":[]}}
+JSON
+fi
+if [ "$1" = "plugins" ] && [ "$2" = "list" ]; then
+  echo '[{{"id":"moon"}}]'
+fi
+exit 0
+"#,
         log_path.display()
     );
     fs::write(bin_path, script).expect("write fake openclaw");
@@ -54,26 +74,36 @@ fn install_writes_canonical_plugin_and_runtime_paths_from_symlinked_roots() {
 
     let cfg: Value = serde_json::from_str(&fs::read_to_string(&config_path).expect("read config"))
         .expect("parse cfg");
+    let install_index: Value = serde_json::from_str(
+        &fs::read_to_string(state_dir.join("plugins/installs.json")).expect("read plugin index"),
+    )
+    .expect("parse plugin index");
+    let expected_plugin_source_dir = fs::canonicalize(alias_root.join("state/plugin-sources/moon"))
+        .expect("canonicalize plugin source dir");
     let expected_plugin_dir = fs::canonicalize(alias_root.join("state/extensions/moon"))
         .expect("canonicalize plugin dir");
     let expected_moon_home =
         fs::canonicalize(alias_root.join("moon-home")).expect("canonicalize moon home");
 
     assert_eq!(
-        cfg.get("plugins")
-            .and_then(|v| v.get("installs"))
+        install_index
+            .get("installRecords")
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("sourcePath"))
             .and_then(Value::as_str),
-        Some(expected_plugin_dir.to_string_lossy().as_ref())
+        Some(expected_plugin_source_dir.to_string_lossy().as_ref())
     );
     assert_eq!(
-        cfg.get("plugins")
-            .and_then(|v| v.get("installs"))
+        install_index
+            .get("installRecords")
             .and_then(|v| v.get("moon"))
             .and_then(|v| v.get("installPath"))
             .and_then(Value::as_str),
         Some(expected_plugin_dir.to_string_lossy().as_ref())
+    );
+    assert!(
+        cfg.get("plugins").and_then(|v| v.get("installs")).is_none(),
+        "install provenance should live in the plugin index, not openclaw.json"
     );
     assert_eq!(
         cfg.get("plugins")

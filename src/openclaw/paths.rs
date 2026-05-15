@@ -10,6 +10,8 @@ pub struct OpenClawPaths {
     pub state_dir: PathBuf,
     pub config_path: PathBuf,
     pub extensions_dir: PathBuf,
+    pub plugin_source_dir: PathBuf,
+    pub plugin_index_path: PathBuf,
     pub plugin_dir: PathBuf,
     pub plugin_id: String,
 }
@@ -43,12 +45,16 @@ pub fn resolve_paths() -> Result<OpenClawPaths> {
     };
 
     let extensions_dir = state_dir.join("extensions");
+    let plugin_source_dir = state_dir.join("plugin-sources").join(PLUGIN_ID);
+    let plugin_index_path = state_dir.join("plugins").join("installs.json");
     let plugin_dir = extensions_dir.join(PLUGIN_ID);
 
     Ok(OpenClawPaths {
         state_dir,
         config_path,
         extensions_dir,
+        plugin_source_dir,
+        plugin_index_path,
         plugin_dir,
         plugin_id: PLUGIN_ID.to_string(),
     })

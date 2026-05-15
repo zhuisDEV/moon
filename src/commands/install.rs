@@ -15,8 +15,8 @@ use crate::moon::config::load_context_policy_if_explicit_env;
 use crate::moon::state::{clear_last_usage_ratio, state_file_path};
 use crate::openclaw::config::{
     ConfigPatchOptions, apply_config_patches, ensure_moon_owned_memory_contract,
-    ensure_plugin_enabled, ensure_plugin_install_record, ensure_plugin_runtime_config,
-    ensure_plugin_slot, read_config_value, write_config_atomic,
+    ensure_plugin_enabled, ensure_plugin_runtime_config, ensure_plugin_slot, read_config_value,
+    remove_legacy_plugin_install_record, write_config_atomic,
 };
 use crate::openclaw::paths::resolve_paths;
 use crate::openclaw::plugin_install;
@@ -71,8 +71,17 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     report.merge(moon_stop::run()?);
 
     let plugin = plugin_install::install_plugin(&paths, opts.dry_run)?;
+    report.detail(format!("plugin_source_dir={}", plugin.source_path));
     report.detail(format!("plugin_dir={}", plugin.path));
     report.detail(format!("plugin_changed={}", plugin.changed));
+    report.detail(format!(
+        "plugin_provenance_changed={}",
+        plugin.provenance_changed
+    ));
+    report.detail(format!(
+        "plugin_openclaw_installer_used={}",
+        plugin.used_openclaw_installer
+    ));
 
     let mut cfg = read_config_value(&paths)?;
     let context_policy = load_context_policy_if_explicit_env()?;
@@ -96,8 +105,7 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     );
 
     let plugin_patch = ensure_plugin_enabled(&mut cfg, &paths.plugin_id);
-    let install_record_patch =
-        ensure_plugin_install_record(&mut cfg, &paths.plugin_id, &paths.plugin_dir);
+    let install_record_patch = remove_legacy_plugin_install_record(&mut cfg, &paths.plugin_id);
     let slot_patch = ensure_plugin_slot(&mut cfg, "contextEngine", &paths.plugin_id);
     let runtime_patch = ensure_plugin_runtime_config(
         &mut cfg,
@@ -127,6 +135,9 @@ pub fn run(opts: &InstallOptions) -> Result<CommandReport> {
     }
     for key in install_record_patch.forced_paths {
         report.detail(format!("forced {key}"));
+    }
+    for key in install_record_patch.removed_paths {
+        report.detail(format!("removed {key}"));
     }
     for key in slot_patch.inserted_paths {
         report.detail(format!("inserted {key}"));
@@ -760,38 +771,38 @@ mod tests {
     fn launchd_plist_uses_moon_home_as_working_directory() {
         let plist = render_launchd_plist(
             "com.moon.watch",
-            Path::new("/Users/test/.cargo/bin/moon"),
-            Path::new("/Users/test/.moon"),
-            Path::new("/Users/test/.moon"),
-            Path::new("/Users/test/.moon/logs"),
-            Path::new("/Users/test/.moon/logs/launchd.stdout.log"),
-            Path::new("/Users/test/.moon/logs/launchd.stderr.log"),
-            Path::new("/Users/test"),
-            "/Users/test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
-            Some(Path::new("/Users/test/.moon/moon.toml")),
+            Path::new("/tmp/moon-test/.cargo/bin/moon"),
+            Path::new("/tmp/moon-test/.moon"),
+            Path::new("/tmp/moon-test/.moon"),
+            Path::new("/tmp/moon-test/.moon/logs"),
+            Path::new("/tmp/moon-test/.moon/logs/launchd.stdout.log"),
+            Path::new("/tmp/moon-test/.moon/logs/launchd.stderr.log"),
+            Path::new("/tmp/moon-test"),
+            "/tmp/moon-test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            Some(Path::new("/tmp/moon-test/.moon/moon.toml")),
         );
 
-        assert!(plist.contains("<key>WorkingDirectory</key><string>/Users/test/.moon</string>"));
+        assert!(plist.contains("<key>WorkingDirectory</key><string>/tmp/moon-test/.moon</string>"));
     }
 
     #[test]
     fn extract_launchd_working_directory_reads_plist_value() {
         let plist = render_launchd_plist(
             "com.moon.watch",
-            Path::new("/Users/test/.cargo/bin/moon"),
-            Path::new("/Users/test/.moon"),
-            Path::new("/Users/test/.moon"),
-            Path::new("/Users/test/.moon/logs"),
-            Path::new("/Users/test/.moon/logs/launchd.stdout.log"),
-            Path::new("/Users/test/.moon/logs/launchd.stderr.log"),
-            Path::new("/Users/test"),
-            "/Users/test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
-            Some(Path::new("/Users/test/.moon/moon.toml")),
+            Path::new("/tmp/moon-test/.cargo/bin/moon"),
+            Path::new("/tmp/moon-test/.moon"),
+            Path::new("/tmp/moon-test/.moon"),
+            Path::new("/tmp/moon-test/.moon/logs"),
+            Path::new("/tmp/moon-test/.moon/logs/launchd.stdout.log"),
+            Path::new("/tmp/moon-test/.moon/logs/launchd.stderr.log"),
+            Path::new("/tmp/moon-test"),
+            "/tmp/moon-test/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin",
+            Some(Path::new("/tmp/moon-test/.moon/moon.toml")),
         );
 
         assert_eq!(
             extract_launchd_working_directory(&plist).as_deref(),
-            Some("/Users/test/.moon")
+            Some("/tmp/moon-test/.moon")
         );
     }
 }

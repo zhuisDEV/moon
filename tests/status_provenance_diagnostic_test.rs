@@ -1,5 +1,4 @@
 use predicates::str::contains;
-use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -7,10 +6,24 @@ use tempfile::tempdir;
 fn write_fake_openclaw(bin_path: &Path, log_path: &Path, plugins_list_payload: &str) {
     let script = format!(
         r#"#!/usr/bin/env bash
-echo "$@" >> "{}"
-if [ "$1" = "plugins" ] && [ "$2" = "list" ]; then
-  cat <<'JSON'
-{}
+set -euo pipefail
+	echo "$@" >> "{}"
+if [ "$1" = "plugins" ] && [ "$2" = "install" ]; then
+  src="${{@: -1}}"
+  source_real="$(cd "$src" && pwd -P)"
+  target="$OPENCLAW_STATE_DIR/extensions/moon"
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source_real" "$target"
+  target_real="$(cd "$target" && pwd -P)"
+  mkdir -p "$OPENCLAW_STATE_DIR/plugins"
+  cat > "$OPENCLAW_STATE_DIR/plugins/installs.json" <<JSON
+{{"installRecords":{{"moon":{{"source":"path","sourcePath":"$source_real","installPath":"$target_real"}}}},"plugins":[]}}
+JSON
+fi
+	if [ "$1" = "plugins" ] && [ "$2" = "list" ]; then
+	  cat <<'JSON'
+	{}
 JSON
 fi
 exit 0
@@ -110,21 +123,7 @@ fn status_tolerates_missing_install_record_when_diagnostics_are_clean() {
 
     run_install(tmp.path(), &state_dir, &config_path, &fake_openclaw);
 
-    let mut cfg: Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).expect("read config"))
-            .expect("parse config");
-    cfg.get_mut("plugins")
-        .and_then(Value::as_object_mut)
-        .expect("plugins object")
-        .remove("installs");
-    fs::write(
-        &config_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&cfg).expect("serialize config")
-        ),
-    )
-    .expect("write config");
+    fs::remove_file(state_dir.join("plugins/installs.json")).expect("remove plugin index");
 
     assert_cmd::cargo::cargo_bin_cmd!("moon")
         .current_dir(tmp.path())

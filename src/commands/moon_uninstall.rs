@@ -89,6 +89,12 @@ fn remove_openclaw_integration(
     }
 
     remove_path_entry(&paths.plugin_dir, opts, report, "openclaw.plugin_dir")?;
+    remove_path_entry(
+        &paths.plugin_source_dir,
+        opts,
+        report,
+        "openclaw.plugin_source_dir",
+    )?;
     Ok(())
 }
 

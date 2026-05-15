@@ -103,9 +103,13 @@ fn run_openclaw_retry_with_optional_timeout(
     )
 }
 
-pub fn try_plugins_install(path: &Path) -> Result<()> {
+pub fn try_plugins_install(path: &Path, force: bool) -> Result<()> {
     let path_str = path.to_string_lossy().to_string();
-    let out = run_openclaw(&["plugins", "install", &path_str]);
+    let out = if force {
+        run_openclaw(&["plugins", "install", "--force", &path_str])
+    } else {
+        run_openclaw(&["plugins", "install", &path_str])
+    };
 
     match out {
         Ok(o) if o.status.success() => Ok(()),

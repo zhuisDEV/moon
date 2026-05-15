@@ -111,6 +111,9 @@ Execution note:
 4. Moon-owned installs also pin the OpenClaw memory contract to
    `plugins.slots.memory = "none"` and
    `agents.defaults.memorySearch.enabled = false`.
+5. Install provenance lives in OpenClaw's managed `plugins/installs.json`
+   plugin index; `moon install` removes legacy `plugins.installs.moon` config
+   entries when it sees them.
 
 Run L1 normalisation:
 

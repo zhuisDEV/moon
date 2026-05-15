@@ -55,9 +55,9 @@ the `tool_result_persist` hook.
 2. Per-tool limits (global defaults with per-tool overrides).
 3. JSON projection for high-volume tools (`read`, `message/readMessages`,
    `message/searchMessages`, `web_fetch`, `web.fetch`).
-4. Metadata persisted to `details.ocTokenOptim` with before/after estimated
+4. Metadata persisted to `details.moon` with before/after estimated
    tokens.
-5. Optional full payload retention in `details.ocTokenOptim.fullText` when under
+5. Optional full payload retention in `details.moon.fullText` when under
    `maxRetainedBytes`.
 
 ## Plugin config
@@ -95,3 +95,6 @@ Under `plugins.entries.moon.config`:
 Managed Moon installs and upgrades now stamp `contextEngineTimeoutMs=120000`
 explicitly because real `cleanse` + packet assembly can exceed 20s on long
 sessions.
+
+Install provenance is recorded in OpenClaw's managed `plugins/installs.json`
+plugin index. Moon no longer writes `plugins.installs` into `openclaw.json`.

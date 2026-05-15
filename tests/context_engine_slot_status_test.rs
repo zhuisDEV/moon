@@ -16,10 +16,24 @@ fn set_world_readable(path: &Path, mode: u32) {
 fn write_fake_openclaw(bin_path: &Path, log_path: &Path) {
     let script = format!(
         r#"#!/usr/bin/env bash
-echo "$@" >> "{}"
-if [ "$1" = "plugins" ] && [ "$2" = "list" ]; then
-  cat <<'JSON'
-{{"plugins":[{{"id":"moon","status":"loaded"}}],"diagnostics":[]}}
+set -euo pipefail
+	echo "$@" >> "{}"
+if [ "$1" = "plugins" ] && [ "$2" = "install" ]; then
+  src="${{@: -1}}"
+  source_real="$(cd "$src" && pwd -P)"
+  target="$OPENCLAW_STATE_DIR/extensions/moon"
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source_real" "$target"
+  target_real="$(cd "$target" && pwd -P)"
+  mkdir -p "$OPENCLAW_STATE_DIR/plugins"
+  cat > "$OPENCLAW_STATE_DIR/plugins/installs.json" <<JSON
+{{"installRecords":{{"moon":{{"source":"path","sourcePath":"$source_real","installPath":"$target_real"}}}},"plugins":[]}}
+JSON
+fi
+	if [ "$1" = "plugins" ] && [ "$2" = "list" ]; then
+	  cat <<'JSON'
+	{{"plugins":[{{"id":"moon","status":"loaded"}}],"diagnostics":[]}}
 JSON
 fi
 exit 0
@@ -39,10 +53,24 @@ exit 0
 fn write_fake_openclaw_doctor_failure(bin_path: &Path, log_path: &Path) {
     let script = format!(
         r#"#!/usr/bin/env bash
-echo "$@" >> "{}"
-if [ "$1" = "doctor" ] && [ "$2" = "--non-interactive" ]; then
-  echo "non-interactive doctor failed" >&2
-  exit 1
+set -euo pipefail
+	echo "$@" >> "{}"
+if [ "$1" = "plugins" ] && [ "$2" = "install" ]; then
+  src="${{@: -1}}"
+  source_real="$(cd "$src" && pwd -P)"
+  target="$OPENCLAW_STATE_DIR/extensions/moon"
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source_real" "$target"
+  target_real="$(cd "$target" && pwd -P)"
+  mkdir -p "$OPENCLAW_STATE_DIR/plugins"
+  cat > "$OPENCLAW_STATE_DIR/plugins/installs.json" <<JSON
+{{"installRecords":{{"moon":{{"source":"path","sourcePath":"$source_real","installPath":"$target_real"}}}},"plugins":[]}}
+JSON
+fi
+	if [ "$1" = "doctor" ] && [ "$2" = "--non-interactive" ]; then
+	  echo "non-interactive doctor failed" >&2
+	  exit 1
 fi
 if [ "$1" = "plugins" ] && [ "$2" = "info" ] && [ "$3" = "moon" ]; then
   cat <<'JSON'
@@ -73,10 +101,24 @@ exit 0
 fn write_fake_openclaw_doctor_timeout(bin_path: &Path, log_path: &Path) {
     let script = format!(
         r#"#!/usr/bin/env bash
-echo "$@" >> "{}"
-if [ "$1" = "doctor" ] && [ "$2" = "--non-interactive" ]; then
-  sleep 2
-  exit 0
+set -euo pipefail
+	echo "$@" >> "{}"
+if [ "$1" = "plugins" ] && [ "$2" = "install" ]; then
+  src="${{@: -1}}"
+  source_real="$(cd "$src" && pwd -P)"
+  target="$OPENCLAW_STATE_DIR/extensions/moon"
+  rm -rf "$target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source_real" "$target"
+  target_real="$(cd "$target" && pwd -P)"
+  mkdir -p "$OPENCLAW_STATE_DIR/plugins"
+  cat > "$OPENCLAW_STATE_DIR/plugins/installs.json" <<JSON
+{{"installRecords":{{"moon":{{"source":"path","sourcePath":"$source_real","installPath":"$target_real"}}}},"plugins":[]}}
+JSON
+fi
+	if [ "$1" = "doctor" ] && [ "$2" = "--non-interactive" ]; then
+	  sleep 2
+	  exit 0
 fi
 if [ "$1" = "plugins" ] && [ "$2" = "info" ] && [ "$3" = "moon" ]; then
   cat <<'JSON'

@@ -124,11 +124,19 @@ pub fn align_openclaw_plugin_state(report: &mut CommandReport, caller: &str) {
     let mut install_attempted = false;
     if !before.listed_by_openclaw {
         install_attempted = true;
-        match crate::openclaw::gateway::try_plugins_install(&paths.plugin_dir) {
-            Ok(()) => report.detail(format!(
-                "{prefix}.install=ok path={}",
-                paths.plugin_dir.display()
-            )),
+        match crate::openclaw::plugin_install::install_plugin_with_options(
+            &paths,
+            crate::openclaw::plugin_install::PluginInstallOptions {
+                dry_run: false,
+                force_openclaw_install: true,
+            },
+        ) {
+            Ok(outcome) => {
+                report.detail(format!(
+                    "{prefix}.install=ok path={} source={} openclaw_installer_used={}",
+                    outcome.path, outcome.source_path, outcome.used_openclaw_installer
+                ));
+            }
             Err(err) => report.detail(format!(
                 "{prefix}.install=failed error={}",
                 crate::moon::util::truncate_with_ellipsis(&format!("{err:#}"), 240)

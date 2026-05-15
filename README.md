@@ -100,7 +100,8 @@ moon health
 
 `moon install` does the following:
 
-1. installs the OpenClaw Moon plugin into the OpenClaw extensions dir
+1. stages the OpenClaw Moon plugin source and lets `openclaw plugins install`
+   populate the extensions dir plus the managed plugin index
 2. writes Moon runtime docs into `$MOON_HOME`
 3. writes Moon runtime skills into the OpenClaw state dir
 4. patches OpenClaw config to:

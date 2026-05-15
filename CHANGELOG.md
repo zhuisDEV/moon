@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-05-15
+
+### Changed
+
+- Moved Moon plugin installation to OpenClaw's managed plugin source/index
+  provenance flow. `moon install` now stages source under
+  `plugin-sources/moon`, invokes `openclaw plugins install`, and reads
+  provenance from `plugins/installs.json`.
+- Removed legacy `plugins.installs.moon` authoring from `openclaw.json` and
+  clean it up during install.
+
 ## [1.2.5] - 2026-05-04
 
 ### Fixed

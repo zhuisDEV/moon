@@ -14,6 +14,7 @@ use crate::openclaw::config::{
 };
 use crate::openclaw::gateway;
 use crate::openclaw::paths::resolve_paths;
+use crate::openclaw::plugin_index;
 use crate::openclaw::plugin_verify;
 
 #[derive(Debug, Clone, Default)]
@@ -29,13 +30,6 @@ pub struct StatusSnapshot {
     pub plugin_max_chars: bool,
     pub plugin_max_retained_bytes: bool,
     pub plugin_read_profile_tokens: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-struct InstallRecordSnapshot {
-    source: Option<String>,
-    source_path: Option<String>,
-    install_path: Option<String>,
 }
 
 fn path_exists(root: &Value, path: &[&str]) -> bool {
@@ -110,14 +104,6 @@ pub fn report_openclaw_memory_contract(
     }
 }
 
-fn install_record_snapshot(root: &Value, plugin_id: &str) -> InstallRecordSnapshot {
-    InstallRecordSnapshot {
-        source: path_string(root, &["plugins", "installs", plugin_id, "source"]),
-        source_path: path_string(root, &["plugins", "installs", plugin_id, "sourcePath"]),
-        install_path: path_string(root, &["plugins", "installs", plugin_id, "installPath"]),
-    }
-}
-
 pub fn config_snapshot(root: &Value, plugin_id: &str) -> StatusSnapshot {
     StatusSnapshot {
         plugin_enabled: root
@@ -188,7 +174,8 @@ pub fn run() -> Result<CommandReport> {
     let cfg = config::read_config_value(&paths)?;
     let snapshot = config_snapshot(&cfg, &paths.plugin_id);
     let memory_contract = inspect_moon_owned_memory_contract(&cfg);
-    let install_snapshot = install_record_snapshot(&cfg, &paths.plugin_id);
+    let install_snapshot =
+        plugin_index::read_plugin_install_index_record(&paths, &paths.plugin_id)?;
     let context_policy = load_context_policy_if_explicit_env()?;
     let verify = plugin_verify::verify_plugin(&paths)?;
     let openclaw_available = gateway::openclaw_available();
@@ -196,9 +183,19 @@ pub fn run() -> Result<CommandReport> {
     let state_dir_disp = paths.state_dir.display().to_string();
     let config_path_disp = paths.config_path.display().to_string();
     let plugin_dir_disp = paths.plugin_dir.display().to_string();
+    let plugin_source_dir_disp = paths.plugin_source_dir.display().to_string();
+    let plugin_index_path_disp = paths.plugin_index_path.display().to_string();
 
     report.detail(format!("state_dir={}", state_dir_disp.trim()));
     report.detail(format!("config_path={}", config_path_disp.trim()));
+    report.detail(format!(
+        "plugin_source_dir={}",
+        plugin_source_dir_disp.trim()
+    ));
+    report.detail(format!(
+        "plugin_index_path={}",
+        plugin_index_path_disp.trim()
+    ));
     report.detail(format!("plugin_dir={}", plugin_dir_disp.trim()));
     report_launchd_working_directory(&moon_paths, &mut report);
     for issue in crate::moon::fs_security::runtime_secret_permission_issues(&moon_paths)? {
@@ -228,13 +225,13 @@ pub fn run() -> Result<CommandReport> {
     }
 
     if let Some(s) = &install_snapshot.source {
-        report.detail(format!("install_record.source={}", s.trim()));
+        report.detail(format!("install_index.source={}", s.trim()));
     }
     if let Some(s) = &install_snapshot.source_path {
-        report.detail(format!("install_record.sourcePath={}", s.trim()));
+        report.detail(format!("install_index.sourcePath={}", s.trim()));
     }
     if let Some(s) = &install_snapshot.install_path {
-        report.detail(format!("install_record.installPath={}", s.trim()));
+        report.detail(format!("install_index.installPath={}", s.trim()));
     }
 
     if let Some(v) = path_value(
@@ -444,20 +441,21 @@ pub fn run() -> Result<CommandReport> {
         report.issue("plugin loaded without install/load-path provenance per OpenClaw diagnostics");
     }
 
-    let expected_plugin_dir = paths.plugin_dir.display().to_string();
+    let expected_plugin_source_dir = plugin_index::expected_plugin_source_path(&paths);
+    let expected_plugin_dir = plugin_index::expected_plugin_install_path(&paths);
     let mut install_record_reasons = Vec::new();
     if install_snapshot.source.as_deref() != Some("path") {
         install_record_reasons.push(format!(
-            "plugins.installs.{}.source expected \"path\", found {}",
+            "plugin index installRecords.{}.source expected \"path\", found {}",
             paths.plugin_id,
             install_snapshot.source.as_deref().unwrap_or("<missing>")
         ));
     }
-    if install_snapshot.source_path.as_deref() != Some(expected_plugin_dir.as_str()) {
+    if install_snapshot.source_path.as_deref() != Some(expected_plugin_source_dir.as_str()) {
         install_record_reasons.push(format!(
-            "plugins.installs.{}.sourcePath expected {}, found {}",
+            "plugin index installRecords.{}.sourcePath expected {}, found {}",
             paths.plugin_id,
-            expected_plugin_dir,
+            expected_plugin_source_dir,
             install_snapshot
                 .source_path
                 .as_deref()
@@ -466,7 +464,7 @@ pub fn run() -> Result<CommandReport> {
     }
     if install_snapshot.install_path.as_deref() != Some(expected_plugin_dir.as_str()) {
         install_record_reasons.push(format!(
-            "plugins.installs.{}.installPath expected {}, found {}",
+            "plugin index installRecords.{}.installPath expected {}, found {}",
             paths.plugin_id,
             expected_plugin_dir,
             install_snapshot

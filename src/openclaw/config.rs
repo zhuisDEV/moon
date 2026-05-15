@@ -360,38 +360,12 @@ pub fn ensure_plugin_enabled(root: &mut Value, plugin_id: &str) -> ConfigPatchOu
     outcome
 }
 
-pub fn ensure_plugin_install_record(
+pub fn remove_legacy_plugin_install_record(
     root: &mut Value,
     plugin_id: &str,
-    plugin_dir: &Path,
 ) -> ConfigPatchOutcome {
     let mut outcome = ConfigPatchOutcome::default();
-    let plugin_dir_value = normalize_path_for_storage(plugin_dir).display().to_string();
-
-    // Keep installs metadata aligned with the managed extension path so OpenClaw
-    // can treat this plugin as provenance-tracked local code.
-    set_path_if_absent_or_forced(
-        root,
-        &["plugins", "installs", plugin_id, "source"],
-        Value::from("path"),
-        true,
-        &mut outcome,
-    );
-    set_path_if_absent_or_forced(
-        root,
-        &["plugins", "installs", plugin_id, "sourcePath"],
-        Value::from(plugin_dir_value.clone()),
-        true,
-        &mut outcome,
-    );
-    set_path_if_absent_or_forced(
-        root,
-        &["plugins", "installs", plugin_id, "installPath"],
-        Value::from(plugin_dir_value),
-        true,
-        &mut outcome,
-    );
-
+    remove_path(root, &["plugins", "installs", plugin_id], &mut outcome);
     outcome
 }
 
