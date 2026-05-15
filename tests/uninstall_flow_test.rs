@@ -265,7 +265,13 @@ fn uninstall_purge_removes_entire_moon_home() {
 
 #[test]
 fn uninstall_is_registered_in_help() {
+    let tmp = tempdir().expect("tempdir");
+    let moon_home = tmp.path().join("moon-home");
+    fs::create_dir_all(&moon_home).expect("mkdir moon home");
+    fs::write(moon_home.join(".env"), "").expect("write env");
+
     assert_cmd::cargo::cargo_bin_cmd!("moon")
+        .env("MOON_HOME", &moon_home)
         .arg("--help")
         .assert()
         .success()
