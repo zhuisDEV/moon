@@ -13,7 +13,7 @@
 
 ## What to include
 
-1. MOON version (`moon --json status` output is helpful).
+1. Moon version (`moon --version`) and `moon --json health` output.
 2. OS + architecture.
 3. Command you ran.
 4. Exact error output.

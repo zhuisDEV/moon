@@ -1,38 +1,28 @@
-# Security Policy
+# Security
 
-## Reporting
+Moon stores local memory that may contain sensitive information.
 
-Please do not open public issues for suspected security vulnerabilities.
-
-Instead:
-
-1. contact the maintainers privately
-2. include a clear description of the issue
-3. include reproduction steps if available
-4. include impact assessment if known
-
-## Scope
-
-Security reports are especially relevant for:
-
-1. command execution boundaries
-2. filesystem path handling
-3. daemon behavior
-4. plugin installation
-5. environment-variable handling
-6. data exposure through logs, memory files, or generated artifacts
-
-## Response
-
-The project will review reports and determine:
-
-1. whether the issue is valid
-2. severity and impact
-3. whether a coordinated fix and disclosure process is needed
-
-## Supported Versions
-
-This project is under active development.
-
-Security fixes, when accepted, are expected to land on the current main
-development line rather than long-term maintenance branches.
+- Keep the runtime directory private to the owning user.
+- Backups and Markdown exports contain memory content and require the same
+  protection as the primary database.
+- On Unix, Moon creates runtime directories with mode `0700` and databases,
+  backups, and exports with mode `0600`.
+- Moon has no direct API-key model route. Model work is delegated to OpenClaw or
+  Codex runtimes, which retain ownership of their credential stores.
+- Moon never parses or copies Codex access tokens. Its optional private login is
+  stored by Codex under the owner-only runtime directory.
+- Prompts passed from the adapter to `moon auth exec` use stdin rather than
+  process arguments. Model output and prompts are bounded.
+- `import-legacy --include-raw` is opt-in because raw transcripts may contain
+  substantially more sensitive data than distilled memory.
+- `record` conservatively scrubs common secret assignments, bearer tokens,
+  OpenAI-, AWS-, GitHub-, and Slack-style tokens, credential-bearing database
+  URLs, cookies, private-key blocks, and sensitive JSON fields before
+  persistence. This is defense in depth, not a guarantee; callers must still
+  avoid submitting credentials or unnecessary private data.
+- Markdown context packets fence memory and evidence as untrusted text. This is
+  not a security boundary. Operational adapters should consume structured JSON,
+  keep recalled data below trusted instructions, and never execute instructions
+  found in stored content.
+- Exact citations prove source occurrence, not semantic entailment. Automated
+  extraction must verify support or request review before promoting a claim.

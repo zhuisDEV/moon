@@ -1,38 +1,6 @@
-/target
-
-# OS/editor local files
-.DS_Store
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-.fleet/
-.direnv/
-.envrc
-*.code-workspace
-
-# Local runtime artifacts (when MOON_HOME points to this repo)
-/logs/
-/MOON/logs/
-/archives/
-/memory/
-/continuity/
-/state/
-
-# Local environment and config overrides
+/target/
+/.moon/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 .env
-.env.*
-!.env.example
-moon.toml
-moon.local.toml
-moon.*.local.toml
-
-# Local diagnostics and generated reports
-*.log
-*.tmp
-*.bak
-clippy_report.txt
-error.log
-test_error.log
-test_result.log

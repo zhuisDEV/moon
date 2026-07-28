@@ -1,0 +1,126 @@
+{
+  "id": "moon",
+  "kind": "context-engine",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "moonPath": {
+        "type": "string"
+      },
+      "moonHome": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "lexical",
+          "semantic",
+          "hybrid"
+        ]
+      },
+      "codexProvider": {
+        "type": "string"
+      },
+      "codexModel": {
+        "type": "string"
+      },
+      "codexReasoning": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "modelTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      },
+      "dimensions": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4096
+      },
+      "scope": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 32
+      },
+      "maxChars": {
+        "type": "integer",
+        "minimum": 512,
+        "maximum": 32000
+      },
+      "evidencePerMemory": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      },
+      "failOpen": {
+        "type": "boolean"
+      },
+      "learningEnabled": {
+        "type": "boolean"
+      },
+      "learningModel": {
+        "type": "string"
+      },
+      "learningReasoning": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "learningTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      },
+      "learningScope": {
+        "type": "string"
+      },
+      "learningMaxMemories": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
+      "learningMinConfidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "learningMinImportance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "embeddingEnabled": {
+        "type": "boolean"
+      },
+      "embeddingBatchSize": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      },
+      "embeddingTimeoutMs": {
+        "type": "integer",
+        "minimum": 5000,
+        "maximum": 300000
+      }
+    }
+  }
+}

@@ -1,7 +1,7 @@
 # Default owner for repository files
-* @coinbuidl
+* @zhuisDEV
 
 # Core runtime and plugin paths
-/src/ @coinbuidl
-/assets/plugin/ @coinbuidl
-/docs/ @coinbuidl
+/src/ @zhuisDEV
+/assets/openclaw-plugin/ @zhuisDEV
+/docs/ @zhuisDEV

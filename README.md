@@ -1,465 +1,208 @@
-# M.O.O.N.
+# Moon
 
-> Strategic Memory Augmentation and Context Distillation for OpenClaw.
+Moon v2 is the formal Moon memory engine. Production uses one Rust binary and
+one SQLite database for structured memory, FTS5 keyword search, embedded vector
+search, and hybrid retrieval.
 
-Moon is a Rust CLI plus an OpenClaw context-engine plugin for long-session
-context control. It keeps the active context window under Moon control while
-leaving the final provider request envelope to OpenClaw.
+The installed `moon` command and OpenClaw adapter use `~/.moon`. Development,
+tests, imports, and replays should always pass an explicit temporary `--home`.
 
-## What Moon Does
+## Safety defaults
 
-Moon has two runtime lanes:
+- Production runtime root: `~/.moon`
+- Production database: `~/.moon/state/moon.sqlite`
+- Legacy import is read-only.
+- QMD, Node.js, a vector server, and the legacy watcher are not required.
+- The retired runtime is retained as a dated, read-only rollback copy.
+- Moon does not require `OPENAI_API_KEY`.
+- Model calls use Codex authentication without reading or copying tokens.
+- Runtime directories are owner-only on Unix; databases, backups, and exports
+  are created with owner-only file permissions.
+- `health` never creates or migrates a missing database.
+- Retrieved memory is untrusted data. Adapters must keep context below trusted
+  instructions and must not promote memory text into system or developer
+  instructions.
 
-1. Active lane: `moon context-engine`
-   - records the current session checkpoint
-   - refreshes the hot projection
-   - runs `cleanse` only when pressure says compaction is needed
-   - assembles the next active context packet
-2. Maintenance lane: `moon watch`
-   - projects library docs
-   - embeds searchable collections
-   - runs distillation and daily memory synthesis
+## Install or upgrade
 
-Current active control flow:
-
-1. `record`
-2. routine hot `project`
-3. conditional `cleanse`
-4. operator `assemble`
-5. active context packet generation
-
-## Prompt Boundary
-
-Moon does not own the final provider payload. The boundary is:
-
-1. Moon owns:
-   - checkpointing
-   - hot projection refresh
-   - conditional `cleanse`
-   - operator assembly artifacts
-   - active context packet generation
-   - transcript compaction entries
-2. OpenClaw owns:
-   - final system prompt
-   - message replay
-   - tool definitions
-   - provider dispatch
-3. Routine Moon `systemPromptAddition` stays unused.
-4. Moon injects model-facing active context through the `messages` lane.
-5. Moon `cleanse` summaries still travel through transcript `compaction` entries
-   and replay as `compactionSummary`.
-
-## Current Model-Facing Design
-
-Moon now uses three distinct surfaces:
-
-1. Operator artifact
-   - written under `$MOON_HOME/mce/`
-   - rich debugging/control artifact
-   - not shipped directly to the model
-2. Active context packet
-   - written under `$MOON_HOME/mcp/`
-   - deterministic, model-facing packet
-   - injected by the plugin into the OpenClaw `messages` lane
-3. `cleanse` summary
-   - written under `$MOON_HOME/cleanse/`
-   - appended to transcript compaction when compaction runs
-   - replayed later as `compactionSummary`
-
-The plugin can also run a gated Moon-owned curator subagent over the packet when
-configured, but deterministic local retrieval stays the first stage.
-
-Active context packets have a one-way boundary:
-
-1. the plugin may inject the current packet into the OpenClaw `messages` lane
-   for the model call
-2. Moon projection parsing treats replayed `# Moon Active Context` packets as
-   synthetic noise, not real conversation history
-3. old packets may only be used through an explicit recovery fallback, not mixed
-   into normal active-context scoring
-
-This keeps topic switches from being pulled back toward stale packet text while
-preserving the packet as the intended model-facing hint for the current turn.
-
-## Install
-
-Source install:
+Back up an existing Moon runtime before replacing its binary or plugin:
 
 ```bash
-export MOON_HOME="${MOON_HOME:-$HOME/.moon}"
-mkdir -p "$MOON_HOME"
-cp .env.example "$MOON_HOME/.env"
-cp moon.toml.example "$MOON_HOME/moon.toml"
-
-cargo install --path . --force
-moon install
-moon verify --strict
-moon status
-moon health
+moon backup --destination /path/to/moon-before-upgrade.sqlite
+moon export --destination /path/to/MEMORY-before-upgrade.md
 ```
 
-`moon install` does the following:
-
-1. stages the OpenClaw Moon plugin source and lets `openclaw plugins install`
-   populate the extensions dir plus the managed plugin index
-2. writes Moon runtime docs into `$MOON_HOME`
-3. writes Moon runtime skills into the OpenClaw state dir
-4. patches OpenClaw config to:
-   - enable the Moon plugin
-   - set `plugins.slots.contextEngine = "moon"`
-   - set `plugins.slots.memory = "none"`
-   - set `agents.defaults.memorySearch.enabled = false`
-5. wires Moon runtime paths and a managed `contextEngineTimeoutMs` into
-   `plugins.entries.moon.config.*`
-6. configures macOS launchd autostart when running from an installed binary
-7. repairs secret-bearing Moon runtime paths to owner-only permissions:
-   - `$MOON_HOME/.env`
-   - `$MOON_HOME/auth/`
-   - `$MOON_HOME/auth/openai-codex.json`
-   - `$MOON_HOME/logs/`
-   - `$MOON_HOME/logs/audit.log`
-   - `$MOON_HOME/logs/distill.audit.log`
-
-## Upgrade
-
-Recommended upgrade path:
+Build and install the v2 binary:
 
 ```bash
-moon update
+cargo build --locked --release
+install -d -m 700 ~/.moon/bin
+install -m 755 target/release/moon ~/.moon/bin/moon
+~/.moon/bin/moon init
+~/.moon/bin/moon --json health
 ```
 
-`moon update`:
-
-1. upgrades to latest stable tag by default
-2. supports `--channel main`
-3. supports `--check` and `--dry-run`
-4. reruns `moon install`
-5. reruns `moon verify --strict`
-6. preserves existing `$MOON_HOME/.env` and `$MOON_HOME/moon.toml`
-7. repairs owner-only permissions for Moon-managed secret/runtime log paths
-
-## Login
-
-Moon supports OpenClaw-style OpenAI Codex OAuth for its remote lanes.
+Install the OpenClaw adapter from this checkout and select Moon as the sole
+context and memory owner:
 
 ```bash
-moon login --provider openai-codex
+openclaw plugins install --link "$PWD/assets/openclaw-plugin"
+openclaw config set --batch-json '[
+  {"path":"plugins.entries.moon.enabled","value":true},
+  {"path":"plugins.entries.moon.config","value":{
+    "moonPath":"~/.moon/bin/moon",
+    "moonHome":"~/.moon",
+    "mode":"hybrid",
+    "embeddingEnabled":true,
+    "embeddingBatchSize":64,
+    "embeddingTimeoutMs":120000
+  }},
+  {"path":"plugins.slots.contextEngine","value":"moon"},
+  {"path":"plugins.slots.memory","value":"none"},
+  {"path":"agents.defaults.memorySearch.enabled","value":false},
+  {"path":"agents.defaults.compaction.mode","value":"default"}
+]'
+openclaw config validate
+openclaw plugins doctor
+openclaw gateway restart --safe
 ```
 
-Moon stores managed auth in:
+The first local embedding request downloads the multilingual E5 model into the
+Moon runtime. See [docs/migration.md](docs/migration.md) before upgrading from
+Moon v1.
 
-1. `$MOON_HOME/auth/openai-codex.json`
-
-Moon keeps the auth store owner-only on Unix:
-
-1. auth dir: `0700`
-2. auth file: `0600`
-
-Moon uses that auth for:
-
-1. `cleanse` with `MOON_CLEANSE_PROVIDER=openai-codex`
-2. remote `distill`
-3. remote wisdom synthesis
-
-## Security
-
-Moon treats these runtime paths as secret-bearing or privacy-sensitive:
-
-1. `$MOON_HOME/.env`
-2. `$MOON_HOME/auth/`
-3. `$MOON_HOME/auth/openai-codex.json`
-4. `$MOON_HOME/logs/`
-5. `$MOON_HOME/logs/audit.log`
-6. `$MOON_HOME/logs/distill.audit.log`
-
-Security contract:
-
-1. `moon install` and `moon update` repair those paths to owner-only permissions
-   on Unix (`0600` for files, `0700` for directories).
-2. `moon verify --strict` fails if any of those paths are broader than
-   owner-only.
-3. `moon status` and `moon verify` continue masking configured API keys instead
-   of printing them.
-4. Remote provider failures now log only status plus request id when available;
-   Moon no longer persists arbitrary remote error bodies into its audit paths.
-
-## Runtime Root
-
-Default runtime root:
-
-1. `$HOME/.moon`
-
-Key paths:
-
-1. raw checkpoints: `$MOON_HOME/raw/`
-2. hot projections: `$MOON_HOME/mds/`
-3. library projections: `$MOON_HOME/mlib/`
-4. cleanse summaries: `$MOON_HOME/cleanse/`
-5. operator assembly artifacts: `$MOON_HOME/mce/`
-6. active context packets: `$MOON_HOME/mcp/`
-7. daily memory: `$MOON_HOME/memory/`
-8. durable memory: `$MOON_HOME/MEMORY.md`
-9. state: `$MOON_HOME/state/moon_state.json`
-10. qmd runtime: `$MOON_HOME/qmd/`
-
-## Minimal `.env`
+## Development
 
 ```bash
-MOON_HOME=$HOME/.moon
-
-OPENCLAW_BIN=<optional-path-to-openclaw>
-QMD_BIN=<path-to-qmd>
-
-MOON_RAW_DIR=$MOON_HOME/raw
-MOON_MDS_DIR=$MOON_HOME/mds
-MOON_MLIB_DIR=$MOON_HOME/mlib
-MOON_CLEANSE_DIR=$MOON_HOME/cleanse
-MOON_MEMORY_DIR=$MOON_HOME/memory
-MOON_MEMORY_FILE=$MOON_HOME/MEMORY.md
-MOON_LOGS_DIR=$MOON_HOME/logs
-MOON_CONFIG_PATH=$MOON_HOME/moon.toml
-MOON_STATE_FILE=$MOON_HOME/state/moon_state.json
-QMD_DB=$MOON_HOME/qmd/index.sqlite
-QMD_CONFIG_DIR=$MOON_HOME/qmd/config
-
-OPENCLAW_STATE_DIR=$HOME/.openclaw
-OPENCLAW_CONFIG_PATH=$OPENCLAW_STATE_DIR/openclaw.json
-OPENCLAW_SESSIONS_DIR=$OPENCLAW_STATE_DIR/agents/main/sessions
+cargo build
+cargo test --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo build --locked --release
 ```
 
-Provider examples:
+The command surface is documented by:
 
 ```bash
-# Gemini
-MOON_CLEANSE_PROVIDER=gemini
-MOON_CLEANSE_MODEL=gemini-3.1-flash-lite-preview
-GEMINI_API_KEY=...
-
-# OpenAI Responses
-MOON_CLEANSE_PROVIDER=openai
-MOON_CLEANSE_MODEL=gpt-4.1-mini
-OPENAI_API_KEY=...
-
-# OpenAI Codex OAuth
-MOON_CLEANSE_PROVIDER=openai-codex
-MOON_CLEANSE_MODEL=gpt-5.4
-OPENAI_CODEX_BASE_URL=https://chatgpt.com/backend-api
-
-# OpenAI-compatible
-MOON_CLEANSE_PROVIDER=openai-compatible
-MOON_CLEANSE_MODEL=deepseek-chat
-AI_BASE_URL=https://api.deepseek.com
-AI_API_KEY=...
+cargo run -- --help
 ```
 
-## Recommended `moon.toml`
+See [docs/architecture.md](docs/architecture.md) for the storage and retrieval
+contracts. Start with [docs/how-it-works.md](docs/how-it-works.md) for the
+workflow-first explanation.
 
-```toml
-[context]
-window_mode = "fixed"
-window_tokens = 200000
-compaction_authority = "moon"
-cleanse_trigger_ratio = 0.50
-cleanse_emergency_ratio = 0.90
+## Evidence-backed memory workflow
 
-[context_packet]
-enabled = true
-max_chars = 6000
-max_candidates = 18
-qmd_limit = 6
-recent_memory_files = 4
-recent_distill_docs = 4
-
-[watcher]
-poll_interval_secs = 60
-cooldown_secs = 60
-
-[distill]
-max_per_cycle = 3
-residential_timezone = "UTC"
-syns_trigger_time_local = "00:00"
-topic_discovery = true
-
-[embed]
-mode = "auto"
-cooldown_secs = 60
-max_docs_per_cycle = 3
-min_pending_docs = 1
-max_cycle_secs = 300
-
-[hot_collection]
-lifecycle_mode = "degrade"
-lifecycle_command_mode = "primary"
-```
-
-## CLI
-
-Global flags:
-
-1. `--json`
-2. `--allow-out-of-bounds`
-3. `--version` / `-V`
-
-Commands:
-
-1. `install [--force] [--dry-run] [--apply true|false]`
-2. `uninstall [--dry-run] [--purge] [--remove-binary]`
-3. `login [--provider openai-codex] [--headless]`
-4. `update [--check] [--dry-run] [--channel stable|main]`
-5. `verify [--strict] [--verbose]`
-6. `repair [--force]`
-7. `status`
-8. `health`
-9. `record [--source <path>] [--session-id <id>] [--dry-run]`
-10. `project [--source <path>] [--session-id <id>] [--lane hot|library|lib] [--dry-run]`
-11. `cleanse [--source <path>] [--session-id <id>] [--dry-run]`
-12. `assemble [--source <path>] [--session-id <id>] [--dry-run] [--replay-has-compaction-summary]`
-13. `context-engine [--source <path>] [--session-id <id>] [--used-tokens <N>] [--max-tokens <N>] [--force-cleanse] [--replay-has-compaction-summary]`
-14. `watch [--once] [--daemon] [--dry-run]`
-15. `stop`
-16. `restart`
-17. `recall --query <text> [--name <collection>] [--limit <N>]`
-18. `embed [--name <collection>] [--max-docs <N>] [--dry-run] [--watcher-trigger]`
-19. `distill [--mode norm|syns] [--archive <path>] [--file <path> ...] [--session-id <id>] [--dry-run]`
-20. `config [--show]`
-
-Exit codes:
-
-1. `0`: `ok=true`
-2. `2`: `ok=false`
-3. `1`: process/runtime error
-
-## Common Workflows
-
-One-command upgrade:
+Moon separates completed-session evidence, durable memories, and per-request
+context packets:
 
 ```bash
-moon update
+moon --home /tmp/moon-test record \
+  --session-id example-session \
+  --scope moon \
+  --file /path/to/completed-session.txt
+
+moon --home /tmp/moon-test distill \
+  --key moon:storage \
+  --kind decision \
+  --scope moon \
+  --content "Moon uses one canonical SQLite database." \
+  --session-id example-session \
+  --evidence-quote "Moon uses one canonical SQLite database."
+
+moon --home /tmp/moon-test context \
+  --query "How does Moon store memory?" \
+  --scope moon \
+  --mode hybrid \
+  --provider local
 ```
 
-Strict integration verification:
+The OpenClaw adapter embeds new durable memories automatically and drains
+reference backlog in bounded batches. Raw completed-turn evidence remains
+lexical and citation-only. When no reviewed canonical memory matches, `context`
+can fill the remaining budget with deduplicated source excerpts. These stay
+visibly separate as unreviewed references with source and byte citations.
+
+## Isolated smoke test
+
+Use an explicit test root. Nothing below reads or writes `~/.moon`:
 
 ```bash
-moon verify --strict
+cargo run -- --home /tmp/moon-test --dimensions 384 init
+cargo run -- --home /tmp/moon-test --dimensions 384 remember \
+  --kind decision \
+  --scope moon \
+  --content "Moon uses one embedded SQLite memory store."
+cargo run -- --home /tmp/moon-test --dimensions 384 embed --provider hash
+cargo run -- --home /tmp/moon-test --dimensions 384 search \
+  --query "embedded memory store" \
+  --mode hybrid \
+  --provider hash
 ```
 
-Manual active-window checkpoint:
+The deterministic `hash` provider exists only for offline vector plumbing and
+latency validation. Production hybrid search uses the local multilingual E5
+provider. It does not require a model login, API key, remote vector service, or
+QMD. OpenClaw keeps one private stdio child warm so query inference does not pay
+model startup cost on every turn.
 
 ```bash
-moon context-engine --used-tokens 65000 --max-tokens 200000
+moon --home /tmp/moon-test --json auth status
+printf 'Return exactly READY.' | \
+  moon --home /tmp/moon-test --json auth exec \
+    --model gpt-5.6-sol
 ```
 
-One maintenance cycle:
+The model path first uses an authenticated OpenClaw runtime when called by the
+adapter, then a private Moon Codex login, then the normal local Codex login. Run
+`moon auth login` only if you want the middle level. Moon does not parse, copy,
+or store access tokens itself. The default is `gpt-5.6-sol` with high reasoning;
+`gpt-5.6-luna` defaults to medium reasoning in the adapter for lower-latency
+work.
+
+Embedding workers claim bounded, expiring leases before local inference.
+Memories run before references; failures back off and keep a redacted
+diagnostic. `requeue-embeddings` refuses to clear vectors while another worker
+has an active lease. Use `embed --provider local --drain` for a full rebuild.
+
+## Read-only legacy trial
+
+Import into an isolated test database. The old Moon root is read-only input:
 
 ```bash
-moon watch --once
+cargo run -- --home /tmp/moon-shadow import-legacy \
+  --source-home ~/.moon
+cargo run -- --home /tmp/moon-shadow embed --provider hash
+cargo run -- --home /tmp/moon-shadow shadow \
+  --legacy-home ~/.moon \
+  --query "a known prior decision" \
+  --provider hash
 ```
 
-Manual search and memory operations:
+Before an upgrade or embedding-model migration, create a database backup and a
+generated memory export:
 
 ```bash
-moon recall --name history_lib --query "recent decision about context packets"
-moon embed --name history_lib --max-docs 25
-moon distill --mode norm
-moon distill --mode syns
+cargo run -- backup --destination /path/to/moon-backup.sqlite
+cargo run -- export --destination /path/to/MEMORY.export.md
 ```
 
-## Operational Notes
+There is deliberately no legacy-delete command.
 
-1. `status` includes daemon lock and OpenClaw contract diagnostics.
-2. `verify --strict` fails when plugin/runtime integration is unhealthy.
-3. `verify --strict` also fails when Moon secret-bearing runtime files are not
-   owner-only.
-4. `watch --daemon` is blocked from development binaries for safety.
-5. `moon install` may add a managed `MOON_HOME` block to `~/.zprofile`.
-6. macOS installed-binary mode uses launchd label `com.moon.watch`.
-7. Scheduled watcher `syns` runs once per local day at or after
-   `distill.syns_trigger_time_local`; if Moon misses the exact window, it
-   catches up later the same day.
-8. Scheduled watcher `syns` uses the previous local day's
-   `$MOON_HOME/memory/<day>.md` plus durable `MEMORY.md`; it does not fall back
-   to the current day's daily-memory file.
+## OpenClaw integration
 
-## Troubleshooting
+The adapter in [`assets/openclaw-plugin`](assets/openclaw-plugin) registers the
+`moon` context engine. It retrieves a defensive Markdown packet, injects it
+immediately before the current user message, records completed turns as
+immutable evidence, and selectively distills durable memories with exact
+citations. Greetings and irrelevant queries inject no packet. Retrieval and
+learning fail open, and OpenClaw retains transcript compaction.
 
-See [docs/troubleshooting.md](./docs/troubleshooting.md) for known failure
-modes, diagnostics, and recovery steps.
+Normal context is capped at 3,500 characters. Learning uses `gpt-5.6-luna` with
+medium reasoning through OpenClaw's session-bound model runtime, then the Moon
+and local Codex fallbacks. No model prompt or distillation payload is placed in
+process arguments.
 
-## Uninstall
-
-Moon now has a real uninstall command.
-
-Safe default uninstall:
-
-```bash
-moon uninstall
-```
-
-Default uninstall removes:
-
-1. OpenClaw Moon plugin assets
-2. OpenClaw Moon install/config wiring
-3. Moon runtime-generated artifacts:
-   - `raw/`
-   - `mds/`
-   - `mlib/`
-   - `cleanse/`
-   - `mce/`
-   - `mcp/`
-   - `logs/`
-   - `state/`
-   - `qmd/`
-   - generated runtime docs
-4. Moon runtime skills under the OpenClaw state dir
-5. the managed `MOON_HOME` shell block in `~/.zprofile`
-6. launchd watcher plist on macOS
-
-Default uninstall preserves:
-
-1. `$MOON_HOME/memory/`
-2. `$MOON_HOME/MEMORY.md`
-3. `$MOON_HOME/.env`
-4. `$MOON_HOME/moon.toml`
-5. `$MOON_HOME/auth/`
-
-Full wipe:
-
-```bash
-moon uninstall --purge
-```
-
-`--purge` removes the entire resolved `MOON_HOME`.
-
-Optional binary removal:
-
-```bash
-moon uninstall --purge --remove-binary
-```
-
-`--remove-binary` attempts:
-
-1. `cargo uninstall moon`
-
-Use `--dry-run` first if you want the exact cleanup plan without mutating
-anything.
-
-## Repository Map
-
-1. [src/cli.rs](./src/cli.rs)
-2. [src/commands](./src/commands)
-3. [src/moon](./src/moon)
-4. [src/openclaw](./src/openclaw)
-5. [assets/plugin](./assets/plugin)
-6. [tests](./tests)
-7. [docs](./docs)
-
-## Additional Docs
-
-1. [docs/runbook.md](./docs/runbook.md)
-2. [docs/contracts.md](./docs/contracts.md)
-3. [docs/failure_policy.md](./docs/failure_policy.md)
-4. [docs/security_checklist.md](./docs/security_checklist.md)
-5. [CHANGELOG.md](./CHANGELOG.md)
-6. [RELEASE.md](./RELEASE.md)
-7. [SUPPORT.md](./SUPPORT.md)
-8. [GOVERNANCE.md](./GOVERNANCE.md)
+The adapter is installed in production from `~/.moon/openclaw-plugin`, with the
+`moon` context-engine slot active. Use
+[docs/openclaw-canary.md](docs/openclaw-canary.md) when validating future
+releases in an isolated profile.

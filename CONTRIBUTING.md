@@ -21,8 +21,12 @@ Requirements:
 Basic workflow:
 
 ```bash
-cargo fmt
-cargo test
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+deno test --node-modules-dir=none \
+  --allow-read --allow-write --allow-env --allow-run \
+  assets/openclaw-plugin/index.test.ts
 ```
 
 ## Pull Requests
@@ -36,11 +40,13 @@ Include:
 3. any behavior removed
 4. how it was tested
 
-If a change introduces a second path for the same behavior, explain why that duplication is necessary.
+If a change introduces a second path for the same behavior, explain why that
+duplication is necessary.
 
 ## Style
 
-1. Prefer deletion over compatibility layers when old behavior is no longer part of the product direction.
+1. Prefer deletion over compatibility layers when old behavior is no longer part
+   of the product direction.
 2. Keep runtime behavior explicit.
 3. Avoid hidden fallback logic.
 4. Update docs when the workflow changes.

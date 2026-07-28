@@ -1,15 +1,10 @@
 [package]
 name = "moon"
-version = "1.2.6"
+version = "2.0.0"
 edition = "2024"
-description = "Rust CLI for OpenClaw session lifecycle automation: archive, index, recall, and low-cost distillation."
+description = "A self-contained, SQLite-native memory engine for Moon"
 license = "MIT"
-repository = "https://github.com/zhuisDEV/moon"
-homepage = "https://github.com/zhuisDEV/moon"
-readme = "README.md"
-keywords = ["openclaw", "llm", "cli", "memory", "context"]
-categories = ["command-line-utilities"]
-default-run = "moon"
+publish = false
 
 [[bin]]
 name = "moon"
@@ -17,26 +12,24 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-base64 = "0.22"
-clap = { version = "4.5", features = ["derive"] }
-dirs = "5.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+dirs = "6.0"
+fastembed = { version = "5.17.3", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+regex = "1.11"
+rusqlite = { version = "0.39", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
-json5 = "0.4"
-tempfile = "3.13"
-which = "7.0"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-chrono-tz = "0.10"
 sha2 = "0.10"
-toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-dotenvy = "0.15"
-fs2 = "0.4"
-ctrlc = "3.4"
-rand = "0.8"
+sqlite-vec = "=0.1.9"
+tempfile = "3.15"
+walkdir = "2.5"
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
-tempfile = "3.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
