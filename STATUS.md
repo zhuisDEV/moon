@@ -5,6 +5,7 @@
 Moon v2 became the active OpenClaw context engine on 2026-07-29:
 
 - installed command used by OpenClaw: `/Users/lilac/.moon/bin/moon`
+- formal source checkout: `/Users/lilac/gh/moon`
 - runtime: `/Users/lilac/.moon`
 - database: `/Users/lilac/.moon/state/moon.sqlite`
 - OpenClaw slot: `moon`
@@ -25,6 +26,8 @@ Moon v2 became the active OpenClaw context engine on 2026-07-29:
   `/Users/lilac/.moon-backups/20260728T174748Z-pre-v2-formal`
 - post-v2 formal-release recovery bundle:
   `/Users/lilac/.moon-backups/20260728T175422Z-post-v2-formal`
+- retired v1 source checkout: `/Users/lilac/gh/moon-legacy-source-20260729`
+- retired v2 prerelease checkout: `/Users/lilac/gh/moon-v2-prerelease-20260729`
 
 The live schema is v6. All 4 active-memory chunks and 6,000 eligible reference
 chunks have local vectors. Raw evidence has zero vectors by design. The
