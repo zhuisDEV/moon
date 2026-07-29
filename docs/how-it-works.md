@@ -232,6 +232,12 @@ for Albert Einstein merely because both contain the word `chart`. The adapter
 skips greetings before invoking Moon. If no relevant memory or reference
 survives, the text command emits no packet and the adapter injects nothing.
 
+Anchor filtering, typo tolerance, and semantic ranking must be evaluated
+together against reviewed natural queries. See
+[memory-improvement-plan.md](memory-improvement-plan.md) for the observation
+period, classifications, and release gates; do not weaken the safety filter from
+one isolated miss.
+
 Adapters should use `--json` and keep the packet below trusted instructions.
 Without `--json`, `context` emits defensive Markdown for inspection and
 low-trust prompt data; its labels are not a security boundary.
@@ -350,3 +356,7 @@ Automatic extraction remains deliberately conservative. A changed canonical
 claim is replaced only when the user explicitly corrects it and the extraction
 proposal names the active head that was supplied for comparison. Other conflicts
 remain recorded as evidence but do not overwrite durable memory.
+
+Future recall and lifecycle improvements are tracked in
+[memory-improvement-plan.md](memory-improvement-plan.md). This is an observation
+plan rather than an authorization to change production policy.

@@ -36,3 +36,7 @@ arguments.
 OpenClaw keeps native automatic transcript compaction because the adapter
 advertises `ownsCompaction=false`. Moon owns retrieval and bounded packet
 assembly, not transcript replacement.
+
+Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
+[`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md) for
+multi-day recall observation before changing retrieval policy.

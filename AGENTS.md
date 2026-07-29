@@ -15,4 +15,6 @@
 - Preserve numbered, transactional database migrations.
 - Benchmark retrieval against representative corpus sizes before claiming a
   performance improvement.
+- Keep `SKILL.md`, `README.md`, and workflow documentation aligned whenever the
+  agent-facing command surface or automatic lifecycle changes.
 - Never persist or print provider credentials or arbitrary remote error bodies.

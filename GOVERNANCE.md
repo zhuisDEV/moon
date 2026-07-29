@@ -2,7 +2,7 @@
 
 ## Project model
 
-MOON is maintained under a maintainer-led model.
+Moon is maintained under a maintainer-led model.
 
 ## Roles
 
