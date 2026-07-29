@@ -42,8 +42,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: MOON version
-      placeholder: e.g. 1.0.0
+      label: Moon version
+      placeholder: e.g. 2.0.0
     validations:
       required: true
 

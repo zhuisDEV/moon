@@ -49,7 +49,8 @@ duplication is necessary.
    of the product direction.
 2. Keep runtime behavior explicit.
 3. Avoid hidden fallback logic.
-4. Update docs when the workflow changes.
+4. Update `README.md`, `SKILL.md`, and related workflow docs when behavior
+   changes.
 
 ## Issues
 

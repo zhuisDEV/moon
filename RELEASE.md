@@ -1,6 +1,6 @@
 # Release Process
 
-This document describes the release process for MOON.
+This document describes the release process for Moon.
 
 ## Scope
 
@@ -15,6 +15,8 @@ Use this process for tagged public releases (for example `v2.0.0`).
 2. Update `CHANGELOG.md` with release date and highlights.
 3. Verify docs are aligned:
    - `README.md`
+   - `SKILL.md`
+   - `docs/how-it-works.md`
    - `SECURITY.md`
    - `SUPPORT.md`
 4. Run validation:
@@ -22,7 +24,7 @@ Use this process for tagged public releases (for example `v2.0.0`).
    - `cargo clippy --locked --all-targets --all-features -- -D warnings`
    - `cargo test --locked --all-targets --all-features`
    - `cargo build --locked --release`
-   - `deno fmt --check assets/openclaw-plugin tools docs README.md STATUS.md CHANGELOG.md`
+   - `deno fmt --check assets/openclaw-plugin tools docs README.md SKILL.md CHANGELOG.md`
    - `deno lint assets/openclaw-plugin tools`
    - `deno test --node-modules-dir=none --allow-read --allow-write --allow-env --allow-run assets/openclaw-plugin/index.test.ts`
    - an isolated migration and real-binary adapter canary

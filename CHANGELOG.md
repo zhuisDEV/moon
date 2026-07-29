@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a canonical Moon v2 AI-agent skill and a multi-day observation plan for
+  recall, correction, redundancy, packet density, and compaction quality.
+- Removed completed status and dated benchmark reports; retained the reusable
+  release canary, migration guide, and performance methodology.
+- Refreshed the public repository, package, plugin, issue, and contribution
+  metadata for the local-first Moon v2 architecture.
+
 ## 2.0.0 - 2026-07-29
 
 Moon v2 formally replaces the v1 QMD/watcher architecture with the

@@ -32,7 +32,7 @@ jobs:
       - uses: denoland/setup-deno@v2.0.5
         with:
           deno-version: v2.x
-      - run: deno fmt --check assets/openclaw-plugin tools docs README.md STATUS.md CHANGELOG.md
+      - run: deno fmt --check assets/openclaw-plugin tools docs README.md SKILL.md CHANGELOG.md
       - run: deno lint assets/openclaw-plugin tools
       - run: >-
           deno test --node-modules-dir=none

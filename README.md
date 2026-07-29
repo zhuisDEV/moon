@@ -90,6 +90,22 @@ See [docs/architecture.md](docs/architecture.md) for the storage and retrieval
 contracts. Start with [docs/how-it-works.md](docs/how-it-works.md) for the
 workflow-first explanation.
 
+## AI-agent skill
+
+[`SKILL.md`](SKILL.md) is the canonical operating guide for AI agents. Normal
+OpenClaw use is automatic; the skill is for health checks, recall diagnosis,
+backups, exports, and explicitly authorized maintenance.
+
+To make the skill available to OpenClaw:
+
+```bash
+install -d -m 700 ~/.openclaw/skills/moon
+install -m 644 SKILL.md ~/.openclaw/skills/moon/SKILL.md
+```
+
+Do not carry forward v1 agent commands such as `moon recall`, `moon watch`,
+`moon cleanse`, or `moon context-engine`; they are not part of Moon v2.
+
 ## Evidence-backed memory workflow
 
 Moon separates completed-session evidence, durable memories, and per-request
@@ -205,4 +221,6 @@ process arguments.
 The adapter is installed in production from `~/.moon/openclaw-plugin`, with the
 `moon` context-engine slot active. Use
 [docs/openclaw-canary.md](docs/openclaw-canary.md) when validating future
-releases in an isolated profile.
+releases in an isolated profile. Before changing retrieval policy, follow the
+multi-day observation and acceptance gates in
+[docs/memory-improvement-plan.md](docs/memory-improvement-plan.md).

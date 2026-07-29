@@ -41,6 +41,9 @@ minimum confidence and importance, and explicit correction intent before
 supersession.
 
 See [how-it-works.md](how-it-works.md) for the operator workflows and examples.
+Use [memory-improvement-plan.md](memory-improvement-plan.md) to evaluate recall,
+correction, redundancy, packet density, and long-window behavior before changing
+these contracts.
 
 ## Retrieval
 

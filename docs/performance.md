@@ -4,6 +4,11 @@ Moon reports warm query latency through `benchmark`. Performance claims must
 include corpus size, chunk count, vector dimensions, provider, query mode, build
 profile, and hardware.
 
+Measure both the underlying search and the complete warm stdio request. The
+second includes query embedding, context assembly, citation loading, rendering,
+and transport, and is the better estimate of per-turn Moon overhead. Cold model
+startup is a separate gateway-lifecycle measurement.
+
 Minimum release measurements:
 
 - incremental unchanged-document ingest
@@ -29,3 +34,8 @@ cargo run --release -- --home /tmp/moon-shadow benchmark \
   --provider hash \
   --iterations 500
 ```
+
+For production-quality observation, use `--provider local` against a backup or
+isolated copy with the same embedding model and dimensions. Follow
+[memory-improvement-plan.md](memory-improvement-plan.md) for the reviewed query
+corpus, privacy rules, and acceptance gates.
