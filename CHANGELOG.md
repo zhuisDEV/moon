@@ -8,6 +8,8 @@
   release canary, migration guide, and performance methodology.
 - Refreshed the public repository, package, plugin, issue, and contribution
   metadata for the local-first Moon v2 architecture.
+- Pinned the RustSec audit action to its upstream Node 24 migration, removing
+  the deprecated action-runtime warning.
 
 ## 2.0.0 - 2026-07-29
 
