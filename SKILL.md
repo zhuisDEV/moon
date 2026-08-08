@@ -9,6 +9,18 @@ Use the installed `moon` binary. Normal OpenClaw conversations require no manual
 Moon commands: the adapter retrieves context, records completed turns, distills
 eligible durable memories, and drains embeddings automatically.
 
+Before operating or migrating a runtime, verify that the shell command and the
+OpenClaw `moonPath` resolve to the same v2 binary:
+
+```bash
+command -v moon
+moon --version
+```
+
+If a legacy binary shadows v2 and rejects a newer schema, do not run its `init`
+command. Use the configured v2 binary explicitly and repair command resolution
+first.
+
 ## Inspect safely
 
 1. Check the runtime without changing it:

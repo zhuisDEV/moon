@@ -47,4 +47,7 @@ Use this process for tagged public releases (for example `v2.0.0`).
 1. Confirm CI green on release tag.
 2. Verify the remote tag and GitHub release target the pushed `main` commit.
 3. Smoke test the installed binary, plugin registration, gateway, hybrid recall,
-   automatic embedding, and rollback bundle.
+   automatic embedding, and rollback bundle. Confirm that `command -v moon`
+   resolves to the same binary configured as OpenClaw's `moonPath`, then check
+   `moon --version` and `moon --json health` so a legacy binary cannot shadow
+   the release.

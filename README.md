@@ -28,8 +28,8 @@ tests, imports, and replays should always pass an explicit temporary `--home`.
 Back up an existing Moon runtime before replacing its binary or plugin:
 
 ```bash
-moon backup --destination /path/to/moon-before-upgrade.sqlite
-moon export --destination /path/to/MEMORY-before-upgrade.md
+~/.moon/bin/moon backup --destination /path/to/moon-before-upgrade.sqlite
+~/.moon/bin/moon export --destination /path/to/MEMORY-before-upgrade.md
 ```
 
 Build and install the v2 binary:
@@ -38,9 +38,20 @@ Build and install the v2 binary:
 cargo build --locked --release
 install -d -m 700 ~/.moon/bin
 install -m 755 target/release/moon ~/.moon/bin/moon
-~/.moon/bin/moon init
-~/.moon/bin/moon --json health
+export PATH="$HOME/.moon/bin:$PATH"
+hash -r
+command -v moon
+moon --version
+moon init
+moon --json health
 ```
+
+Persist the `PATH` entry in your shell startup file and keep `~/.moon/bin` ahead
+of legacy install locations such as `~/.cargo/bin`. Before running a migration,
+confirm that `command -v moon` resolves to the v2 binary you just installed and
+that `moon --version` reports the expected release. If an older binary shadows
+v2, do not follow its migration prompt against the newer database; repair the
+command resolution or use `~/.moon/bin/moon` explicitly.
 
 Install the OpenClaw adapter from this checkout and select Moon as the sole
 context and memory owner:

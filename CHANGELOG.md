@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-08-08
+
 - Added a canonical Moon v2 AI-agent skill and a multi-day observation plan for
   recall, correction, redundancy, packet density, and compaction quality.
 - Removed completed status and dated benchmark reports; retained the reusable
@@ -10,6 +12,9 @@
   metadata for the local-first Moon v2 architecture.
 - Pinned the RustSec audit action to its upstream Node 24 migration, removing
   the deprecated action-runtime warning.
+- Documented explicit binary-resolution checks for installation, operation, and
+  release validation so a legacy Cargo binary cannot run against a newer Moon
+  database schema.
 
 ## 2.0.0 - 2026-07-29
 
