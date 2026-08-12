@@ -4,12 +4,15 @@ use flate2::write::GzEncoder;
 use flate2::{Compression, GzBuilder};
 use moon::release::{
     ArchiveDescriptor, BUNDLE_MANIFEST_SCHEMA, BundleFile, BundleManifest, MAX_ARCHIVE_BYTES,
-    ManifestSignature, PublicKeyDocument, RELEASE_MANIFEST_SCHEMA, ReleaseAsset, ReleaseChannel,
-    ReleaseManifest, RollbackCompatibility, SIGNATURE_SCHEMA, SignatureEnvelope,
-    encode_bundle_manifest, encode_public_key_document, encode_release_asset,
-    encode_release_manifest, encode_signature_envelope, parse_public_key_document,
-    parse_release_asset, parse_release_manifest, production_trust_roots, sha256_hex,
-    verify_release_manifest,
+    RELEASE_MANIFEST_SCHEMA, ReleaseAsset, ReleaseChannel, ReleaseManifest, RollbackCompatibility,
+    encode_bundle_manifest, encode_release_asset, encode_release_manifest, parse_release_asset,
+    production_trust_roots, sha256_hex, verify_release_manifest,
+};
+#[cfg(target_os = "macos")]
+use moon::release::{
+    ManifestSignature, PublicKeyDocument, SIGNATURE_SCHEMA, SignatureEnvelope,
+    encode_public_key_document, encode_signature_envelope, parse_public_key_document,
+    parse_release_manifest,
 };
 use moon::version::{BUNDLE_FORMAT, VersionInfo};
 use serde::Deserialize;
@@ -777,6 +780,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to sync {}", path.display()))
 }
 
+#[cfg(target_os = "macos")]
 fn write_new_public_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("public key path has no parent")?;
     ensure!(
