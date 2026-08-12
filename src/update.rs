@@ -1903,7 +1903,8 @@ fn available_bytes(path: &Path) -> Result<u64> {
     let result = unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) };
     ensure!(result == 0, "failed to inspect free disk space");
     let stats = unsafe { stats.assume_init() };
-    Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
+    let available = u128::from(stats.f_bavail) * u128::from(stats.f_frsize);
+    Ok(u64::try_from(available).unwrap_or(u64::MAX))
 }
 
 #[cfg(not(unix))]
