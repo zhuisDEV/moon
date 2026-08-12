@@ -107,9 +107,11 @@ struct BundleArgs {
     git_commit: Option<String>,
     #[arg(long)]
     target: Option<String>,
-    #[arg(long, default_value_t = 7)]
+    /// Oldest installed database schema this release can migrate or open.
+    #[arg(long)]
     database_schema_min: i64,
-    #[arg(long, default_value_t = 7)]
+    /// Database schema produced by this release after migration.
+    #[arg(long)]
     database_schema_max: i64,
     #[arg(long, default_value = "2026.7.1")]
     openclaw_min_version: String,
@@ -841,6 +843,7 @@ fn ensure_owner_only_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
     use flate2::read::GzDecoder;
     use std::collections::BTreeMap;
     use tar::Archive;
@@ -863,6 +866,25 @@ mod tests {
         .collect::<Vec<_>>();
         files.sort_by_key(|file| file.path);
         files
+    }
+
+    #[test]
+    fn bundle_requires_an_explicit_database_schema_range() {
+        let error = Cli::try_parse_from([
+            "moon-release",
+            "bundle",
+            "--binary",
+            "/tmp/moon",
+            "--output-dir",
+            "/tmp/release",
+            "--minimum-os-version",
+            "13.0",
+        ])
+        .expect_err("schema range must be explicit");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        let message = error.to_string();
+        assert!(message.contains("--database-schema-min"));
+        assert!(message.contains("--database-schema-max"));
     }
 
     #[test]

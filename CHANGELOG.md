@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.3.1 - 2026-08-13
+
+- Fixed native updates from schema 6 to schema 7 by publishing the complete
+  signed transition range instead of only the post-migration schema.
+- Made release schema compatibility bounds mandatory operator inputs and added
+  regression coverage so future schema-changing releases cannot silently use an
+  incorrect default.
+
 ## 2.3.0 - 2026-08-12
 
 - Added schema-7, local-only context metrics with opaque request IDs, latency,
