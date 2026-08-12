@@ -4,7 +4,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextRequest, EmbeddingProvider, SearchMode, Store};
+use crate::{ContextRequest, EmbeddingProvider, RuntimeMetricInput, SearchMode, Store};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
@@ -28,6 +28,31 @@ enum Operation {
         evidence_per_memory: usize,
         #[serde(default)]
         structured: bool,
+        #[serde(default)]
+        observe: bool,
+    },
+    ContextInjection {
+        request_id: String,
+        injected: bool,
+    },
+    RuntimeMetric {
+        event_kind: String,
+        status: String,
+        duration_us: u64,
+        #[serde(default)]
+        evidence_changed: Option<bool>,
+        #[serde(default)]
+        learning_eligible: Option<bool>,
+        #[serde(default)]
+        proposed_memories: Option<usize>,
+        #[serde(default)]
+        accepted_memories: Option<usize>,
+        #[serde(default)]
+        compacted: Option<bool>,
+        #[serde(default)]
+        tokens_before: Option<usize>,
+        #[serde(default)]
+        tokens_after: Option<usize>,
     },
     Embed {
         limit: usize,
@@ -123,19 +148,38 @@ fn handle_request(
             max_chars,
             evidence_per_memory,
             structured,
+            observe,
         } => {
             let mode = SearchMode::from_str(&mode).map_err(anyhow::Error::msg)?;
-            let packet = store.assemble_context(
-                &ContextRequest {
-                    query,
-                    mode,
-                    limit,
-                    scope,
-                    max_chars,
-                    evidence_per_memory,
-                },
-                (mode != SearchMode::Lexical).then_some(provider),
-            )?;
+            let request = ContextRequest {
+                query,
+                mode,
+                limit,
+                scope,
+                max_chars,
+                evidence_per_memory,
+            };
+            let context_provider = (mode != SearchMode::Lexical).then_some(provider);
+            if observe {
+                let observation = store.observe_context(&request, context_provider)?;
+                let packet = observation.packet;
+                if structured {
+                    return Ok(serde_json::json!({
+                        "request_id": observation.request_id,
+                        "packet": packet,
+                    }));
+                }
+                let rendered = (!packet.is_empty()).then(|| packet.render_markdown());
+                return Ok(serde_json::json!({
+                    "request_id": observation.request_id,
+                    "packet": rendered,
+                    "memory_count": packet.memories.len(),
+                    "reference_count": packet.references.len(),
+                    "packet_chars": packet.used_chars,
+                    "truncated": packet.truncated,
+                }));
+            }
+            let packet = store.assemble_context(&request, context_provider)?;
             if structured {
                 Ok(serde_json::to_value(packet)?)
             } else if packet.is_empty() {
@@ -144,8 +188,42 @@ fn handle_request(
                 Ok(serde_json::Value::String(packet.render_markdown()))
             }
         }
+        Operation::ContextInjection {
+            request_id,
+            injected,
+        } => {
+            store.mark_context_injected(&request_id, injected)?;
+            Ok(serde_json::json!({"updated": true}))
+        }
+        Operation::RuntimeMetric {
+            event_kind,
+            status,
+            duration_us,
+            evidence_changed,
+            learning_eligible,
+            proposed_memories,
+            accepted_memories,
+            compacted,
+            tokens_before,
+            tokens_after,
+        } => {
+            let event_id = store.record_runtime_metric(&RuntimeMetricInput {
+                event_kind,
+                status,
+                duration_us,
+                evidence_changed,
+                learning_eligible,
+                proposed_memories,
+                accepted_memories,
+                compacted,
+                tokens_before,
+                tokens_after,
+                ..RuntimeMetricInput::default()
+            })?;
+            Ok(serde_json::json!({"event_id": event_id}))
+        }
         Operation::Embed { limit } => Ok(serde_json::to_value(
-            store.embed_pending(provider, limit.clamp(1, 1_000))?,
+            store.observe_embeddings(provider, limit.clamp(1, 1_000))?,
         )?),
     }
 }

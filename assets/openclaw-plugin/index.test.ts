@@ -1,5 +1,18 @@
 import moonPlugin, { __moonTest } from "./index.js";
 
+const METRIC_REQUEST_ID = "0123456789abcdef0123456789abcdef";
+
+function metricsEnvelope(packet: string | null) {
+  return JSON.stringify({
+    request_id: METRIC_REQUEST_ID,
+    packet,
+    memory_count: packet ? 1 : 0,
+    reference_count: 0,
+    packet_chars: packet?.length ?? 0,
+    truncated: false,
+  });
+}
+
 function assert(
   condition: unknown,
   message = "assertion failed",
@@ -62,7 +75,10 @@ Deno.test("adapter retrieves and injects context before the latest user message"
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
     [];
   const packet = "# Moon Context\n\n## Retrieved references\n\nUseful context";
-  const api = createApi({ code: 0, stdout: packet, stderr: "" }, calls);
+  const api = createApi(
+    { code: 0, stdout: metricsEnvelope(packet), stderr: "" },
+    calls,
+  );
   const engine = __moonTest.createMoonContextEngine(api);
   const messages = [
     { role: "assistant", content: [{ type: "text", text: "Earlier answer" }] },
@@ -70,7 +86,7 @@ Deno.test("adapter retrieves and injects context before the latest user message"
   ];
 
   const result = await engine.assemble({ messages });
-  assertEquals(calls.length, 1);
+  assertEquals(calls.length, 2);
   assertEquals(
     calls[0].argv.slice(0, 7),
     [
@@ -84,6 +100,10 @@ Deno.test("adapter retrieves and injects context before the latest user message"
     ],
   );
   assert(calls[0].argv.includes("Recall SQLite plan"));
+  assert(calls[0].argv.includes("--adapter"));
+  assert(calls[1].argv.includes("mark-injection"));
+  assert(calls[1].argv.includes("--injected"));
+  assert(calls[1].argv.includes(METRIC_REQUEST_ID));
   assertEquals(result.messages.length, 3);
   assertEquals(result.messages[1].role, "assistant");
   assertEquals(result.messages[1].content[0].text, packet);
@@ -131,7 +151,7 @@ Deno.test("adapter skips retrieval for greetings and empty packets", async () =>
     { argv: string[]; timeoutMs: number; input?: string }
   > = [];
   const emptyApi = createApi(
-    { code: 0, stdout: "", stderr: "" },
+    { code: 0, stdout: metricsEnvelope(null), stderr: "" },
     emptyCalls,
   );
   const emptyEngine = __moonTest.createMoonContextEngine(emptyApi);
@@ -143,7 +163,9 @@ Deno.test("adapter skips retrieval for greetings and empty packets", async () =>
   ];
   const empty = await emptyEngine.assemble({ messages: emptyMessages });
   assertEquals(empty.messages, emptyMessages);
-  assertEquals(emptyCalls.length, 1);
+  assertEquals(emptyCalls.length, 2);
+  assert(emptyCalls[1].argv.includes("mark-injection"));
+  assert(!emptyCalls[1].argv.includes("--injected"));
 });
 
 Deno.test("adapter delegates compaction to OpenClaw", async () => {
@@ -190,6 +212,42 @@ Deno.test("adapter refuses unsafe generic compaction for a native harness", asyn
   assertEquals(result.ok, true);
   assertEquals(result.compacted, false);
   assert(String(result.reason).includes("native automatic compaction"));
+});
+
+Deno.test("adapter records content-free compaction metrics", async () => {
+  const calls: Record<string, unknown>[] = [];
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    { mode: "hybrid" },
+  );
+  const settings = __moonTest.resolveSettings(api);
+  const worker = {
+    request(operation: Record<string, unknown>) {
+      calls.push(operation);
+      return { event_id: METRIC_REQUEST_ID };
+    },
+  };
+  const outcome = await __moonTest.observeCompaction(
+    api,
+    settings,
+    { runtimeContext: { agentHarnessId: "openclaw" } },
+    worker,
+    () =>
+      Promise.resolve({
+        ok: true,
+        compacted: true,
+        result: { tokensBefore: 100, tokensAfter: 20 },
+      }),
+  );
+  assertEquals(outcome.compacted, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].op, "runtime_metric");
+  assertEquals(calls[0].event_kind, "compaction");
+  assertEquals(calls[0].compacted, true);
+  assertEquals(calls[0].tokens_before, 100);
+  assertEquals(calls[0].tokens_after, 20);
+  assert(!("sessionId" in calls[0]));
 });
 
 Deno.test("adapter records one completed turn and distills a validated durable memory", async () => {
@@ -263,6 +321,13 @@ Deno.test("adapter records one completed turn and distills a validated durable m
               stderr: "",
             };
           }
+          if (argv.includes("record-runtime")) {
+            return {
+              code: 0,
+              stdout: JSON.stringify({ event_id: METRIC_REQUEST_ID }),
+              stderr: "",
+            };
+          }
           throw new Error(`unexpected command ${argv.join(" ")}`);
         },
       },
@@ -300,7 +365,7 @@ Deno.test("adapter records one completed turn and distills a validated durable m
     prePromptMessageCount: 0,
   });
   assertEquals(modelCalls, 1);
-  assertEquals(calls.length, 3);
+  assertEquals(calls.length, 4);
   assert(calls[0].argv.includes("record"));
   assertEquals(
     calls[0].input,
@@ -312,6 +377,10 @@ Deno.test("adapter records one completed turn and distills a validated durable m
   assert(!calls[2].argv.includes("The user prefers concise answers."));
   const proposal = JSON.parse(calls[2].input ?? "")[0];
   assertEquals(proposal.evidence_quote, "I prefer concise answers.");
+  assert(calls[3].argv.includes("record-runtime"));
+  assert(calls[3].argv.includes("--evidence-changed"));
+  assert(calls[3].argv.includes("--learning-eligible"));
+  assert(calls[3].argv.includes("--proposed-memories"));
 });
 
 Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
@@ -351,6 +420,16 @@ Deno.test("hybrid mode uses the private local stdio worker", () => {
   assertEquals(request.op, "context");
   assertEquals(request.mode, "hybrid");
   assertEquals(request.structured, false);
+  assertEquals(request.observe, false);
+  assertEquals(
+    __moonTest.contextWorkerRequest(
+      settings,
+      "Recall my Moon plan",
+      false,
+      true,
+    ).observe,
+    true,
+  );
 });
 
 Deno.test("plugin manifest is a strict context-engine manifest", async () => {

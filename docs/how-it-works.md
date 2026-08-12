@@ -331,6 +331,9 @@ The main lifecycle tables are:
 - `memory_heads`: the current document for each canonical key.
 - `memory_citations`: exact links from a claim to evidence byte and line ranges.
 - `embedding_queue`: prioritized, leased, retryable vector work.
+- `context_metrics`: content-free request performance, delivery, and bounded
+  human review labels.
+- `runtime_metrics`: content-free learning, embedding, and compaction events.
 - `runtime_state`: adapter checkpoints.
 
 Numbered migrations update these tables transactionally. Generated Markdown is
@@ -341,12 +344,13 @@ backups, and exports are owner-only files (`0600`).
 
 ## Current integration boundary
 
-The production OpenClaw adapter owns four bounded operations:
+The production OpenClaw adapter owns five bounded operations:
 
 1. retrieve relevant context before a turn;
-2. record the completed user/final-answer pair after a turn; and
-3. selectively distill evidence-backed durable memories.
-4. drain a bounded local-embedding batch after completed turns.
+2. mark whether the content-free request metric was injected;
+3. record the completed user/final-answer pair after a turn;
+4. selectively distill evidence-backed durable memories; and
+5. drain a bounded local-embedding batch after completed turns.
 
 Retrieval and learning failures fail open by default and never suppress the
 agent's reply. OpenClaw still owns its transcript and compaction. Moon does not
@@ -357,6 +361,8 @@ claim is replaced only when the user explicitly corrects it and the extraction
 proposal names the active head that was supplied for comparison. Other conflicts
 remain recorded as evidence but do not overwrite durable memory.
 
-Future recall and lifecycle improvements are tracked in
-[memory-improvement-plan.md](memory-improvement-plan.md). This is an observation
-plan rather than an authorization to change production policy.
+Recall and lifecycle improvements follow the executable evaluation protocol in
+[memory-improvement-plan.md](memory-improvement-plan.md). Automatic metrics
+measure volume, packet delivery, and latency; human labels remain required for
+recall-quality claims. The protocol is not authorization to change production
+policy.

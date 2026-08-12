@@ -1,43 +1,65 @@
-# Memory improvement observation plan
+# Memory quality evaluation protocol
 
-## Purpose
+## Status and purpose
 
-Moon v2 is operationally healthy and fast. The next improvement phase should
-focus on recall quality and durable-memory lifecycle behavior, using several
-days of real usage before changing retrieval policy.
+Status: ready to begin after the schema-7 metrics build is installed. The
+observation window has not started merely because this document or the collector
+exists.
 
-Do not tune the engine around one conversation or a small synthetic benchmark.
-First build a reviewed set of representative successes and failures.
+Owner: the Moon runtime owner. Record the actual start and end timestamps in the
+review notes or exported metrics artifact for each evaluation window.
 
-## Current concerns
+Moon is operationally healthy and fast. The next improvement phase focuses on
+recall quality and durable-memory lifecycle behavior, using several days of real
+usage before changing retrieval policy. Do not tune the engine around one
+conversation or a small synthetic benchmark.
 
-1. **Natural-question false negatives.** The relevance guard can reject a
-   semantically correct vector result when an ordinary sentence-initial word is
-   mistaken for a named-entity anchor.
-2. **Uneven typo tolerance.** Singular/plural normalization and bounded spelling
-   fallback work for many active-memory queries, but not every combination of
-   paraphrasing and misspelling.
-3. **Explicit corrections can remain evidence-only.** A changed canonical claim
-   correctly stops at a conflict, but the automatic flow may leave the older
-   active wording in place when a user clearly supplied a replacement.
-4. **Semantic redundancy.** Related claims can receive different canonical keys,
-   causing overlapping memories to compete for the context budget.
-5. **Packet density.** Redundant memories and long citations can consume the
-   3,500-character packet even when fewer, sharper claims would be sufficient.
-6. **Long-window behavior remains lightly exercised.** Current conversations
-   have not yet forced a representative native transcript-compaction event.
+## Privacy boundary
 
-These are quality concerns, not evidence of storage loss, queue failure, or
-unacceptable latency.
+Context metrics stay in the canonical local SQLite database. Moon records only:
 
-## Observation period
+- an opaque random request ID and timestamp;
+- retrieval mode, success or failure, and elapsed microseconds;
+- memory/reference counts, packet characters, and truncation state;
+- whether the OpenClaw adapter injected the packet; and
+- an optional bounded review label and expected rank.
+
+Moon also records content-free operational events: completed-turn learning
+status and counts, embedding batch counts and remaining queue depth, and native
+compaction status with optional token counts. These events contain no turn,
+session, channel, or memory identity.
+
+Moon never stores the query, prompt, response, recalled content, source URI,
+scope, channel or session identity, credentials, or arbitrary error text in the
+metrics table. The adapter log contains the opaque ID and numeric result summary
+so an operator can associate a private, contemporaneous review with the right
+row. Exports contain the same content-free fields and are created owner-only.
+
+## Observation window
 
 Observe normal use for 3–7 days and at least 50 context requests spanning
-multiple channels and task types. Extend the window when fewer than 20 requests
-have a known relevant memory; zero-result queries with no relevant memory do not
-measure recall.
+multiple task types. Extend the window when fewer than 20 requests have a known
+relevant memory. A zero-result request is only an automatic empty-packet
+candidate; it becomes a **correct empty** only after human review.
 
-For each reviewed case, classify the outcome:
+Start and inspect a window with:
+
+```bash
+moon metrics summary --since 7d
+moon metrics recent --since 7d --limit 20
+```
+
+The context log line includes `request=<opaque-id>`. Review representative
+successes, every suspected miss, and every suspected irrelevant injection:
+
+```bash
+moon metrics review \
+  --request <opaque-id> \
+  --outcome useful \
+  --expected-rank 1
+```
+
+Allowed outcomes are:
 
 - **useful:** the packet supplied the needed memory or reference;
 - **partial:** relevant context appeared but was incomplete or crowded;
@@ -47,66 +69,98 @@ For each reviewed case, classify the outcome:
 - **stale:** an older active claim was returned after an explicit correction;
 - **redundant:** multiple results repeated materially the same claim.
 
-Keep reviewed queries private. Store only redacted examples in a regression
-corpus, and never add credentials, private conversation bodies, or raw model
-prompts to repository fixtures.
+Use `expected-rank` only when a specific expected memory can be ranked. Keep
+reviewed queries private. Repository regression fixtures must be synthetic or
+redacted and must never contain credentials, conversation bodies, or raw model
+prompts.
 
-## Metrics to collect
+## Metrics and interpretation
 
-Track the following per observation window and by channel only when useful:
+`moon metrics summary` reports:
 
-- completed turns versus immutable evidence records;
-- eligible turns versus proposed and accepted durable memories;
-- automatic embedding count, queue depth, retry, and dead-letter state;
-- context-request count, packet-injection rate, and correct-empty rate;
-- useful, partial, false-negative, false-positive, stale, and redundant cases;
-- expected-memory rank for reviewed queries;
-- lexical, vector, and hybrid outcomes for every reviewed miss;
-- warm worker and hybrid-search p50/p95/p99 latency;
-- packet characters, truncation frequency, and repeated-memory share;
-- canonical-key conflicts and whether an explicit correction was eventually
-  superseded;
-- native compaction events, successor-turn success, and confirmation that Moon
-  packets never entered the stored transcript or summary.
+- total, successful, failed, and empty-packet-candidate requests;
+- adapter-observed injection and truncation rates;
+- packet size and context-request p50/p95/p99 latency;
+- reviewed outcome counts; and
+- expected-memory top-three rate for rows with an expected rank;
+- completed-turn evidence, eligibility, proposal, and acceptance counts;
+- embedding batch success, throughput, and latest remaining queue depth; and
+- native compaction attempts, failures, and completed events.
 
-Operational logs should contain counts, timings, identifiers, and redacted
-errors—not query bodies or recalled content.
+The collector measures volume, delivery, and performance automatically. Recall
+quality still requires human labels: a low injection rate can be correct, and an
+injected packet can still be a false positive, stale, or redundant.
+
+For a reviewed miss, compare lexical, semantic, and hybrid `search` results
+privately. Add only a sanitized reproduction to the regression corpus. Continue
+to inspect embedding queue health and correction conflicts with `moon health`;
+event counts complement but do not replace the current-state health check.
+
+## Retention and export
+
+Preview retention before deleting anything:
+
+```bash
+moon metrics prune --older-than 30d
+moon metrics prune --older-than 30d --yes
+```
+
+The first command is a dry run. The second permanently deletes only matching
+metrics rows; it does not remove memories, evidence, indexes, or runtime state.
+
+Create a content-free owner-only artifact when a window needs to be retained:
+
+```bash
+moon metrics export \
+  --since 7d \
+  --destination /path/to/moon-metrics.json
+```
+
+## Current concerns
+
+1. Natural-question false negatives caused by sentence-initial anchor handling.
+2. Uneven typo tolerance across paraphrases and misspellings.
+3. Explicit corrections that remain evidence-only instead of superseding an old
+   canonical claim.
+4. Semantically overlapping memories with different canonical keys.
+5. Redundant claims or long citations consuming the 3,500-character packet.
+6. Lightly exercised native transcript compaction over long conversations.
+
+These are hypotheses to test, not evidence of storage loss, queue failure, or
+unacceptable latency.
 
 ## Decision gates
 
-Do not change production retrieval until the reviewed corpus can reproduce the
-problem and distinguish it from a correct empty result.
-
-An improvement is ready when:
+Do not change production retrieval until the reviewed corpus reproduces a
+problem and distinguishes it from a correct empty result. An improvement is
+ready when:
 
 1. the reviewed regression set improves without weakening named-entity safety;
 2. expected memories rank within the top three for at least 90% of relevant
    reviewed queries;
 3. false positives do not increase materially;
-4. explicit user corrections either supersede safely or produce a visible,
-   actionable review state;
-5. warm context-request p95 remains below 50 ms on the representative live
-   corpus;
+4. explicit corrections supersede safely or produce a visible review state;
+5. warm context-request p95 remains below 50 ms on the representative corpus;
 6. health retains complete active-memory/reference coverage, zero evidence
    vectors, and no failed or dead embedding work; and
 7. an isolated long-window canary confirms native compaction preserves the
    successor conversation without persisting Moon packets.
 
-## Likely implementation order
+Close a window only after recording its actual dates, request and review counts,
+gate results, sanitized regressions, and one of these decisions: no change,
+extend observation, implement a bounded fix, or reject the proposed change.
 
-After the observation period:
+## Likely implementation order after observation
 
-1. fix interrogative and sentence-initial anchor classification, then add the
-   reviewed false-negative cases as regression tests;
-2. improve bounded typo handling only where the reviewed corpus demonstrates a
-   gap;
-3. add a safe review or retry path for explicit canonical corrections;
-4. consolidate semantically overlapping active memories without silently merging
-   distinct user preferences;
-5. improve packet selection or reranking before increasing the character budget;
-   and
-6. run the full isolated OpenClaw canary, recall corpus, health audit, and
-   latency benchmark before release.
+1. Fix verified interrogative or sentence-initial anchor misses and add them as
+   regression tests.
+2. Improve bounded typo handling only where the corpus demonstrates a gap.
+3. Add a safe review or retry path for explicit canonical corrections.
+4. Consolidate overlapping memories without silently merging distinct user
+   preferences.
+5. Improve packet selection or reranking before increasing its character budget.
+6. Run the isolated OpenClaw canary, recall corpus, health audit, and latency
+   benchmark before release.
 
 Do not introduce QMD, a remote embedding endpoint, another writable memory
-store, or a second long-running service to solve these issues.
+store, or a second long-running service for these improvements.

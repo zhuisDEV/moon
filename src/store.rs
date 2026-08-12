@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -216,6 +216,13 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0006_auto_embedding.sql"))?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(6, ?1)",
+                [now_ms()],
+            )?;
+        }
+        if existing_version < 7 {
+            transaction.execute_batch(include_str!("../migrations/0007_context_metrics.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(7, ?1)",
                 [now_ms()],
             )?;
         }
@@ -1626,7 +1633,7 @@ fn sanitized_error(error: &anyhow::Error) -> String {
     message
 }
 
-fn create_private_dir_all(path: &Path) -> Result<()> {
+pub(crate) fn create_private_dir_all(path: &Path) -> Result<()> {
     let mut missing = Vec::new();
     let mut cursor = Some(path);
     while let Some(current) = cursor {
@@ -1656,14 +1663,14 @@ fn set_private_dir(_path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn set_private_file(path: &Path) -> Result<()> {
+pub(crate) fn set_private_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to protect file {}", path.display()))
 }
 
 #[cfg(not(unix))]
-fn set_private_file(_path: &Path) -> Result<()> {
+pub(crate) fn set_private_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 

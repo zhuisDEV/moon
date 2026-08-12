@@ -107,9 +107,9 @@ struct BundleArgs {
     git_commit: Option<String>,
     #[arg(long)]
     target: Option<String>,
-    #[arg(long, default_value_t = 6)]
+    #[arg(long, default_value_t = 7)]
     database_schema_min: i64,
-    #[arg(long, default_value_t = 6)]
+    #[arg(long, default_value_t = 7)]
     database_schema_max: i64,
     #[arg(long, default_value = "2026.7.1")]
     openclaw_min_version: String,

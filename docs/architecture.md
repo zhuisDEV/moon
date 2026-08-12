@@ -7,7 +7,7 @@ process with the retired legacy implementation.
 ## Ownership boundary
 
 - `moon.sqlite` is the canonical store for structured memory, chunks, indexes,
-  embedding jobs, and runtime state.
+  embedding jobs, content-free context metrics, and runtime state.
 - SQLite FTS5 provides lexical retrieval.
 - `sqlite-vec` is compiled into the Rust binary and provides vector retrieval;
   there is no QMD, Node.js, Bun, MCP, or vector-server process.
@@ -39,6 +39,14 @@ curator may propose at most three memories. Deterministic validation requires an
 exact supporting quote, complete numeric support, sufficient term overlap,
 minimum confidence and importance, and explicit correction intent before
 supersession.
+
+Each user-facing context assembly records an opaque local metric row with mode,
+latency, result counts, packet size/truncation, and optional injection/review
+state. The schema intentionally has no query, prompt, response, recalled
+content, source, scope, channel, session, credential, or arbitrary-error field.
+Internal curator lookups are excluded so observation counts represent actual
+context requests. A separate content-free event table records learning,
+embedding, and compaction counts without turn or session identity.
 
 See [how-it-works.md](how-it-works.md) for the operator workflows and examples.
 Use [memory-improvement-plan.md](memory-improvement-plan.md) to evaluate recall,

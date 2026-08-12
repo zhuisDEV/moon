@@ -3,6 +3,7 @@ pub mod chunking;
 pub mod embedding;
 pub mod legacy;
 pub mod memory;
+pub mod metrics;
 pub mod model;
 pub mod redaction;
 pub mod release;
@@ -14,9 +15,10 @@ pub mod version;
 pub use auth::{AuthCheck, AuthLevel, AuthResolver, AuthStatusReport, ModelOutcome};
 pub use embedding::{EmbeddingProvider, HashEmbedding, LocalEmbedding};
 pub use model::{
-    ContextCitation, ContextMemory, ContextPacket, ContextReference, ContextRequest, DistillAction,
-    DistillInput, DistillOutcome, EmbedReport, EvidenceInput, EvidenceOutcome, HealthReport,
-    ImportReport, IngestDocument, IngestOutcome, LegacySearchHit, MemoryInput, SearchHit,
-    SearchMode, SearchRequest, ShadowReport,
+    ContextCitation, ContextMemory, ContextMetricRecord, ContextObservation, ContextPacket,
+    ContextReference, ContextRequest, DistillAction, DistillInput, DistillOutcome, EmbedReport,
+    EvidenceInput, EvidenceOutcome, HealthReport, ImportReport, IngestDocument, IngestOutcome,
+    LegacySearchHit, MemoryInput, MetricsSummary, ReviewOutcome, RuntimeMetricInput,
+    RuntimeMetricRecord, RuntimeMetricsSummary, SearchHit, SearchMode, SearchRequest, ShadowReport,
 };
 pub use store::Store;
