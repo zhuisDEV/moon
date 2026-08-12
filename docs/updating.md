@@ -1,9 +1,11 @@
 # Native signed updates
 
-Moon v2.2.0 is the first release with a native updater. It updates the binary,
-OpenClaw adapter, agent skill, and database schema as one compatibility-set
-transaction. It never compiles remote source, evaluates manifest fields as
-shell, downloads trust roots, deletes prior releases, or copies credentials.
+Moon v2.2.0 introduced the native updater. Use v2.2.1 or later for the initial
+bootstrap; v2.2.1 preserves the embedding identity already stored by v2
+databases. The updater changes the binary, OpenClaw adapter, agent skill, and
+database schema as one compatibility-set transaction. It never compiles remote
+source, evaluates manifest fields as shell, downloads trust roots, deletes prior
+releases, or copies credentials.
 
 ## Read-only inspection
 
@@ -77,7 +79,7 @@ safe failure.
 ```text
 ~/.moon/
   bin/moon -> ../current/bin/moon
-  current -> releases/2.2.0
+  current -> releases/2.2.1
   openclaw-plugin -> current/openclaw-plugin
   releases/<version>/
   state/moon.sqlite
@@ -92,13 +94,13 @@ separate owner-authorized review.
 
 ## v2.1.0 bootstrap boundary
 
-Moon v2.1.0 has no `update` command. Install the signed v2.2.0 compatibility set
+Moon v2.1.0 has no `update` command. Install the signed v2.2.1 compatibility set
 once through the controlled release procedure: verify the production signature
 and every archive/file hash, create and verify the complete rollback bundle,
-stop OpenClaw, place the v2.2.0 release without deleting v2.1.0, select the
+stop OpenClaw, place the v2.2.1 release without deleting v2.1.0, select the
 stable paths, migrate, and run every post-switch gate above. Do not describe
 this source/release-operator procedure as toolchain-free. Native no-toolchain
-updates begin only after v2.2.0 is installed.
+updates begin only after an updater-capable release is installed.
 
 Recovery documentation uses individual commands instead of a commented block
 pasted after enabling strict mode. If a maintainer must feed a strict-mode file

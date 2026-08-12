@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.2.1 - 2026-08-12
+
+- Preserved the established multilingual E5 embedding identity while using the
+  portable ONNX Runtime pin required by the four-platform release matrix, so
+  existing v2 databases continue hybrid retrieval without re-embedding.
+- Made v2.2.1 the recommended one-time bootstrap release and added a live
+  read-only compatibility canary before runtime mutation.
+
+## 2.2.0 - 2026-08-12
+
 - Added the native signed `moon update` transaction with strictly read-only
   checking, verified download limits, platform/schema/version policy, owner-only
   locking and journals, isolated candidate validation, consistent backup,
@@ -11,8 +21,8 @@
   rejection, shadowed-executable and downgrade refusal, active-lease and
   insufficient-space preflight, bounded subprocess/network behavior, and
   credential-excluding OpenClaw snapshots.
-- Expanded release generation to the four supported macOS/GNU targets and made
-  v2.2.0 the explicit one-time bootstrap into the native update layout.
+- Expanded release generation to the four supported macOS/GNU targets and
+  introduced the native update layout.
 
 - Added offline JSON version identity with Git, build-target, executable,
   canonical-path, bundle-format, and clean/dirty provenance.
