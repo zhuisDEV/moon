@@ -80,15 +80,10 @@ impl LocalEmbedding {
 
         std::fs::create_dir_all(cache_dir)
             .with_context(|| format!("create model cache {}", cache_dir.display()))?;
-        let threads = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(2)
-            .min(4);
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_cache_dir(cache_dir.to_path_buf())
             .with_show_download_progress(false)
-            .with_max_length(LOCAL_MAX_TOKENS)
-            .with_intra_threads(threads);
+            .with_max_length(LOCAL_MAX_TOKENS);
         let model = TextEmbedding::try_new(options)
             .context("load intfloat/multilingual-e5-small local embedding model")?;
         Ok(Self {
@@ -136,7 +131,7 @@ impl EmbeddingProvider for LocalEmbedding {
     }
 
     fn model(&self) -> &str {
-        "intfloat/multilingual-e5-small@fastembed-5.17.3:query-passage-v1:max512"
+        "intfloat/multilingual-e5-small@fastembed-5.5.0+ort-rc.10:query-passage-v1:max512"
     }
 
     fn dimensions(&self) -> usize {
