@@ -44,7 +44,7 @@ jobs:
       - name: Exercise documented interactive-zsh strict-mode semantics
         if: matrix.target == 'aarch64-apple-darwin'
         run: >-
-          zsh -f -i < tools/interactive-zsh-smoke.zsh 2>&1 |
+          zsh -f -i -c 'source tools/interactive-zsh-smoke.zsh' 2>&1 |
           grep -Fx 'UPDATE SUCCEEDED'
       - name: Generate deterministic unsigned release bundle
         run: >-
