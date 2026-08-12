@@ -45,8 +45,17 @@ Build one platform archive and its canonical asset descriptor:
 cargo run --locked --example moon-release -- bundle \
   --binary target/release/moon \
   --minimum-os-version 13.0 \
+  --database-schema-min 6 \
+  --database-schema-max 7 \
   --output-dir /path/to/release-staging
 ```
+
+The schema range is intentionally required. Set the minimum to the oldest
+installed schema the release can migrate or open, and the maximum to the schema
+the release produces. For example, a release that migrates schema 6 to schema 7
+must advertise `6..=7`; advertising only `7..=7` would cause the existing
+schema-6 updater to reject the release before its transactional migration can
+run.
 
 The command executes the candidate's offline JSON version check and refuses
 non-release, mismatched, dirty, or unverifiable binaries. `--allow-dirty` exists
