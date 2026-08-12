@@ -69,6 +69,8 @@ jobs:
           pattern: unsigned-release-*
           path: target/release-check
           merge-multiple: false
+      - name: Restrict release staging to the runner owner
+        run: chmod 700 target/release-check
       - name: Assemble four-platform canonical unsigned release manifest
         run: >-
           cargo run --locked --example moon-release -- manifest
