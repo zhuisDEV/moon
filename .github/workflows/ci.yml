@@ -51,6 +51,8 @@ jobs:
           cargo run --locked --example moon-release -- bundle
           --binary target/release/moon
           --minimum-os-version "${{ matrix.minimum_os_version }}"
+          --database-schema-min 6
+          --database-schema-max 7
           --output-dir "target/release-check/${{ matrix.target }}"
       - uses: actions/upload-artifact@v7
         with:
