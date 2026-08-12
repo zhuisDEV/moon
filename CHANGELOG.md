@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.3.0 - 2026-08-12
+
 - Added schema-7, local-only context metrics with opaque request IDs, latency,
   result and packet counts, OpenClaw injection state, bounded human review
   labels, learning/embedding/compaction event counts, redacted export, summary
