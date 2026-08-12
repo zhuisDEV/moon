@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -99,6 +100,16 @@ impl std::str::FromStr for SearchMode {
             "semantic" | "vector" => Ok(Self::Semantic),
             "hybrid" => Ok(Self::Hybrid),
             _ => Err(format!("unknown search mode `{value}`")),
+        }
+    }
+}
+
+impl SearchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
         }
     }
 }
@@ -230,6 +241,160 @@ pub struct ContextPacket {
     pub truncated: bool,
     pub memories: Vec<ContextMemory>,
     pub references: Vec<ContextReference>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextObservation {
+    pub request_id: Option<String>,
+    pub packet: ContextPacket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Useful,
+    Partial,
+    FalseNegative,
+    FalsePositive,
+    CorrectEmpty,
+    Stale,
+    Redundant,
+}
+
+impl ReviewOutcome {
+    pub const ALL: [Self; 7] = [
+        Self::Useful,
+        Self::Partial,
+        Self::FalseNegative,
+        Self::FalsePositive,
+        Self::CorrectEmpty,
+        Self::Stale,
+        Self::Redundant,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Useful => "useful",
+            Self::Partial => "partial",
+            Self::FalseNegative => "false_negative",
+            Self::FalsePositive => "false_positive",
+            Self::CorrectEmpty => "correct_empty",
+            Self::Stale => "stale",
+            Self::Redundant => "redundant",
+        }
+    }
+}
+
+impl std::str::FromStr for ReviewOutcome {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "useful" => Ok(Self::Useful),
+            "partial" => Ok(Self::Partial),
+            "false_negative" => Ok(Self::FalseNegative),
+            "false_positive" => Ok(Self::FalsePositive),
+            "correct_empty" => Ok(Self::CorrectEmpty),
+            "stale" => Ok(Self::Stale),
+            "redundant" => Ok(Self::Redundant),
+            _ => Err(format!("unknown review outcome `{value}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextMetricRecord {
+    pub request_id: String,
+    pub occurred_at_ms: i64,
+    pub retrieval_mode: String,
+    pub status: String,
+    pub duration_us: u64,
+    pub memory_count: usize,
+    pub reference_count: usize,
+    pub packet_chars: usize,
+    pub packet_truncated: bool,
+    pub adapter_injected: Option<bool>,
+    pub review_outcome: Option<String>,
+    pub expected_rank: Option<usize>,
+    pub reviewed_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeMetricInput {
+    pub event_kind: String,
+    pub status: String,
+    pub duration_us: u64,
+    pub evidence_changed: Option<bool>,
+    pub learning_eligible: Option<bool>,
+    pub proposed_memories: Option<usize>,
+    pub accepted_memories: Option<usize>,
+    pub embedding_selected: Option<usize>,
+    pub embedding_completed: Option<usize>,
+    pub embedding_remaining: Option<usize>,
+    pub compacted: Option<bool>,
+    pub tokens_before: Option<usize>,
+    pub tokens_after: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeMetricRecord {
+    pub event_id: String,
+    pub occurred_at_ms: i64,
+    pub event_kind: String,
+    pub status: String,
+    pub duration_us: u64,
+    pub evidence_changed: Option<bool>,
+    pub learning_eligible: Option<bool>,
+    pub proposed_memories: Option<usize>,
+    pub accepted_memories: Option<usize>,
+    pub embedding_selected: Option<usize>,
+    pub embedding_completed: Option<usize>,
+    pub embedding_remaining: Option<usize>,
+    pub compacted: Option<bool>,
+    pub tokens_before: Option<usize>,
+    pub tokens_after: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeMetricsSummary {
+    pub learning_events: usize,
+    pub learning_failures: usize,
+    pub evidence_records: usize,
+    pub eligible_turns: usize,
+    pub proposed_memories: usize,
+    pub accepted_memories: usize,
+    pub embedding_events: usize,
+    pub embedding_failures: usize,
+    pub embeddings_selected: usize,
+    pub embeddings_completed: usize,
+    pub latest_embedding_remaining: Option<usize>,
+    pub compaction_events: usize,
+    pub compaction_failures: usize,
+    pub completed_compactions: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricsSummary {
+    pub since_ms: i64,
+    pub until_ms: i64,
+    pub context_requests: usize,
+    pub successful_requests: usize,
+    pub failed_requests: usize,
+    pub empty_packet_candidates: usize,
+    pub injection_observed: usize,
+    pub injected_packets: usize,
+    pub injection_rate: Option<f64>,
+    pub truncated_packets: usize,
+    pub truncation_rate: Option<f64>,
+    pub reviewed_requests: usize,
+    pub review_outcomes: BTreeMap<String, usize>,
+    pub expected_rank_samples: usize,
+    pub expected_top_three_rate: Option<f64>,
+    pub average_packet_chars: Option<f64>,
+    pub p50_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub p99_ms: Option<f64>,
+    pub runtime: RuntimeMetricsSummary,
 }
 
 impl ContextPacket {

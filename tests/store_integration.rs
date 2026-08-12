@@ -1,6 +1,7 @@
 use moon::{
     ContextRequest, DistillAction, DistillInput, EmbeddingProvider, EvidenceInput, HashEmbedding,
-    IngestDocument, MemoryInput, SearchMode, SearchRequest, Store,
+    IngestDocument, MemoryInput, ReviewOutcome, RuntimeMetricInput, SearchMode, SearchRequest,
+    Store,
 };
 use std::fs;
 use std::sync::{Arc, Barrier};
@@ -8,6 +9,135 @@ use std::thread;
 
 fn open_store(temp: &tempfile::TempDir) -> Store {
     Store::open(temp.path().join("state/moon.sqlite"), 64).expect("open store")
+}
+
+#[test]
+fn context_metrics_are_content_free_reviewable_and_prunable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut store = open_store(&temp);
+    store
+        .remember(MemoryInput {
+            memory_kind: "preference".to_string(),
+            scope: "global".to_string(),
+            title: Some("Private preference".to_string()),
+            content: "The private canary phrase is violet lighthouse.".to_string(),
+            importance: 0.8,
+            confidence: 1.0,
+            pinned: false,
+        })
+        .expect("remember");
+
+    let observation = store
+        .observe_context(
+            &ContextRequest {
+                query: "What was the violet lighthouse preference?".to_string(),
+                mode: SearchMode::Lexical,
+                limit: 4,
+                scope: None,
+                max_chars: 2_000,
+                evidence_per_memory: 0,
+            },
+            None,
+        )
+        .expect("observe context");
+    let request_id = observation.request_id.expect("recorded request id");
+    assert!(!observation.packet.is_empty());
+    store
+        .mark_context_injected(&request_id, true)
+        .expect("mark injected");
+    let reviewed = store
+        .review_context_metric(&request_id, ReviewOutcome::Useful, Some(1))
+        .expect("review metric");
+    assert_eq!(reviewed.review_outcome.as_deref(), Some("useful"));
+
+    store
+        .record_runtime_metric(&RuntimeMetricInput {
+            event_kind: "learning".to_string(),
+            status: "ok".to_string(),
+            duration_us: 200,
+            evidence_changed: Some(true),
+            learning_eligible: Some(true),
+            proposed_memories: Some(2),
+            accepted_memories: Some(1),
+            ..RuntimeMetricInput::default()
+        })
+        .expect("record learning metric");
+    store
+        .record_runtime_metric(&RuntimeMetricInput {
+            event_kind: "compaction".to_string(),
+            status: "ok".to_string(),
+            duration_us: 300,
+            compacted: Some(true),
+            tokens_before: Some(100),
+            tokens_after: Some(20),
+            ..RuntimeMetricInput::default()
+        })
+        .expect("record compaction metric");
+    store
+        .observe_embeddings(&HashEmbedding::new(64), 10)
+        .expect("observe embeddings");
+
+    let summary = store.metrics_summary(0).expect("metrics summary");
+    assert_eq!(summary.context_requests, 1);
+    assert_eq!(summary.successful_requests, 1);
+    assert_eq!(summary.injected_packets, 1);
+    assert_eq!(summary.injection_rate, Some(1.0));
+    assert_eq!(summary.expected_top_three_rate, Some(1.0));
+    assert_eq!(summary.review_outcomes["useful"], 1);
+    assert_eq!(summary.runtime.learning_events, 1);
+    assert_eq!(summary.runtime.evidence_records, 1);
+    assert_eq!(summary.runtime.proposed_memories, 2);
+    assert_eq!(summary.runtime.accepted_memories, 1);
+    assert_eq!(summary.runtime.embedding_events, 1);
+    assert_eq!(summary.runtime.embeddings_completed, 1);
+    assert_eq!(summary.runtime.compaction_events, 1);
+    assert_eq!(summary.runtime.completed_compactions, 1);
+
+    let records = store.context_metrics_recent(0, 10).expect("recent metrics");
+    let serialized = serde_json::to_string(&records).expect("serialize metrics");
+    assert!(!serialized.contains("violet lighthouse"));
+    assert!(!serialized.contains("Private preference"));
+    assert!(!serialized.contains("source_uri"));
+
+    let connection = rusqlite::Connection::open(store.path()).expect("inspect database");
+    for table in ["context_metrics", "runtime_metrics"] {
+        let columns = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("column rows")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("column names");
+        for forbidden in [
+            "query",
+            "prompt",
+            "content",
+            "source_uri",
+            "scope",
+            "channel",
+            "session_id",
+            "error",
+        ] {
+            assert!(!columns.iter().any(|column| column == forbidden));
+        }
+    }
+
+    assert_eq!(
+        store.prune_metrics(i64::MAX, false).expect("prune preview"),
+        4
+    );
+    assert_eq!(
+        store
+            .metrics_summary(0)
+            .expect("still present")
+            .context_requests,
+        1
+    );
+    assert_eq!(store.prune_metrics(i64::MAX, true).expect("prune apply"), 4);
+    assert_eq!(
+        store.metrics_summary(0).expect("pruned").context_requests,
+        0
+    );
 }
 
 #[test]
@@ -1117,10 +1247,10 @@ fn schema_four_migrates_transactionally_to_auto_embedding_schema() {
     let database = temp.path().join("moon.sqlite");
     create_v4_database(&database);
 
-    let store = Store::open(&database, 64).expect("migrate to v6");
+    let store = Store::open(&database, 64).expect("migrate to v7");
     let health = store.health().expect("health");
     assert!(health.ok);
-    assert_eq!(health.schema_version, 6);
+    assert_eq!(health.schema_version, 7);
     let columns = rusqlite::Connection::open(database)
         .expect("inspect")
         .prepare("PRAGMA table_info(embedding_queue)")

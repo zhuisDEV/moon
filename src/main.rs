@@ -3,7 +3,8 @@ use clap::{Args, Parser, Subcommand};
 use moon::redaction::redact_text;
 use moon::{
     AuthResolver, ContextRequest, DistillInput, EmbeddingProvider, EvidenceInput, HashEmbedding,
-    IngestDocument, LocalEmbedding, MemoryInput, SearchMode, SearchRequest, Store,
+    IngestDocument, LocalEmbedding, MemoryInput, ReviewOutcome, RuntimeMetricInput, SearchMode,
+    SearchRequest, Store,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -78,6 +79,8 @@ enum Command {
     State(StateArgs),
     /// Measure repeated search latency against the current database.
     Benchmark(BenchmarkArgs),
+    /// Inspect, review, export, or prune privacy-preserving context metrics.
+    Metrics(MetricsArgs),
     /// Keep the local embedding model warm over a private JSON-lines channel.
     Serve(ServeArgs),
     /// Check for or apply a signed compatibility-set update.
@@ -213,6 +216,9 @@ struct ContextArgs {
     max_chars: usize,
     #[arg(long, default_value_t = 2)]
     evidence_per_memory: usize,
+    /// Emit the private adapter envelope; requires --json.
+    #[arg(long, hide = true)]
+    adapter: bool,
     #[command(flatten)]
     provider: ProviderArgs,
 }
@@ -325,6 +331,82 @@ struct BenchmarkArgs {
     limit: usize,
     #[command(flatten)]
     provider: ProviderArgs,
+}
+
+#[derive(Debug, Args)]
+struct MetricsArgs {
+    #[command(subcommand)]
+    command: MetricsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum MetricsCommand {
+    /// Summarize context volume, injection, review outcomes, and latency.
+    Summary {
+        #[arg(long, default_value = "7d")]
+        since: String,
+    },
+    /// List recent opaque request records without queries or recalled content.
+    Recent {
+        #[arg(long, default_value = "7d")]
+        since: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Attach a human quality label to one opaque context request.
+    Review {
+        #[arg(long)]
+        request: String,
+        #[arg(long)]
+        outcome: ReviewOutcome,
+        #[arg(long)]
+        expected_rank: Option<usize>,
+    },
+    #[command(hide = true)]
+    MarkInjection {
+        #[arg(long)]
+        request: String,
+        #[arg(long)]
+        injected: bool,
+    },
+    #[command(hide = true)]
+    RecordRuntime {
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        status: String,
+        #[arg(long)]
+        duration_us: u64,
+        #[arg(long)]
+        evidence_changed: bool,
+        #[arg(long)]
+        learning_eligible: bool,
+        #[arg(long)]
+        proposed_memories: Option<usize>,
+        #[arg(long)]
+        accepted_memories: Option<usize>,
+        #[arg(long)]
+        compacted: bool,
+        #[arg(long)]
+        tokens_before: Option<usize>,
+        #[arg(long)]
+        tokens_after: Option<usize>,
+    },
+    /// Export redacted numeric records to a new owner-only JSON file.
+    Export {
+        #[arg(long, default_value = "7d")]
+        since: String,
+        #[arg(long)]
+        destination: PathBuf,
+    },
+    /// Preview or delete records older than the retention window.
+    Prune {
+        #[arg(long, default_value = "30d")]
+        older_than: String,
+        /// Apply the deletion; without this flag Moon only reports the count.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -583,7 +665,7 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 Some(build_provider(&args.provider, cli.dimensions, &home)?)
             };
-            let packet = store.assemble_context(
+            let observation = store.observe_context(
                 &ContextRequest {
                     query: args.query,
                     mode: args.mode,
@@ -594,7 +676,24 @@ fn run(cli: Cli) -> Result<()> {
                 },
                 provider.as_deref(),
             )?;
-            if cli.json {
+            let packet = observation.packet;
+            if args.adapter {
+                if !cli.json {
+                    anyhow::bail!("--adapter requires --json");
+                }
+                let rendered = (!packet.is_empty()).then(|| packet.render_markdown());
+                emit(
+                    &serde_json::json!({
+                        "request_id": observation.request_id,
+                        "packet": rendered,
+                        "memory_count": packet.memories.len(),
+                        "reference_count": packet.references.len(),
+                        "packet_chars": packet.used_chars,
+                        "truncated": packet.truncated,
+                    }),
+                    true,
+                )
+            } else if cli.json {
                 emit(&packet, true)
             } else if packet.is_empty() {
                 Ok(())
@@ -618,13 +717,13 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Embed(args) => {
             let provider = build_provider(&args.provider, cli.dimensions, &home)?;
-            let mut report = store.embed_pending(provider.as_ref(), args.limit)?;
+            let mut report = store.observe_embeddings(provider.as_ref(), args.limit)?;
             if args.drain {
                 loop {
                     if report.selected == 0 || report.remaining == 0 {
                         break;
                     }
-                    let next = store.embed_pending(provider.as_ref(), args.limit)?;
+                    let next = store.observe_embeddings(provider.as_ref(), args.limit)?;
                     report.selected += next.selected;
                     report.embedded += next.embedded;
                     report.remaining = next.remaining;
@@ -768,6 +867,91 @@ fn run(cli: Cli) -> Result<()> {
                 cli.json,
             )
         }
+        Command::Metrics(args) => match args.command {
+            MetricsCommand::Summary { since } => {
+                let since_ms = since_timestamp_ms(&since)?;
+                emit(&store.metrics_summary(since_ms)?, cli.json)
+            }
+            MetricsCommand::Recent { since, limit } => {
+                let since_ms = since_timestamp_ms(&since)?;
+                emit(&store.context_metrics_recent(since_ms, limit)?, cli.json)
+            }
+            MetricsCommand::Review {
+                request,
+                outcome,
+                expected_rank,
+            } => emit(
+                &store.review_context_metric(&request, outcome, expected_rank)?,
+                cli.json,
+            ),
+            MetricsCommand::MarkInjection { request, injected } => {
+                store.mark_context_injected(&request, injected)?;
+                emit(
+                    &serde_json::json!({"ok": true, "request_id": request}),
+                    cli.json,
+                )
+            }
+            MetricsCommand::RecordRuntime {
+                kind,
+                status,
+                duration_us,
+                evidence_changed,
+                learning_eligible,
+                proposed_memories,
+                accepted_memories,
+                compacted,
+                tokens_before,
+                tokens_after,
+            } => {
+                let is_learning = kind == "learning";
+                let is_compaction = kind == "compaction";
+                let event_id = store.record_runtime_metric(&RuntimeMetricInput {
+                    event_kind: kind,
+                    status,
+                    duration_us,
+                    evidence_changed: is_learning.then_some(evidence_changed),
+                    learning_eligible: is_learning.then_some(learning_eligible),
+                    proposed_memories,
+                    accepted_memories,
+                    compacted: is_compaction.then_some(compacted),
+                    tokens_before,
+                    tokens_after,
+                    ..RuntimeMetricInput::default()
+                })?;
+                emit(
+                    &serde_json::json!({"ok": true, "event_id": event_id}),
+                    cli.json,
+                )
+            }
+            MetricsCommand::Export { since, destination } => {
+                let since_ms = since_timestamp_ms(&since)?;
+                let exported = store.export_metrics(&destination, since_ms)?;
+                emit(
+                    &serde_json::json!({
+                        "ok": true,
+                        "destination": destination,
+                        "exported": exported,
+                        "redacted": true,
+                    }),
+                    cli.json,
+                )
+            }
+            MetricsCommand::Prune { older_than, yes } => {
+                let before_ms = since_timestamp_ms(&older_than)?;
+                let matched = store.prune_metrics(before_ms, yes)?;
+                emit(
+                    &serde_json::json!({
+                        "ok": true,
+                        "matched": matched,
+                        "deleted": if yes { matched } else { 0 },
+                        "changed": yes && matched > 0,
+                        "dry_run": !yes,
+                        "before_ms": before_ms,
+                    }),
+                    cli.json,
+                )
+            }
+        },
         Command::Serve(args) => {
             if !args.stdio {
                 anyhow::bail!("only the private --stdio transport is supported");
@@ -1066,6 +1250,31 @@ fn percentile(sorted: &[f64], percentile: f64) -> f64 {
 
 fn current_time_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+fn since_timestamp_ms(value: &str) -> Result<i64> {
+    let value = value.trim();
+    let (number, multiplier) = if let Some(number) = value.strip_suffix('d') {
+        (number, 86_400_000i64)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 3_600_000i64)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60_000i64)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000i64)
+    } else {
+        anyhow::bail!("duration must use a d, h, m, or s suffix (for example 7d or 12h)");
+    };
+    let amount = number
+        .parse::<i64>()
+        .context("duration must start with a positive whole number")?;
+    if amount <= 0 {
+        anyhow::bail!("duration must be greater than zero");
+    }
+    let duration_ms = amount
+        .checked_mul(multiplier)
+        .context("duration is too large")?;
+    Ok(current_time_ms().saturating_sub(duration_ms))
 }
 
 #[cfg(test)]

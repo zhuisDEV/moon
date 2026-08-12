@@ -18,6 +18,11 @@ The adapter keeps strict ownership boundaries:
   numeric-entailment, confidence, importance, and correction checks run before a
   proposal reaches SQLite.
 - Greetings and irrelevant queries inject no context packet.
+- Non-trivial context requests update a local, content-free metric row with
+  injection state. Logs expose only its opaque request ID and numeric summary
+  for optional human review.
+- Completed-turn learning and native compaction emit content-free operational
+  events; Moon's embedding worker records its own batch counts.
 
 Lexical and hybrid retrieval both require no credentials and do not transmit
 memory content. Hybrid mode uses Moon's local multilingual model through one
@@ -39,4 +44,5 @@ assembly, not transcript replacement.
 
 Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
 [`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md) for
-multi-day recall observation before changing retrieval policy.
+the metrics commands, privacy boundary, and multi-day recall evaluation before
+changing retrieval policy.

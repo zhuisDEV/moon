@@ -68,6 +68,32 @@ Treat an empty result as ambiguous until you establish whether a relevant memory
 actually exists. Preserve the original wording, including mistakes, when
 collecting a reviewed recall case.
 
+Inspect content-free context metrics before tuning retrieval:
+
+```bash
+moon metrics summary --since 7d
+moon metrics recent --since 7d --limit 20
+```
+
+Use the opaque ID from the adapter's `moon context request=...` log line to
+label a case. `expected-rank` is optional and should be set only when a specific
+expected memory can be ranked:
+
+```bash
+moon metrics review \
+  --request <opaque-id> \
+  --outcome false-negative \
+  --expected-rank 4
+```
+
+Metrics never contain the query, recalled content, source URI, scope,
+channel/session identity, credentials, or arbitrary errors. Treat
+`metrics
+prune --yes` and any metrics export as explicit writes; preview pruning
+without `--yes` first. Follow
+[docs/memory-improvement-plan.md](docs/memory-improvement-plan.md) for labels
+and decision gates.
+
 ## Interpret health
 
 - `pending_embeddings=0` and no failed, retrying, or dead jobs mean automatic

@@ -189,6 +189,54 @@ function contextArguments(settings, query) {
   if (settings.mode !== "lexical") {
     argv.push("--provider", "local");
   }
+  argv.push("--adapter", "--json");
+  return argv;
+}
+
+function metricInjectionArguments(settings, requestId, injected) {
+  const argv = baseMoonArguments(settings, true);
+  argv.push("metrics", "mark-injection", "--request", requestId);
+  if (injected) {
+    argv.push("--injected");
+  }
+  return argv;
+}
+
+function runtimeMetricArguments(settings, metric) {
+  const argv = baseMoonArguments(settings, true);
+  argv.push(
+    "metrics",
+    "record-runtime",
+    "--kind",
+    metric.event_kind,
+    "--status",
+    metric.status,
+    "--duration-us",
+    String(metric.duration_us),
+  );
+  for (
+    const [field, flag] of [
+      ["evidence_changed", "--evidence-changed"],
+      ["learning_eligible", "--learning-eligible"],
+      ["compacted", "--compacted"],
+    ]
+  ) {
+    if (metric[field] === true) {
+      argv.push(flag);
+    }
+  }
+  for (
+    const [field, flag] of [
+      ["proposed_memories", "--proposed-memories"],
+      ["accepted_memories", "--accepted-memories"],
+      ["tokens_before", "--tokens-before"],
+      ["tokens_after", "--tokens-after"],
+    ]
+  ) {
+    if (Number.isSafeInteger(metric[field]) && metric[field] >= 0) {
+      argv.push(flag, String(metric[field]));
+    }
+  }
   return argv;
 }
 
@@ -952,7 +1000,7 @@ async function distillCompletedTurn(api, settings, params, turn, worker) {
   };
 }
 
-function contextWorkerRequest(settings, query, structured) {
+function contextWorkerRequest(settings, query, structured, observe = false) {
   return {
     op: "context",
     query,
@@ -964,55 +1012,171 @@ function contextWorkerRequest(settings, query, structured) {
       : settings.maxChars,
     evidence_per_memory: structured ? 1 : settings.evidencePerMemory,
     structured,
+    observe,
   };
 }
 
 async function retrievePacket(api, settings, query, worker) {
+  let observation;
   if (settings.mode !== "lexical") {
-    const packet = await worker.request(
-      contextWorkerRequest(settings, query, false),
+    observation = await worker.request(
+      contextWorkerRequest(settings, query, false, true),
       settings.embeddingTimeoutMs,
     );
-    if (packet === null) {
-      return null;
-    }
-    if (!nonEmptyString(packet)) {
-      throw new Error("moon worker returned an invalid context packet");
-    }
-    if (!packet.startsWith("# Moon Context")) {
-      throw new Error("moon context returned an invalid packet");
-    }
-    if (unicodeLength(packet) > settings.maxChars) {
+  } else {
+    const result = await api.runtime.system.runCommandWithTimeout(
+      contextArguments(settings, query),
+      {
+        timeoutMs: settings.timeoutMs,
+      },
+    );
+    if (result.code !== 0) {
       throw new Error(
-        "moon context exceeded the configured character limit",
+        result.stderr?.trim() || `moon context exited with ${result.code}`,
       );
     }
-    return packet;
+    try {
+      observation = JSON.parse(result.stdout ?? "");
+    } catch {
+      throw new Error("moon context returned an invalid metrics envelope");
+    }
   }
-  const result = await api.runtime.system.runCommandWithTimeout(
-    contextArguments(settings, query),
-    {
-      timeoutMs: settings.timeoutMs,
-    },
-  );
-  if (result.code !== 0) {
-    throw new Error(
-      result.stderr?.trim() || `moon context exited with ${result.code}`,
-    );
+  if (!isObject(observation)) {
+    throw new Error("moon context returned an invalid metrics envelope");
   }
-  const packet = result.stdout?.trim();
-  if (!nonEmptyString(packet)) {
-    return null;
+  const requestId = observation.request_id;
+  if (
+    requestId !== null &&
+    !(typeof requestId === "string" && /^[0-9a-f]{32}$/.test(requestId))
+  ) {
+    throw new Error("moon context returned an invalid metric request id");
   }
-  if (!packet.startsWith("# Moon Context")) {
+  const packet = observation.packet;
+  if (packet !== null && !nonEmptyString(packet)) {
+    throw new Error("moon context returned an invalid context packet");
+  }
+  if (packet !== null && !packet.startsWith("# Moon Context")) {
     throw new Error("moon context returned an invalid packet");
   }
-  if (unicodeLength(packet) > settings.maxChars) {
+  if (packet !== null && unicodeLength(packet) > settings.maxChars) {
     throw new Error(
       "moon context exceeded the configured character limit",
     );
   }
-  return packet;
+  for (const field of ["memory_count", "reference_count", "packet_chars"]) {
+    if (!Number.isSafeInteger(observation[field]) || observation[field] < 0) {
+      throw new Error("moon context returned invalid metric counts");
+    }
+  }
+  if (typeof observation.truncated !== "boolean") {
+    throw new Error("moon context returned an invalid truncation metric");
+  }
+  return {
+    requestId,
+    packet,
+    memoryCount: observation.memory_count,
+    referenceCount: observation.reference_count,
+    packetChars: observation.packet_chars,
+    truncated: observation.truncated,
+  };
+}
+
+async function markContextInjection(
+  api,
+  settings,
+  worker,
+  requestId,
+  injected,
+) {
+  if (!requestId) {
+    logError(api, "context metrics degraded: request was not recorded");
+    return;
+  }
+  try {
+    if (settings.mode === "lexical") {
+      await runMoonCommand(
+        api,
+        metricInjectionArguments(settings, requestId, injected),
+        settings.timeoutMs,
+      );
+    } else {
+      const result = await worker.request(
+        { op: "context_injection", request_id: requestId, injected },
+        settings.embeddingTimeoutMs,
+      );
+      if (result?.updated !== true) {
+        throw new Error("moon worker returned an invalid metrics update");
+      }
+    }
+  } catch (error) {
+    logError(api, `context metrics degraded: ${String(error)}`);
+  }
+}
+
+async function recordRuntimeMetric(api, settings, worker, metric) {
+  try {
+    let result;
+    if (worker) {
+      result = await worker.request(
+        { op: "runtime_metric", ...metric },
+        settings.embeddingTimeoutMs,
+      );
+    } else {
+      result = JSON.parse(
+        await runMoonCommand(
+          api,
+          runtimeMetricArguments(settings, metric),
+          settings.timeoutMs,
+        ),
+      );
+    }
+    const eventId = result?.event_id;
+    if (!(typeof eventId === "string" && /^[0-9a-f]{32}$/.test(eventId))) {
+      throw new Error("moon returned an invalid runtime metric event id");
+    }
+  } catch (error) {
+    logError(api, `runtime metrics degraded: ${String(error)}`);
+  }
+}
+
+function elapsedMicroseconds(started) {
+  return Math.max(0, Math.round((performance.now() - started) * 1_000));
+}
+
+async function observeCompaction(
+  api,
+  settings,
+  params,
+  worker,
+  compact = delegateCompaction,
+) {
+  const started = performance.now();
+  try {
+    const outcome = await compact(params);
+    const tokensBefore = Number(outcome?.result?.tokensBefore);
+    const tokensAfter = Number(outcome?.result?.tokensAfter);
+    await recordRuntimeMetric(api, settings, worker, {
+      event_kind: "compaction",
+      status: outcome?.compacted === true ? "ok" : "skipped",
+      duration_us: elapsedMicroseconds(started),
+      compacted: outcome?.compacted === true,
+      tokens_before: Number.isSafeInteger(tokensBefore) && tokensBefore >= 0
+        ? tokensBefore
+        : null,
+      tokens_after: Number.isSafeInteger(tokensAfter) && tokensAfter >= 0
+        ? tokensAfter
+        : null,
+    });
+    return outcome;
+  } catch (error) {
+    await recordRuntimeMetric(api, settings, worker, {
+      event_kind: "compaction",
+      status: "error",
+      duration_us: elapsedMicroseconds(started),
+      compacted: false,
+    });
+    throw error;
+  }
 }
 
 async function drainEmbeddingQueue(api, settings, worker) {
@@ -1078,16 +1242,43 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
       }
       const settings = resolveSettings(api);
       try {
-        const packet = await retrievePacket(
+        const worker = settings.mode === "lexical" ? null : workerFor(settings);
+        const observation = await retrievePacket(
           api,
           settings,
           query,
-          settings.mode === "lexical" ? null : workerFor(settings),
+          worker,
         );
-        if (!packet) {
+        if (!observation.packet) {
+          await markContextInjection(
+            api,
+            settings,
+            worker,
+            observation.requestId,
+            false,
+          );
+          logInfo(
+            api,
+            `moon context request=${
+              observation.requestId ?? "unrecorded"
+            } injected=false memories=0 references=0 chars=${observation.packetChars} truncated=${observation.truncated}`,
+          );
           return { messages, estimatedTokens: estimateTokens(messages) };
         }
-        const injected = injectPacket(messages, packet);
+        const injected = injectPacket(messages, observation.packet);
+        await markContextInjection(
+          api,
+          settings,
+          worker,
+          observation.requestId,
+          true,
+        );
+        logInfo(
+          api,
+          `moon context request=${
+            observation.requestId ?? "unrecorded"
+          } injected=true memories=${observation.memoryCount} references=${observation.referenceCount} chars=${observation.packetChars} truncated=${observation.truncated}`,
+        );
         return {
           messages: injected,
           estimatedTokens: estimateTokens(injected),
@@ -1106,9 +1297,20 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
       if (!turn) {
         return;
       }
+      const learningStarted = performance.now();
+      const learningMetric = {
+        event_kind: "learning",
+        status: settings.learningEnabled ? "ok" : "skipped",
+        duration_us: 0,
+        evidence_changed: false,
+        learning_eligible: isLearningCandidate(turn),
+        proposed_memories: 0,
+        accepted_memories: 0,
+      };
       if (settings.learningEnabled) {
         try {
           const recorded = await recordCompletedTurn(api, settings, turn);
+          learningMetric.evidence_changed = recorded.changed;
           if (!recorded.changed || !isLearningCandidate(turn)) {
             logInfo(
               api,
@@ -1124,22 +1326,45 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
               turn,
               settings.mode === "lexical" ? null : workerFor(settings),
             );
+            learningMetric.proposed_memories = outcome.proposed;
+            learningMetric.accepted_memories = outcome.distilled;
             logInfo(
               api,
               `moon learning evidence=recorded proposed=${outcome.proposed} distilled=${outcome.distilled} auth=${outcome.authLevel}`,
             );
           }
         } catch (error) {
+          learningMetric.status = "error";
           logError(api, `learning degraded: ${String(error)}`);
           if (!settings.failOpen) {
+            learningMetric.duration_us = elapsedMicroseconds(learningStarted);
+            await recordRuntimeMetric(
+              api,
+              settings,
+              settings.mode === "lexical" ? null : workerFor(settings),
+              learningMetric,
+            );
             throw error;
           }
         }
       }
+      learningMetric.duration_us = elapsedMicroseconds(learningStarted);
+      await recordRuntimeMetric(
+        api,
+        settings,
+        settings.mode === "lexical" ? null : workerFor(settings),
+        learningMetric,
+      );
       await drainEmbeddingQueue(api, settings, workerFor(settings));
     },
-    compact(params) {
-      return delegateCompaction(params);
+    async compact(params) {
+      const settings = resolveSettings(api);
+      return await observeCompaction(
+        api,
+        settings,
+        params,
+        settings.mode === "lexical" ? null : workerFor(settings),
+      );
     },
     dispose() {
       if (sharedWorkerState) {
@@ -1185,12 +1410,15 @@ export const __moonTest = {
   isLearningCandidate,
   isTrivialQuery,
   modelArguments,
+  metricInjectionArguments,
   normalizeProposal,
+  observeCompaction,
   queryFromParams,
   recordArguments,
   resolveSettings,
   runModelWithAuthFallback,
   runOpenClawModel,
+  runtimeMetricArguments,
   stdioWorkerArguments,
   unicodeLength,
   visibleText,

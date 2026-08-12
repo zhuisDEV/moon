@@ -39,3 +39,13 @@ For production-quality observation, use `--provider local` against a backup or
 isolated copy with the same embedding model and dimensions. Follow
 [memory-improvement-plan.md](memory-improvement-plan.md) for the reviewed query
 corpus, privacy rules, and acceptance gates.
+
+The live content-free collector reports complete context-assembly latency with:
+
+```bash
+moon metrics summary --since 7d
+```
+
+These p50/p95/p99 values include search, assembly, citation loading, and
+rendering inside Moon. They exclude adapter transport and message insertion. Use
+a separate canary when claiming end-to-end OpenClaw latency.

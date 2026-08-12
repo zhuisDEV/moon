@@ -2401,8 +2401,8 @@ mod tests {
             minimum_os_version: test_minimum_os_version().to_owned(),
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
-            database_schema_min: 6,
-            database_schema_max: 6,
+            database_schema_min: 7,
+            database_schema_max: 7,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -2693,8 +2693,8 @@ mod tests {
             minimum_os_version: test_minimum_os_version().to_owned(),
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
-            database_schema_min: 6,
-            database_schema_max: 6,
+            database_schema_min: 7,
+            database_schema_max: 7,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,

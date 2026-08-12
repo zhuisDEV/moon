@@ -188,6 +188,26 @@ lexical and citation-only. When no reviewed canonical memory matches, `context`
 can fill the remaining budget with deduplicated source excerpts. These stay
 visibly separate as unreviewed references with source and byte citations.
 
+Every user-facing context request also records content-free local metrics. Moon
+stores an opaque request ID, timestamp, mode, latency, result counts, packet
+size/truncation, adapter injection state, and optional human review label. It
+does not store the query, prompt, response, recalled content, source URI, scope,
+channel/session identity, credentials, or arbitrary error text in metrics.
+Content-free operational events also count completed-turn learning outcomes,
+embedding batches and remaining work, and native compaction outcomes.
+
+```bash
+moon metrics summary --since 7d
+moon metrics recent --since 7d --limit 20
+moon metrics review --request <opaque-id> --outcome useful --expected-rank 1
+moon metrics export --since 7d --destination /path/to/moon-metrics.json
+moon metrics prune --older-than 30d       # dry run
+moon metrics prune --older-than 30d --yes # delete matching metric rows only
+```
+
+See [docs/memory-improvement-plan.md](docs/memory-improvement-plan.md) for the
+review labels, interpretation limits, retention workflow, and release gates.
+
 ## Isolated smoke test
 
 Use an explicit test root. Nothing below reads or writes `~/.moon`:
@@ -261,7 +281,9 @@ The adapter in [`assets/openclaw-plugin`](assets/openclaw-plugin) registers the
 immediately before the current user message, records completed turns as
 immutable evidence, and selectively distills durable memories with exact
 citations. Greetings and irrelevant queries inject no packet. Retrieval and
-learning fail open, and OpenClaw retains transcript compaction.
+learning fail open, and OpenClaw retains transcript compaction. For non-trivial
+queries, the adapter also marks the matching content-free metric row as injected
+or not injected and logs only its opaque request ID and numeric result summary.
 
 Normal context is capped at 3,500 characters. Learning uses `gpt-5.6-luna` with
 medium reasoning through OpenClaw's session-bound model runtime, then the Moon
