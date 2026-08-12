@@ -2398,7 +2398,7 @@ mod tests {
             git_tag: "v2.2.0".to_owned(),
             git_commit: "a".repeat(40),
             target: current_target().to_owned(),
-            minimum_os_version: "13.0".to_owned(),
+            minimum_os_version: test_minimum_os_version().to_owned(),
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 6,
@@ -2419,6 +2419,14 @@ mod tests {
                 bundle_manifest_sha256: sha256_hex(&bundle_bytes),
             },
             bundle,
+        }
+    }
+
+    fn test_minimum_os_version() -> &'static str {
+        if cfg!(target_os = "linux") {
+            "glibc-2.35"
+        } else {
+            "13.0"
         }
     }
 
@@ -2682,7 +2690,7 @@ mod tests {
             git_tag: "v2.2.0".to_owned(),
             git_commit: commit,
             target: current_target().to_owned(),
-            minimum_os_version: "13.0".to_owned(),
+            minimum_os_version: test_minimum_os_version().to_owned(),
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 6,
