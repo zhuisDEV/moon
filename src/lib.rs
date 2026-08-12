@@ -5,8 +5,11 @@ pub mod legacy;
 pub mod memory;
 pub mod model;
 pub mod redaction;
+pub mod release;
 pub mod server;
 pub mod store;
+pub mod update;
+pub mod version;
 
 pub use auth::{AuthCheck, AuthLevel, AuthResolver, AuthStatusReport, ModelOutcome};
 pub use embedding::{EmbeddingProvider, HashEmbedding, LocalEmbedding};

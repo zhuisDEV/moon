@@ -35,6 +35,11 @@ active under `~/.moon`; the retired v1 runtime remains read-only at
 
 The Moon CLI deliberately has no cutover or legacy-delete command.
 
+For updates between Moon v2 releases, v2.2.0 and later use the native signed
+transaction described in [updating.md](updating.md). The first v2.1.0 to v2.2.0
+installation is the documented bootstrap boundary; it retains v2.1.0 and does
+not change the preserved v1 rollback runtime.
+
 ## SQLite migrations
 
 Moon applies numbered migrations transactionally. The current schema is v6.

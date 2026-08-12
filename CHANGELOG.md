@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Added the native signed `moon update` transaction with strictly read-only
+  checking, verified download limits, platform/schema/version policy, owner-only
+  locking and journals, isolated candidate validation, consistent backup,
+  versioned atomic switching, OpenClaw readiness gates, and automatic verified
+  rollback.
+- Added crash recovery across every journal phase, corrupted and unsafe archive
+  rejection, shadowed-executable and downgrade refusal, active-lease and
+  insufficient-space preflight, bounded subprocess/network behavior, and
+  credential-excluding OpenClaw snapshots.
+- Expanded release generation to the four supported macOS/GNU targets and made
+  v2.2.0 the explicit one-time bootstrap into the native update layout.
+
+- Added offline JSON version identity with Git, build-target, executable,
+  canonical-path, bundle-format, and clean/dirty provenance.
+- Kept plain `moon --version` exactly backward compatible and added isolation
+  tests proving both version modes operate without creating Moon storage.
+- Added strict canonical outer release and inner bundle manifests, bounded
+  Ed25519 signature-set verification, an embedded production public trust root,
+  and Keychain-backed interactive release signing.
+- Added deterministic compatibility-set archive tooling with candidate
+  provenance checks, fixed metadata, per-file hashes, overwrite refusal, and CI
+  generation on macOS and Linux.
+
 ## 2.1.0 - 2026-08-08
 
 - Added a canonical Moon v2 AI-agent skill and a multi-day observation plan for
