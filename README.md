@@ -25,6 +25,30 @@ tests, imports, and replays should always pass an explicit temporary `--home`.
 
 ## Install or upgrade
 
+Moon v2.2.0 is the first updater-capable release. Once it is installed, native
+signed updates are the primary path and require no Rust toolchain:
+
+```bash
+moon update --check
+moon update --dry-run
+moon update
+```
+
+`--check` is strictly read-only. `--dry-run` downloads and verifies the signed
+compatibility set, checks health, space, platform, schema, executable identity,
+and OpenClaw compatibility, then prints the exact plan without changing local
+state. Applying requires one interactive confirmation, or `--yes` for an
+explicit non-interactive invocation. Moon never updates in the background.
+
+Moon v2.1.0 cannot invoke an updater it does not contain. Its one-time v2.2.0
+bootstrap must therefore use the controlled, pinned release procedure in
+[docs/updating.md](docs/updating.md). The no-toolchain update promise begins
+after that bootstrap. Existing releases and rollback bundles are retained until
+the owner separately authorizes cleanup.
+
+The source-build procedure below is recovery/development guidance, not the
+normal update path.
+
 Back up an existing Moon runtime before replacing its binary or plugin:
 
 ```bash
@@ -42,6 +66,7 @@ export PATH="$HOME/.moon/bin:$PATH"
 hash -r
 command -v moon
 moon --version
+moon --json --version
 moon init
 moon --json health
 ```
@@ -52,6 +77,11 @@ confirm that `command -v moon` resolves to the v2 binary you just installed and
 that `moon --version` reports the expected release. If an older binary shadows
 v2, do not follow its migration prompt against the newer database; repair the
 command resolution or use `~/.moon/bin/moon` explicitly.
+
+`moon --json --version` is also offline and storage-independent. It reports the
+invoked executable, canonical `~/.moon/bin/moon` path, build target, Git commit,
+and whether the build came from a dirty checkout. It does not create or inspect
+the database. A release artifact must report `git_dirty: false`.
 
 Install the OpenClaw adapter from this checkout and select Moon as the sole
 context and memory owner:
@@ -80,7 +110,8 @@ openclaw gateway restart --safe
 
 The first local embedding request downloads the multilingual E5 model into the
 Moon runtime. See [docs/migration.md](docs/migration.md) before upgrading from
-Moon v1.
+Moon v1 and [docs/updating.md](docs/updating.md) for the signed update and
+recovery contract.
 
 ## Development
 
@@ -96,6 +127,12 @@ The command surface is documented by:
 ```bash
 cargo run -- --help
 ```
+
+Release maintainers can build deterministic unsigned compatibility-set archives
+with `cargo run --locked --example moon-release -- --help`. The tool validates
+candidate provenance; its macOS-only signing command reads the production key
+through an interactive, dedicated Keychain and never exports it. See
+[RELEASE.md](RELEASE.md) and [docs/release-signing.md](docs/release-signing.md).
 
 See [docs/architecture.md](docs/architecture.md) for the storage and retrieval
 contracts. Start with [docs/how-it-works.md](docs/how-it-works.md) for the

@@ -1,6 +1,6 @@
 [package]
 name = "moon"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 description = "Local-first SQLite memory with evidence-backed learning and hybrid retrieval"
 license = "MIT"
@@ -15,19 +15,36 @@ anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6.0"
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 fastembed = { version = "5.17.3", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+flate2 = "1.1"
+hex = "0.4"
+json5 = "0.4"
+libc = "0.2"
+rand = "0.9"
 regex = "1.11"
 rusqlite = { version = "0.39", features = ["backup", "bundled"] }
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 sqlite-vec = "=0.1.9"
+tar = { version = "0.4", default-features = false }
 tempfile = "3.15"
+ureq = "3.3"
+url = "2.5"
+wait-timeout = "0.2"
 walkdir = "2.5"
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+core-foundation = "0.10"
+security-framework = "3.7"
+security-framework-sys = "2.17"
+zeroize = "1.8"
 
 [profile.release]
 lto = "thin"

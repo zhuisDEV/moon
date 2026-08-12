@@ -3,6 +3,8 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
+<!-- moon-version: 2.2.0 -->
+
 # Moon
 
 Use the installed `moon` binary. Normal OpenClaw conversations require no manual
@@ -15,11 +17,27 @@ OpenClaw `moonPath` resolve to the same v2 binary:
 ```bash
 command -v moon
 moon --version
+moon --json --version
 ```
 
 If a legacy binary shadows v2 and rejects a newer schema, do not run its `init`
 command. Use the configured v2 binary explicitly and repair command resolution
-first.
+first. Structured version output is read-only: compare `executable`,
+`canonical_executable`, and `canonical` without opening storage. Treat
+`git_dirty: true` or `null` as development or unverifiable provenance, not a
+release identity.
+
+Inspect the stable release channel without writing anything:
+
+```bash
+moon update --check
+moon update --dry-run
+```
+
+`--check` does not create storage, download an archive, change configuration, or
+restart OpenClaw. `--dry-run` verifies the signed archive and complete plan but
+still performs no local mutation. Treat a `shadowed_executable` result as a hard
+stop: use the exact canonical command reported by Moon.
 
 ## Inspect safely
 
@@ -71,12 +89,15 @@ moon export --destination /path/to/MEMORY-before-change.md
 
 Use `record`, `remember`, `distill`, `distill-batch`, `ingest`,
 `requeue-embeddings`, and `rebuild-fts` only when the user has authorized the
-corresponding write. Never test against `~/.moon`; pass an explicit temporary
-`--home`.
+corresponding write. `moon update` is also a write: require explicit authority,
+show the verified plan, preserve its rollback bundle, and never add `--yes`
+merely to bypass a missing confirmation. Never test mutation against `~/.moon`;
+pass an explicit temporary `--home`.
 
 Do not use legacy `recall`, `watch`, `cleanse`, `assemble`, `project`,
-`context-engine`, `install`, `update`, or daemon-control commands. Moon v2 has
-one Rust binary, one SQLite database, and no QMD or watcher.
+`context-engine`, `install`, or daemon-control commands. Moon v2 has one Rust
+binary, one SQLite database, and no QMD or watcher. The native `update` command
+documented here is unrelated to the removed v1 updater.
 
 For operating details, read [README.md](README.md) and
 [docs/how-it-works.md](docs/how-it-works.md). For recall-quality observation,

@@ -8,7 +8,7 @@ use moon::{
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 use walkdir::WalkDir;
@@ -80,6 +80,8 @@ enum Command {
     Benchmark(BenchmarkArgs),
     /// Keep the local embedding model warm over a private JSON-lines channel.
     Serve(ServeArgs),
+    /// Check for or apply a signed compatibility-set update.
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -334,8 +336,51 @@ struct ServeArgs {
     stdio: bool,
 }
 
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// Inspect the stable channel without changing local state.
+    #[arg(long, conflicts_with_all = ["dry_run", "yes", "allow_downgrade"])]
+    check: bool,
+    /// Select one exact stable release.
+    #[arg(long)]
+    version: Option<String>,
+    /// Verify the release and show the plan without changing production state.
+    #[arg(long, conflicts_with_all = ["check", "yes"])]
+    dry_run: bool,
+    /// Apply without an interactive confirmation prompt.
+    #[arg(long)]
+    yes: bool,
+    /// Permit an explicit downgrade to the selected signed release.
+    #[arg(long, requires = "version")]
+    allow_downgrade: bool,
+}
+
 fn main() {
     let wants_json = env::args_os().any(|argument| argument == "--json");
+    let wants_version = env::args_os().any(|argument| argument == "--version" || argument == "-V");
+    if wants_json && wants_version {
+        match moon::version::VersionInfo::current() {
+            Ok(version) => println!(
+                "{}",
+                serde_json::to_string(&version).expect("version identity is serializable")
+            ),
+            Err(error) => {
+                let safe_message = redact_text(&format!("{error:#}")).value;
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "error": {
+                            "code": "version_identity_failed",
+                            "message": safe_message,
+                        }
+                    })
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -366,13 +411,14 @@ fn main() {
     };
     if let Err(error) = run(cli) {
         let safe_message = redact_text(&format!("{error:#}")).value;
+        let code = moon::update::error_code(&error).unwrap_or("operation_failed");
         if wants_json {
             eprintln!(
                 "{}",
                 serde_json::json!({
                     "ok": false,
                     "error": {
-                        "code": "operation_failed",
+                            "code": code,
                         "message": safe_message,
                     }
                 })
@@ -408,6 +454,9 @@ fn run(cli: Cli) -> Result<()> {
                 )
             }
         };
+    }
+    if let Command::Update(args) = &cli.command {
+        return run_update(&home, cli.dimensions, cli.json, args);
     }
     let database = cli
         .database
@@ -728,7 +777,65 @@ fn run(cli: Cli) -> Result<()> {
             let stdout = io::stdout();
             moon::server::serve_stdio(&mut store, provider.as_ref(), stdin.lock(), stdout.lock())
         }
+        Command::Update(_) => unreachable!("update is handled without opening storage for writes"),
     }
+}
+
+fn run_update(home: &Path, dimensions: usize, json: bool, args: &UpdateArgs) -> Result<()> {
+    let client = moon::update::ReleaseClient::production()?;
+    let release = client.fetch_release(args.version.as_deref())?;
+    let check =
+        moon::update::check_for_update(home, dimensions, args.version.as_deref(), &release)?;
+    if args.check {
+        return emit(&check, json);
+    }
+
+    let identity = moon::version::VersionInfo::current_for_home(home)?;
+    let context = moon::update::ApplyContext {
+        home: home.to_path_buf(),
+        dimensions,
+        identity,
+        openclaw: moon::update::inspect_openclaw_config()?,
+        skill_path: moon::update::default_skill_path()?,
+        allow_downgrade: args.allow_downgrade,
+    };
+    let asset = release.asset_for_current_target()?;
+    let archive = client.fetch_archive(&release, asset)?;
+    let openclaw = moon::update::SystemOpenClaw::discover()?;
+    let plan = moon::update::preflight_update(&context, &release, &archive, &openclaw)?;
+    if args.dry_run {
+        return emit(
+            &serde_json::json!({
+                "ok": true,
+                "changed": false,
+                "dry_run": true,
+                "check": check,
+                "plan": plan,
+                "archive_verified": true,
+            }),
+            json,
+        );
+    }
+
+    if !args.yes {
+        if json || !io::stdin().is_terminal() {
+            return moon::update::fail(
+                "authorization_required",
+                "applying an update non-interactively requires --yes",
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+        print!("Apply this Moon update? [y/N] ");
+        io::stdout().flush()?;
+        let mut response = String::new();
+        io::stdin().read_line(&mut response)?;
+        if !matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            return moon::update::fail("update_cancelled", "update cancelled before mutation");
+        }
+    }
+
+    let result = moon::update::apply_update(&context, &release, &archive, &openclaw)?;
+    emit(&result, json)
 }
 
 fn resolve_home(explicit: Option<&Path>) -> Result<PathBuf> {
