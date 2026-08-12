@@ -65,6 +65,8 @@ impl EmbeddingProvider for HashEmbedding {
 const LOCAL_DIMENSIONS: usize = 384;
 const LOCAL_MAX_TOKENS: usize = 512;
 const LOCAL_BATCH_SIZE: usize = 64;
+const LOCAL_MODEL_ID: &str =
+    "intfloat/multilingual-e5-small@fastembed-5.17.3:query-passage-v1:max512";
 
 /// In-process multilingual embeddings. The model is downloaded once into Moon's
 /// private cache and then runs fully locally through ONNX Runtime.
@@ -131,7 +133,10 @@ impl EmbeddingProvider for LocalEmbedding {
     }
 
     fn model(&self) -> &str {
-        "intfloat/multilingual-e5-small@fastembed-5.5.0+ort-rc.10:query-passage-v1:max512"
+        // This identifier is persisted in every database and describes the
+        // embedding contract, not dependency telemetry. The portable ORT pin
+        // uses the same model, tokenizer, prefixes, pooling, and dimensions.
+        LOCAL_MODEL_ID
     }
 
     fn dimensions(&self) -> usize {
@@ -239,4 +244,17 @@ pub fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_model_identity_remains_database_compatible() {
+        assert_eq!(
+            LOCAL_MODEL_ID,
+            "intfloat/multilingual-e5-small@fastembed-5.17.3:query-passage-v1:max512"
+        );
+    }
 }

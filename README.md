@@ -25,8 +25,10 @@ tests, imports, and replays should always pass an explicit temporary `--home`.
 
 ## Install or upgrade
 
-Moon v2.2.0 is the first updater-capable release. Once it is installed, native
-signed updates are the primary path and require no Rust toolchain:
+Moon v2.2.0 introduced the native updater. Use v2.2.1 or later for the initial
+bootstrap so existing v2 databases retain their established embedding-model
+identity. Once installed, signed updates are the primary path and require no
+Rust toolchain:
 
 ```bash
 moon update --check
@@ -40,7 +42,7 @@ and OpenClaw compatibility, then prints the exact plan without changing local
 state. Applying requires one interactive confirmation, or `--yes` for an
 explicit non-interactive invocation. Moon never updates in the background.
 
-Moon v2.1.0 cannot invoke an updater it does not contain. Its one-time v2.2.0
+Moon v2.1.0 cannot invoke an updater it does not contain. Its one-time v2.2.1
 bootstrap must therefore use the controlled, pinned release procedure in
 [docs/updating.md](docs/updating.md). The no-toolchain update promise begins
 after that bootstrap. Existing releases and rollback bundles are retained until
