@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.2.2 - 2026-08-13
+
+- Fixed post-migration validation to ask the newly installed Moon binary for
+  health, so an older updater never interprets a newer database schema itself.
+- Added a transactional-update regression that proves post-switch health comes
+  from the target binary.
+
 ## 2.2.1 - 2026-08-12
 
 - Preserved the established multilingual E5 embedding identity while using the
