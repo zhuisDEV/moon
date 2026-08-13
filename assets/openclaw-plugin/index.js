@@ -1222,7 +1222,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.3.1",
+      version: "2.3.2",
       ownsCompaction: false,
     },
     bootstrap() {

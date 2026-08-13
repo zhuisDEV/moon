@@ -1183,7 +1183,7 @@ fn apply_update_inner(
             code: "version_identity_failed",
             message: format!("installed release identity verification failed: {error:#}"),
         })?;
-        let health_after = healthy_runtime(context)?;
+        let health_after = healthy_installed_runtime(context)?;
         ensure_queue_preserved(&health_before, &health_after)?;
         journal.schema_after = Some(health_after.schema_version);
         let snapshot_after = inspect_openclaw_config_at(context.openclaw.config_path.as_deref())?;
@@ -1413,6 +1413,45 @@ fn healthy_runtime(context: &ApplyContext) -> Result<crate::model::HealthReport>
     })?;
     if !health.ok {
         return fail("unhealthy_runtime", "Moon health is not ok");
+    }
+    Ok(health)
+}
+
+#[derive(Debug, Deserialize)]
+struct InstalledHealthReport {
+    ok: bool,
+    schema_version: i64,
+    failed_embeddings: usize,
+    dead_embeddings: usize,
+}
+
+fn healthy_installed_runtime(context: &ApplyContext) -> Result<InstalledHealthReport> {
+    let binary = context.home.join("bin/moon");
+    let home = context.home.to_string_lossy().into_owned();
+    let dimensions = context.dimensions.to_string();
+    let output = run_bounded(
+        &binary,
+        &[
+            "--home",
+            &home,
+            "--dimensions",
+            &dimensions,
+            "--json",
+            "health",
+        ],
+        128 * 1024,
+    )
+    .map_err(|error| UpdateFailure {
+        code: "unhealthy_runtime",
+        message: format!("installed Moon health check failed: {error:#}"),
+    })?;
+    let health: InstalledHealthReport =
+        serde_json::from_slice(&output).map_err(|error| UpdateFailure {
+            code: "unhealthy_runtime",
+            message: format!("installed Moon health output is invalid: {error:#}"),
+        })?;
+    if !health.ok {
+        return fail("unhealthy_runtime", "installed Moon health is not ok");
     }
     Ok(health)
 }
@@ -1867,7 +1906,7 @@ fn restore_database(context: &ApplyContext, backup: &Path, transaction_id: &str)
 
 fn ensure_queue_preserved(
     before: &crate::model::HealthReport,
-    after: &crate::model::HealthReport,
+    after: &InstalledHealthReport,
 ) -> Result<()> {
     ensure!(after.ok, "post-update health is not ok");
     ensure!(
@@ -2647,7 +2686,7 @@ mod tests {
             ""
         };
         let script = format!(
-            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":7,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
             current_target()
         )
         .into_bytes();
@@ -2809,6 +2848,7 @@ mod tests {
         assert!(result.ok && result.changed && result.gateway_reachable);
         assert_eq!(result.from_version, "2.1.0");
         assert_eq!(result.to_version, "2.2.0");
+        assert_eq!(result.schema_after, Some(7));
         assert_eq!(result.verified_key_ids, ["test-release-key"]);
         assert!(fixture.context.home.join("current").is_symlink());
         assert!(fixture.context.home.join("bin/moon").is_symlink());

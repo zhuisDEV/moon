@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.3.2 - 2026-08-13
+
+- Fixed post-migration validation to ask the newly installed Moon binary for
+  health, so an older updater never interprets a newer database schema itself.
+- Added a transactional-update regression that proves post-switch health comes
+  from the target binary.
+
 ## 2.3.1 - 2026-08-13
 
 - Fixed native updates from schema 6 to schema 7 by publishing the complete
