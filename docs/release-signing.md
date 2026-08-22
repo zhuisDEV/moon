@@ -63,16 +63,28 @@ argument, or terminal output:
 ```bash
 gh secret list --repo zhuisDEV/moon --env production-release
 
-security find-generic-password -w \
+release_keychain="$HOME/Library/Keychains/moon-release-signing.keychain-db"
+security lock-keychain "$release_keychain"
+trap 'security lock-keychain "$release_keychain"' EXIT
+
+release_seed_hex="$(security find-generic-password -w \
   -s dev.zhuis.moon.release-signing \
   -a moon-release-2026-01 \
-  "$HOME/Library/Keychains/moon-release-signing.keychain-db" |
+  "$release_keychain")"
+if [[ ! "$release_seed_hex" =~ ^[[:xdigit:]]{64}$ ]]; then
+  unset release_seed_hex
+  echo "Unexpected release-key encoding" >&2
+  exit 1
+fi
+
+printf '%s' "$release_seed_hex" |
+  tr '[:upper:]' '[:lower:]' |
   gh secret set MOON_RELEASE_SIGNING_KEY \
     --repo zhuisDEV/moon \
     --env production-release
-
-security lock-keychain \
-  "$HOME/Library/Keychains/moon-release-signing.keychain-db"
+unset release_seed_hex
+security lock-keychain "$release_keychain"
+trap - EXIT
 ```
 
 Approve the macOS per-use access prompt. GitHub does not permit reading the
