@@ -67,8 +67,6 @@ security find-generic-password -w \
   -s dev.zhuis.moon.release-signing \
   -a moon-release-2026-01 \
   "$HOME/Library/Keychains/moon-release-signing.keychain-db" |
-  xxd -p -c 256 |
-  tr -d '\n' |
   gh secret set MOON_RELEASE_SIGNING_KEY \
     --repo zhuisDEV/moon \
     --env production-release
@@ -78,8 +76,10 @@ security lock-keychain \
 ```
 
 Approve the macOS per-use access prompt. GitHub does not permit reading the
-stored secret back; validate it by running the protected workflow and requiring
-the resulting signature to verify against the repository public key.
+stored secret back. The `security` command emits this binary generic-password
+item as its 64-character hexadecimal value; stop if its output has another
+shape. Validate the transferred value by running the protected workflow and
+requiring the resulting signature to verify against the repository public key.
 
 ## Local recovery signing ceremony
 

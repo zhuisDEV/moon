@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.4.2 - 2026-08-23
+
+- Corrected the one-time Keychain-to-GitHub secret transfer so the binary
+  generic-password item's existing hexadecimal representation is not encoded a
+  second time.
+
 ## 2.4.1 - 2026-08-23
 
 - Added a manually approved GitHub Actions production-release workflow that
