@@ -100,12 +100,12 @@ deletes a legacy file. Cutover and deletion remain outside the Moon CLI.
 
 The OpenClaw adapter is a thin bridge loaded by OpenClaw. It invokes the Rust
 binary for evidence writes, uses a private long-lived stdio child for local
-embedding and hybrid retrieval, and uses OpenClaw's session-bound completion
-capability for selective distillation. It does not introduce another installed
-service or package-manager runtime. It advertises `ownsCompaction=false`, so the
-selected agent harness keeps its native automatic transcript lifecycle. Moon
-delegates explicit compaction only when the runtime identifies the stock
-OpenClaw harness. It safely declines the generic fallback for Codex or unknown
-harnesses because the current fallback can produce an empty summary for a
-populated Codex transcript. Production loads the adapter from
+embedding and hybrid retrieval, and uses OpenClaw's session-bound embedded
+runner for selective distillation with explicit reasoning levels. It does not
+introduce another installed service or package-manager runtime. It advertises
+`ownsCompaction=false`, so the selected agent harness keeps its native automatic
+transcript lifecycle. Moon delegates explicit compaction only when the runtime
+identifies the stock OpenClaw harness. It safely declines the generic fallback
+for Codex or unknown harnesses because the current fallback can produce an empty
+summary for a populated Codex transcript. Production loads the adapter from
 `~/.moon/openclaw-plugin`.

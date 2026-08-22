@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 2.4.0 - 2026-08-22
+
+- Replaced the Codex-specific model and authentication chain with
+  provider-neutral primary/fallback routing through OpenClaw. Moon inherits
+  OpenClaw's primary model and first fallback by default, with optional
+  `primaryModel` and `fallbackModel` overrides in `provider/model` form.
+- Routed both models through OpenClaw's embedded runner so their independent
+  reasoning levels are enforceable, defaulted both to `off`, and made invalid
+  primary structured output eligible for fallback.
+- Removed the `moon auth` command, isolated Codex credential store, and legacy
+  `codexProvider`, `codexModel`, `codexReasoning`, `learningModel`, and
+  `learningReasoning` plugin settings.
+- Added bounded provider-error handling so neither credentials nor arbitrary
+  remote response bodies are printed when model routing fails.
+
 ## 2.3.2 - 2026-08-13
 
 - Fixed post-migration validation to ask the newly installed Moon binary for

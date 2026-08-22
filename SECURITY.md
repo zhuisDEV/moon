@@ -7,12 +7,13 @@ Moon stores local memory that may contain sensitive information.
   protection as the primary database.
 - On Unix, Moon creates runtime directories with mode `0700` and databases,
   backups, and exports with mode `0600`.
-- Moon has no direct API-key model route. Model work is delegated to OpenClaw or
-  Codex runtimes, which retain ownership of their credential stores.
-- Moon never parses or copies Codex access tokens. Its optional private login is
-  stored by Codex under the owner-only runtime directory.
-- Prompts passed from the adapter to `moon auth exec` use stdin rather than
-  process arguments. Model output and prompts are bounded.
+- Moon has no direct API-key model route. Model work is delegated to OpenClaw,
+  which retains ownership of every provider credential store.
+- Moon never parses or copies provider access tokens, and provider failures are
+  reduced to bounded diagnostics without arbitrary remote response bodies.
+- Prompts and model outputs remain inside the OpenClaw runtime. Turn evidence
+  and distillation proposals passed to the Moon binary use stdin rather than
+  process arguments and are bounded.
 - `import-legacy --include-raw` is opt-in because raw transcripts may contain
   substantially more sensitive data than distilled memory.
 - `record` conservatively scrubs common secret assignments, bearer tokens,

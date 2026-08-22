@@ -9,6 +9,17 @@ function nonEmptyString(value) {
 }
 
 const OPENCLAW_CORE_SPECIFIER = "openclaw/plugin-sdk/core";
+const REASONING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "adaptive",
+  "max",
+  "ultra",
+];
 
 function clampInteger(value, fallback, minimum, maximum) {
   const number = Number(value);
@@ -79,26 +90,36 @@ function resolvePath(api, value) {
 
 function resolveSettings(api) {
   const config = isObject(api?.pluginConfig) ? api.pluginConfig : {};
+  const openClawModel = api?.config?.agents?.defaults?.model;
+  const openClawPrimary = nonEmptyString(openClawModel)
+    ? openClawModel.trim()
+    : nonEmptyString(openClawModel?.primary)
+    ? openClawModel.primary.trim()
+    : null;
+  const openClawFallback = Array.isArray(openClawModel?.fallbacks)
+    ? openClawModel.fallbacks.find(nonEmptyString)?.trim() ?? null
+    : null;
   const mode = ["lexical", "semantic", "hybrid"].includes(config.mode)
     ? config.mode
     : "lexical";
-  const codexModel = nonEmptyString(config.codexModel)
-    ? config.codexModel.trim()
-    : "gpt-5.6-sol";
-  const defaultReasoning = codexModel === "gpt-5.6-luna" ? "medium" : "high";
+  const primaryModel = nonEmptyString(config.primaryModel)
+    ? config.primaryModel.trim()
+    : openClawPrimary;
+  const fallbackModel = nonEmptyString(config.fallbackModel)
+    ? config.fallbackModel.trim()
+    : openClawFallback;
   return {
     moonPath: resolvePath(api, config.moonPath) || "moon",
     moonHome: resolvePath(api, config.moonHome),
     mode,
-    codexProvider: nonEmptyString(config.codexProvider)
-      ? config.codexProvider.trim()
-      : "openai",
-    codexModel,
-    codexReasoning: ["low", "medium", "high", "xhigh"].includes(
-        config.codexReasoning,
-      )
-      ? config.codexReasoning
-      : defaultReasoning,
+    primaryModel,
+    fallbackModel: fallbackModel === primaryModel ? null : fallbackModel,
+    primaryReasoning: REASONING_LEVELS.includes(config.primaryReasoning)
+      ? config.primaryReasoning
+      : "off",
+    fallbackReasoning: REASONING_LEVELS.includes(config.fallbackReasoning)
+      ? config.fallbackReasoning
+      : "off",
     modelTimeoutMs: clampInteger(
       config.modelTimeoutMs,
       120_000,
@@ -113,14 +134,6 @@ function resolveSettings(api) {
     timeoutMs: clampInteger(config.timeoutMs, 10_000, 1_000, 300_000),
     failOpen: config.failOpen !== false,
     learningEnabled: config.learningEnabled !== false,
-    learningModel: nonEmptyString(config.learningModel)
-      ? config.learningModel.trim()
-      : "gpt-5.6-luna",
-    learningReasoning: ["low", "medium", "high", "xhigh"].includes(
-        config.learningReasoning,
-      )
-      ? config.learningReasoning
-      : "medium",
     learningTimeoutMs: clampInteger(
       config.learningTimeoutMs,
       120_000,
@@ -240,23 +253,6 @@ function runtimeMetricArguments(settings, metric) {
   return argv;
 }
 
-function modelArguments(settings, model, reasoning) {
-  const argv = [settings.moonPath];
-  if (settings.moonHome) {
-    argv.push("--home", settings.moonHome);
-  }
-  argv.push(
-    "--json",
-    "auth",
-    "exec",
-    "--model",
-    model ?? settings.codexModel,
-    "--reasoning",
-    reasoning ?? settings.codexReasoning,
-  );
-  return argv;
-}
-
 function baseMoonArguments(settings, json = false) {
   const argv = [settings.moonPath];
   if (settings.moonHome) {
@@ -325,49 +321,28 @@ function stdioWorkerArguments(settings) {
   return argv;
 }
 
-function isAuthUnavailable(value) {
-  const diagnostic = String(value ?? "").toLowerCase();
-  return [
-    "not logged in",
-    "authentication required",
-    "oauth expired",
-    "unauthorized",
-    "no auth profile",
-    "missing authentication",
-    "status 401",
-  ].some((needle) => diagnostic.includes(needle));
+function parseModelReference(reference) {
+  if (!nonEmptyString(reference)) {
+    throw new Error("Moon requires an OpenClaw primary model");
+  }
+  const separator = reference.indexOf("/");
+  if (separator <= 0 || separator === reference.length - 1) {
+    throw new Error("Moon model references must use provider/model format");
+  }
+  return {
+    provider: reference.slice(0, separator),
+    model: reference.slice(separator + 1),
+  };
 }
 
 async function runOpenClawModel(api, settings, prompt, params = {}) {
-  const model = params.model ?? settings.codexModel;
-  const reasoning = params.reasoning ?? settings.codexReasoning;
-  const modelRef = model.includes("/")
-    ? model
-    : `${settings.codexProvider}/${model}`;
-  const completion = api?.runtime?.llm?.complete;
-  if (typeof completion === "function") {
-    const result = await completion({
-      messages: [{ role: "user", content: prompt }],
-      model: modelRef,
-      maxTokens: 1_200,
-      temperature: 0,
-      purpose: "moon.memory-distillation",
-    });
-    if (!nonEmptyString(result?.text)) {
-      throw new Error("OpenClaw model returned an empty response");
-    }
-    return {
-      authLevel: "openclaw",
-      model: result.model ?? model,
-      reasoning,
-      output: result.text.trim(),
-    };
-  }
+  const modelRef = params.modelRef;
+  const reasoning = params.reasoning;
+  const route = params.route;
+  const selected = parseModelReference(modelRef);
   const runner = api?.runtime?.agent?.runEmbeddedPiAgent;
   if (typeof runner !== "function") {
-    const error = new Error("OpenClaw authenticated model runtime unavailable");
-    error.authUnavailable = true;
-    throw error;
+    throw new Error("OpenClaw model runtime unavailable");
   }
   if (!nonEmptyString(params.sessionFile)) {
     throw new Error("OpenClaw model request requires an isolated session file");
@@ -385,8 +360,8 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
       : resolvePath(api, "."),
     config: isObject(api?.config) ? api.config : {},
     prompt,
-    provider: settings.codexProvider,
-    model,
+    provider: selected.provider,
+    model: selected.model,
     timeoutMs,
     runId: id,
     trigger: "manual",
@@ -407,53 +382,46 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
     throw new Error("OpenClaw model returned an empty response");
   }
   return {
-    authLevel: "openclaw",
-    model,
+    modelRoute: route,
+    model: modelRef,
     reasoning,
     output,
+    validatedOutput: null,
   };
 }
 
-async function runModelWithAuthFallback(api, settings, prompt, params = {}) {
-  try {
-    return await runOpenClawModel(api, settings, prompt, params);
-  } catch (error) {
-    if (error?.authUnavailable !== true && !isAuthUnavailable(error)) {
-      throw error;
+async function runModelWithFallback(api, settings, prompt, params = {}) {
+  const routes = [{
+    route: "primary",
+    modelRef: settings.primaryModel,
+    reasoning: settings.primaryReasoning,
+  }];
+  if (settings.fallbackModel) {
+    routes.push({
+      route: "fallback",
+      modelRef: settings.fallbackModel,
+      reasoning: settings.fallbackReasoning,
+    });
+  }
+  for (const route of routes) {
+    try {
+      const outcome = await runOpenClawModel(api, settings, prompt, {
+        ...params,
+        ...route,
+      });
+      if (typeof params.validateOutput === "function") {
+        outcome.validatedOutput = params.validateOutput(outcome.output);
+      }
+      return outcome;
+    } catch {
+      // Provider diagnostics can contain credentials or remote response bodies.
     }
   }
-
-  const result = await api.runtime.system.runCommandWithTimeout(
-    modelArguments(settings, params.model, params.reasoning),
-    {
-      timeoutMs: params.timeoutMs ?? settings.modelTimeoutMs,
-      input: prompt,
-    },
+  throw new Error(
+    settings.fallbackModel
+      ? "OpenClaw primary and fallback model requests failed"
+      : "OpenClaw primary model request failed",
   );
-  if (result.code !== 0) {
-    throw new Error(
-      result.stderr?.trim() || `moon auth exec exited with ${result.code}`,
-    );
-  }
-  let outcome;
-  try {
-    outcome = JSON.parse(result.stdout);
-  } catch {
-    throw new Error("moon auth exec returned invalid JSON");
-  }
-  if (
-    !nonEmptyString(outcome?.output) ||
-    !["moon", "codex"].includes(outcome?.auth_level) ||
-    !["low", "medium", "high", "xhigh"].includes(outcome?.reasoning)
-  ) {
-    throw new Error("moon auth exec returned an invalid model outcome");
-  }
-  return {
-    authLevel: outcome.auth_level,
-    model: outcome.model,
-    reasoning: outcome.reasoning,
-    output: outcome.output,
-  };
 }
 
 function packetMessage(packet) {
@@ -941,7 +909,7 @@ async function distillCompletedTurn(api, settings, params, turn, worker) {
       .map((memory) => memory?.canonical_key)
       .filter(nonEmptyString),
   );
-  const model = await runModelWithAuthFallback(
+  const model = await runModelWithFallback(
     api,
     settings,
     learningPrompt(turn, activeMemories, settings),
@@ -949,14 +917,13 @@ async function distillCompletedTurn(api, settings, params, turn, worker) {
       sessionFile: params.sessionFile,
       sessionKey: params.sessionKey,
       workspaceDir: params.runtimeSettings?.executionHost?.workspaceDir,
-      model: settings.learningModel,
-      reasoning: settings.learningReasoning,
       timeoutMs: settings.learningTimeoutMs,
+      validateOutput: parseJsonObject,
     },
   );
-  const result = parseJsonObject(model.output);
+  const result = model.validatedOutput;
   if (result?.eligible !== true || !Array.isArray(result?.memories)) {
-    return { proposed: 0, distilled: 0, authLevel: model.authLevel };
+    return { proposed: 0, distilled: 0, modelRoute: model.modelRoute };
   }
   const proposals = result.memories
     .slice(0, settings.learningMaxMemories)
@@ -996,7 +963,7 @@ async function distillCompletedTurn(api, settings, params, turn, worker) {
   return {
     proposed: proposals.length,
     distilled: proposals.length,
-    authLevel: model.authLevel,
+    modelRoute: model.modelRoute,
   };
 }
 
@@ -1222,7 +1189,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.3.2",
+      version: "2.4.0",
       ownsCompaction: false,
     },
     bootstrap() {
@@ -1330,7 +1297,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
             learningMetric.accepted_memories = outcome.distilled;
             logInfo(
               api,
-              `moon learning evidence=recorded proposed=${outcome.proposed} distilled=${outcome.distilled} auth=${outcome.authLevel}`,
+              `moon learning evidence=recorded proposed=${outcome.proposed} distilled=${outcome.distilled} model_route=${outcome.modelRoute}`,
             );
           }
         } catch (error) {
@@ -1406,17 +1373,16 @@ export const __moonTest = {
   distillBatchArguments,
   evidenceSupportsContent,
   injectPacket,
-  isAuthUnavailable,
   isLearningCandidate,
   isTrivialQuery,
-  modelArguments,
   metricInjectionArguments,
   normalizeProposal,
   observeCompaction,
   queryFromParams,
   recordArguments,
   resolveSettings,
-  runModelWithAuthFallback,
+  parseModelReference,
+  runModelWithFallback,
   runOpenClawModel,
   runtimeMetricArguments,
   stdioWorkerArguments,

@@ -24,8 +24,9 @@ For each agent turn:
 7. OpenClaw owns compaction throughout this phase.
 8. After a successful completed turn, the adapter records the user request and
    final answer as immutable evidence under a stable turn fingerprint.
-9. Greetings stop there. Eligible turns use Luna-medium to propose at most three
-   durable memories through the Codex authentication chain.
+9. Greetings stop there. Eligible turns use the configured OpenClaw primary
+   model, then its provider-neutral fallback if needed, to propose at most three
+   durable memories.
 10. Deterministic confidence, importance, exact-quote, numeric-entailment, and
     correction checks run before SQLite accepts a proposal.
 11. Valid proposals are sent in one bounded batch.
@@ -61,28 +62,35 @@ deno test --node-modules-dir=none --allow-read --allow-run --allow-env \
 Load the plugin only through a temporary OpenClaw state directory:
 
 ```bash
-profile_dir="$(mktemp -d /tmp/openclaw-moon-canary.XXXXXX)"
-chmod 700 "$profile_dir"
-OPENCLAW_STATE_DIR="$profile_dir" \
-OPENCLAW_CONFIG_PATH="$profile_dir/openclaw.json" \
+profile_root="$(mktemp -d /tmp/openclaw-moon-canary.XXXXXX)"
+mkdir -m 700 "$profile_root/home" "$profile_root/state"
+HOME="$profile_root/home" \
+OPENCLAW_STATE_DIR="$profile_root/state" \
+OPENCLAW_CONFIG_PATH="$profile_root/state/openclaw.json" \
 openclaw plugins install --link "$PWD/assets/openclaw-plugin"
 ```
 
 Configure that temporary profile with `plugins.slots.contextEngine=moon` and
-explicit `plugins.entries.moon.config.moonPath` and `moonHome` values. Then
-require:
+explicit `plugins.entries.moon.config.moonPath` and `moonHome` values. Configure
+provider-qualified `agents.defaults.model.primary` and at least one fallback.
+Keep `HOME`, `OPENCLAW_STATE_DIR`, and `OPENCLAW_CONFIG_PATH` pointed at the
+same temporary root for every command so OpenClaw cannot migrate live state.
+Then require:
 
 ```bash
-OPENCLAW_STATE_DIR="$profile_dir" \
-OPENCLAW_CONFIG_PATH="$profile_dir/openclaw.json" \
+HOME="$profile_root/home" \
+OPENCLAW_STATE_DIR="$profile_root/state" \
+OPENCLAW_CONFIG_PATH="$profile_root/state/openclaw.json" \
 openclaw config validate
 
-OPENCLAW_STATE_DIR="$profile_dir" \
-OPENCLAW_CONFIG_PATH="$profile_dir/openclaw.json" \
+HOME="$profile_root/home" \
+OPENCLAW_STATE_DIR="$profile_root/state" \
+OPENCLAW_CONFIG_PATH="$profile_root/state/openclaw.json" \
 openclaw plugins inspect moon --runtime --json
 
-OPENCLAW_STATE_DIR="$profile_dir" \
-OPENCLAW_CONFIG_PATH="$profile_dir/openclaw.json" \
+HOME="$profile_root/home" \
+OPENCLAW_STATE_DIR="$profile_root/state" \
+OPENCLAW_CONFIG_PATH="$profile_root/state/openclaw.json" \
 openclaw plugins doctor
 ```
 
@@ -110,28 +118,13 @@ The runtime inspection must report:
 - Isolated validation does not change the live OpenClaw configuration or Moon
   process state.
 
-Before the real model canary, run `moon --json auth status`. The expected
-fallback order is OpenClaw, Moon, then local Codex. The adapter may fall through
-only for a missing, expired, or rejected login. Confirm that a simulated rate
-limit does not trigger another credential level and that prompts are sent
-through stdin rather than process arguments.
-
-Replay a selected range from an existing OpenClaw JSONL session only against an
-isolated runtime:
-
-```bash
-deno run --allow-read --allow-run --allow-env \
-  tools/replay_openclaw_session.ts \
-  --binary "$PWD/target/release/moon" \
-  --home /path/to/isolated/moon-home \
-  --session-file /path/to/session.jsonl \
-  --session-id isolated-acceptance \
-  --from-turn 1 \
-  --to-turn 3
-```
-
-The replay tool sends no Discord messages. It reports counts and lifecycle
-events without printing conversation content.
+Before the real model canary, configure provider-qualified primary and fallback
+models in the isolated OpenClaw profile. Prove that the primary is used when it
+succeeds, the fallback is used when the primary fails or returns invalid
+structured output, and both default `reasoningLevel` values are `off`. Verify
+independent reasoning overrides and prove that neither provider's raw failure
+body reaches Moon logs. The Moon binary must not own or inspect any provider
+credential store.
 
 Before switching a live profile from lexical to hybrid, perform one real native
 compaction canary while the new adapter is installed but retrieval is still

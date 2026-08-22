@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use moon::redaction::redact_text;
 use moon::{
-    AuthResolver, ContextRequest, DistillInput, EmbeddingProvider, EvidenceInput, HashEmbedding,
-    IngestDocument, LocalEmbedding, MemoryInput, ReviewOutcome, RuntimeMetricInput, SearchMode,
-    SearchRequest, Store,
+    ContextRequest, DistillInput, EmbeddingProvider, EvidenceInput, HashEmbedding, IngestDocument,
+    LocalEmbedding, MemoryInput, ReviewOutcome, RuntimeMetricInput, SearchMode, SearchRequest,
+    Store,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -41,8 +41,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Inspect or establish the Codex authentication fallback chain.
-    Auth(AuthArgs),
     /// Create or migrate the isolated database.
     Init,
     /// Store one structured canonical memory.
@@ -85,39 +83,6 @@ enum Command {
     Serve(ServeArgs),
     /// Check for or apply a signed compatibility-set update.
     Update(UpdateArgs),
-}
-
-#[derive(Debug, Args)]
-struct AuthArgs {
-    #[command(subcommand)]
-    command: AuthCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum AuthCommand {
-    /// Report OpenClaw, Moon, and local Codex authentication availability.
-    Status {
-        /// Set only when an OpenClaw adapter has verified its model runtime.
-        #[arg(long)]
-        openclaw_available: bool,
-    },
-    /// Log in through Codex using Moon's isolated credential store.
-    Login {
-        /// Use the Codex device-code flow instead of opening a browser.
-        #[arg(long)]
-        device_auth: bool,
-    },
-    /// Run one bounded model request through Moon then local Codex auth.
-    Exec {
-        #[arg(long, conflicts_with = "file")]
-        prompt: Option<String>,
-        #[arg(long, conflicts_with = "prompt")]
-        file: Option<PathBuf>,
-        #[arg(long, default_value = "gpt-5.6-sol")]
-        model: String,
-        #[arg(long, default_value = "high")]
-        reasoning: String,
-    },
 }
 
 #[derive(Debug, Args)]
@@ -514,29 +479,6 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let home = resolve_home(cli.home.as_deref())?;
-    if let Command::Auth(args) = &cli.command {
-        let resolver = AuthResolver::default();
-        return match &args.command {
-            AuthCommand::Status { openclaw_available } => {
-                emit(&resolver.status(&home, *openclaw_available), cli.json)
-            }
-            AuthCommand::Login { device_auth } => {
-                emit(&resolver.login(&home, *device_auth)?, cli.json)
-            }
-            AuthCommand::Exec {
-                prompt,
-                file,
-                model,
-                reasoning,
-            } => {
-                let prompt = read_model_prompt(prompt.clone(), file.as_deref())?;
-                emit(
-                    &resolver.execute(&home, &prompt, model, reasoning)?,
-                    cli.json,
-                )
-            }
-        };
-    }
     if let Command::Update(args) = &cli.command {
         return run_update(&home, cli.dimensions, cli.json, args);
     }
@@ -556,7 +498,6 @@ fn run(cli: Cli) -> Result<()> {
     let mut store = Store::open(&database, cli.dimensions)?;
 
     match cli.command {
-        Command::Auth(_) => unreachable!("auth is handled without opening storage"),
         Command::Init => emit(
             &serde_json::json!({
                 "ok": true,
@@ -1111,15 +1052,6 @@ fn read_explicit_content(content: Option<String>, file: Option<&Path>) -> Result
         (None, Some(path)) => read_bounded_text(path),
         (None, None) => read_bounded_stdin("content"),
         (Some(_), Some(_)) => unreachable!("clap rejects conflicting content inputs"),
-    }
-}
-
-fn read_model_prompt(prompt: Option<String>, file: Option<&Path>) -> Result<String> {
-    match (prompt, file) {
-        (Some(prompt), None) => Ok(prompt),
-        (None, Some(path)) => read_bounded_text(path),
-        (None, None) => read_bounded_stdin("model prompt"),
-        (Some(_), Some(_)) => unreachable!("clap rejects conflicting prompt inputs"),
     }
 }
 

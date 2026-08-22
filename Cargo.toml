@@ -1,6 +1,6 @@
 [package]
 name = "moon"
-version = "2.3.2"
+version = "2.4.0"
 edition = "2024"
 description = "Local-first SQLite memory with evidence-backed learning and hybrid retrieval"
 license = "MIT"
