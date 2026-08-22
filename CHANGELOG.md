@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.4.1 - 2026-08-23
+
+- Added a manually approved GitHub Actions production-release workflow that
+  builds all four native compatibility archives, assembles and signs the
+  canonical manifest, verifies it through Moon's embedded trust root, and
+  refuses to overwrite an existing release.
+- Made release signing portable across macOS and Linux by accepting one bounded
+  hex-encoded Ed25519 seed over standard input, while retaining the dedicated
+  macOS Keychain as an interactive signing and offline recovery option.
+
 ## 2.4.0 - 2026-08-22
 
 - Replaced the Codex-specific model and authentication chain with

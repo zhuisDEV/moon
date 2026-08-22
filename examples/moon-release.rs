@@ -4,20 +4,18 @@ use flate2::write::GzEncoder;
 use flate2::{Compression, GzBuilder};
 use moon::release::{
     ArchiveDescriptor, BUNDLE_MANIFEST_SCHEMA, BundleFile, BundleManifest, MAX_ARCHIVE_BYTES,
-    RELEASE_MANIFEST_SCHEMA, ReleaseAsset, ReleaseChannel, ReleaseManifest, RollbackCompatibility,
-    encode_bundle_manifest, encode_release_asset, encode_release_manifest, parse_release_asset,
-    production_trust_roots, sha256_hex, verify_release_manifest,
+    ManifestSignature, RELEASE_MANIFEST_SCHEMA, ReleaseAsset, ReleaseChannel, ReleaseManifest,
+    RollbackCompatibility, SIGNATURE_SCHEMA, SignatureEnvelope, encode_bundle_manifest,
+    encode_release_asset, encode_release_manifest, encode_signature_envelope,
+    parse_public_key_document, parse_release_asset, parse_release_manifest, production_trust_roots,
+    sha256_hex, verify_release_manifest,
 };
 #[cfg(target_os = "macos")]
-use moon::release::{
-    ManifestSignature, PublicKeyDocument, SIGNATURE_SCHEMA, SignatureEnvelope,
-    encode_public_key_document, encode_signature_envelope, parse_public_key_document,
-    parse_release_manifest,
-};
+use moon::release::{PublicKeyDocument, encode_public_key_document};
 use moon::version::{BUNDLE_FORMAT, VersionInfo};
 use serde::Deserialize;
 use std::fs::{self, OpenOptions};
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tar::{Builder, EntryType, Header, HeaderMode};
@@ -28,7 +26,6 @@ use core_foundation::array::CFArray;
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
-#[cfg(target_os = "macos")]
 use ed25519_dalek::{Signer, SigningKey};
 #[cfg(target_os = "macos")]
 use security_framework::os::macos::access::SecAccess;
@@ -42,13 +39,11 @@ use security_framework::random::SecRandom;
 use security_framework_sys::base::{
     SecAccessRef, SecKeychainItemRef, SecKeychainRef, errSecSuccess,
 };
-#[cfg(target_os = "macos")]
 use zeroize::Zeroize;
 
 const MAX_VERSION_OUTPUT_BYTES: usize = 64 * 1024;
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "dev.zhuis.moon.release-signing";
-#[cfg(target_os = "macos")]
 const DEFAULT_RELEASE_KEY_ID: &str = "moon-release-2026-01";
 
 #[cfg(target_os = "macos")]
@@ -84,8 +79,7 @@ enum ReleaseCommand {
     /// Generate one Ed25519 release key directly inside a macOS keychain.
     #[cfg(target_os = "macos")]
     Keygen(KeygenArgs),
-    /// Sign a canonical release manifest with a key protected by macOS Keychain.
-    #[cfg(target_os = "macos")]
+    /// Sign a canonical release manifest from stdin or macOS Keychain.
     Sign(SignArgs),
 }
 
@@ -149,13 +143,16 @@ struct KeygenArgs {
     public_key_output: PathBuf,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Debug, Args)]
 struct SignArgs {
     #[arg(long)]
     manifest: PathBuf,
     #[arg(long)]
     signature_output: PathBuf,
+    /// Read one lowercase hex-encoded 32-byte Ed25519 seed from standard input.
+    #[arg(long)]
+    secret_key_stdin: bool,
+    #[cfg(target_os = "macos")]
     #[arg(long)]
     keychain: Option<PathBuf>,
     #[arg(long, default_value = DEFAULT_RELEASE_KEY_ID)]
@@ -191,7 +188,6 @@ fn run(cli: Cli) -> Result<()> {
         ReleaseCommand::Verify(args) => verify_manifest(args),
         #[cfg(target_os = "macos")]
         ReleaseCommand::Keygen(args) => generate_key(args),
-        #[cfg(target_os = "macos")]
         ReleaseCommand::Sign(args) => sign_manifest(args),
     }
 }
@@ -306,7 +302,6 @@ fn generate_key(args: KeygenArgs) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn sign_manifest(args: SignArgs) -> Result<()> {
     ensure!(
         !args.signature_output.exists(),
@@ -324,24 +319,42 @@ fn sign_manifest(args: SignArgs) -> Result<()> {
         "public key id does not match requested signing key"
     );
 
-    let keychain_path = args.keychain.unwrap_or(default_release_keychain()?);
-    let mut keychain = UnlockedKeychain::open(&keychain_path)?;
-    let (password, _) = keychain
-        .keychain()
-        .find_generic_password(KEYCHAIN_SERVICE, &args.key_id)
-        .with_context(|| format!("release signing key {} was not found", args.key_id))?;
-    ensure!(
-        password.len() == 32,
-        "stored release signing key is invalid"
-    );
-    let mut seed = [0_u8; 32];
-    seed.copy_from_slice(password.as_ref());
-    drop(password);
-    let signing_key = SigningKey::from_bytes(&seed);
-    seed.zeroize();
+    #[cfg(target_os = "macos")]
+    let (signing_key, mut keychain) = if args.secret_key_stdin {
+        ensure!(
+            args.keychain.is_none(),
+            "--keychain cannot be combined with --secret-key-stdin"
+        );
+        (read_signing_key(std::io::stdin().lock())?, None)
+    } else {
+        let keychain_path = args.keychain.clone().unwrap_or(default_release_keychain()?);
+        let keychain = UnlockedKeychain::open(&keychain_path)?;
+        let (password, _) = keychain
+            .keychain()
+            .find_generic_password(KEYCHAIN_SERVICE, &args.key_id)
+            .with_context(|| format!("release signing key {} was not found", args.key_id))?;
+        ensure!(
+            password.len() == 32,
+            "stored release signing key is invalid"
+        );
+        let mut seed = [0_u8; 32];
+        seed.copy_from_slice(password.as_ref());
+        drop(password);
+        let signing_key = SigningKey::from_bytes(&seed);
+        seed.zeroize();
+        (signing_key, Some(keychain))
+    };
+    #[cfg(not(target_os = "macos"))]
+    let signing_key = {
+        ensure!(
+            args.secret_key_stdin,
+            "signing on this platform requires --secret-key-stdin"
+        );
+        read_signing_key(std::io::stdin().lock())?
+    };
     ensure!(
         hex::encode(signing_key.verifying_key().to_bytes()) == public_document.public_key,
-        "stored private key does not match the approved public key"
+        "private signing key does not match the approved public key"
     );
 
     let detached = signing_key.sign(&manifest_bytes);
@@ -367,7 +380,10 @@ fn sign_manifest(args: SignArgs) -> Result<()> {
         .context("signature output path has no parent")?;
     ensure_owner_only_directory(output_parent)?;
     write_new_file(&args.signature_output, &signature_bytes)?;
-    keychain.lock()?;
+    #[cfg(target_os = "macos")]
+    if let Some(keychain) = keychain.as_mut() {
+        keychain.lock()?;
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -378,10 +394,39 @@ fn sign_manifest(args: SignArgs) -> Result<()> {
             "key_id": args.key_id,
             "verified_key_ids": verified.verified_key_ids,
             "private_key_exported": false,
-            "keychain_relocked_on_exit": true,
+            "signing_source": if args.secret_key_stdin { "stdin" } else { "macos-keychain" },
+            "keychain_relocked_on_exit": !args.secret_key_stdin,
         })
     );
     Ok(())
+}
+
+fn read_signing_key(mut reader: impl Read) -> Result<SigningKey> {
+    const MAX_ENCODED_SEED_BYTES: u64 = 128;
+    let mut encoded = String::new();
+    reader
+        .by_ref()
+        .take(MAX_ENCODED_SEED_BYTES + 1)
+        .read_to_string(&mut encoded)
+        .context("failed to read signing key from standard input")?;
+    ensure!(
+        encoded.len() as u64 <= MAX_ENCODED_SEED_BYTES,
+        "standard-input signing key exceeds size limit"
+    );
+    let value = encoded.trim();
+    ensure!(
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "standard-input signing key must be one hex-encoded 32-byte seed"
+    );
+    let mut decoded = hex::decode(value).context("standard-input signing key is invalid hex")?;
+    encoded.zeroize();
+    ensure!(decoded.len() == 32, "standard-input signing key is invalid");
+    let mut seed = [0_u8; 32];
+    seed.copy_from_slice(&decoded);
+    decoded.zeroize();
+    let signing_key = SigningKey::from_bytes(&seed);
+    seed.zeroize();
+    Ok(signing_key)
 }
 
 fn verify_manifest(args: VerifyArgs) -> Result<()> {
@@ -926,6 +971,16 @@ mod tests {
         write_new_file(&output, b"first").expect("first write");
         assert!(write_new_file(&output, b"second").is_err());
         assert_eq!(fs::read(output).expect("read output"), b"first");
+    }
+
+    #[test]
+    fn stdin_signing_key_is_bounded_and_hex_encoded() {
+        let expected = SigningKey::from_bytes(&[7_u8; 32]);
+        let parsed = read_signing_key(Cursor::new(format!("{}\n", hex::encode([7_u8; 32]))))
+            .expect("valid signing key");
+        assert_eq!(parsed.verifying_key(), expected.verifying_key());
+        assert!(read_signing_key(Cursor::new("not-a-key")).is_err());
+        assert!(read_signing_key(Cursor::new("a".repeat(129))).is_err());
     }
 
     #[test]

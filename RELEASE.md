@@ -35,9 +35,9 @@ Use this process for tagged public releases (for example `v2.2.0`).
 ## Signed Bundle Inputs
 
 The repository contains a release-operator Rust example that builds the exact
-unsigned inputs and, on macOS, performs interactive signing through the
-dedicated production keychain. It is not installed with Moon. CI uses only the
-unsigned commands and never receives a production signing key.
+unsigned inputs and signs through either bounded standard input or the offline
+macOS recovery keychain. It is not installed with Moon. Ordinary CI uses only
+the unsigned commands and cannot access the production signing key.
 
 Build one platform archive and its canonical asset descriptor:
 
@@ -75,8 +75,9 @@ cargo run --locked --example moon-release -- manifest \
   --output /path/to/release-manifest.json
 ```
 
-This output is deliberately unsigned. On the approved release workstation, sign
-it using the interactive procedure in `docs/release-signing.md`:
+This output is deliberately unsigned. The protected `Release` workflow signs it
+only after manual approval of the `production-release` environment. For a local
+recovery ceremony, use the Keychain procedure in `docs/release-signing.md`:
 
 ```bash
 cargo run --locked --example moon-release -- sign \
@@ -84,10 +85,11 @@ cargo run --locked --example moon-release -- sign \
   --signature-output /path/to/release-staging/release-manifest.sig.json
 ```
 
-Private signing material must never enter the repository, GitHub Actions,
-environment variables, command arguments, logs, or generated archives. The
-signing tool retrieves it only from the dedicated macOS keychain, verifies that
-it matches Moon's reviewed public key, and re-locks the keychain on exit.
+Private signing material must never enter the repository, command arguments,
+logs, generated archives, or workflow artifacts. The protected workflow exposes
+the GitHub environment secret only to the approved signing step and pipes it to
+the signer through standard input. Local recovery signing retrieves it from the
+dedicated macOS Keychain and re-locks the Keychain on exit.
 
 Verify the detached result through the exact production trust roots embedded in
 Moon:
@@ -98,24 +100,25 @@ cargo run --locked --example moon-release -- verify \
   --signature /path/to/release-staging/release-manifest.sig.json
 ```
 
-CI must generate all four native targets: macOS arm64, macOS x86_64, GNU/Linux
-arm64, and GNU/Linux x86_64. The aggregate manifest job must refuse a missing or
-duplicate target. CI publishes only unsigned workflow artifacts; signing stays
-on the approved release workstation.
+Both CI and the release workflow generate all four native targets: macOS arm64,
+macOS x86_64, GNU/Linux arm64, and GNU/Linux x86_64. The aggregate manifest job
+must refuse a missing or duplicate target. Ordinary CI publishes only unsigned
+workflow artifacts; the release workflow signs only behind the protected
+environment.
 
 ## Tag and Publish
 
-1. Commit release changes to `main`.
-2. Create annotated tag:
+1. Commit and push release changes to `main`.
+2. Create and push an annotated tag:
    - `git tag -a vX.Y.Z -m "moon vX.Y.Z"`
-3. Push branch and tags:
    - `git push origin main --follow-tags`
-4. Create GitHub release from the tag and include:
-   - summary from `CHANGELOG.md`
-   - known upgrade notes
-   - signed canonical manifest, detached signature set, platform archives, and
-     checksums, using the exact names `release-manifest.json` and
-     `release-manifest.sig.json`
+   - `git push origin vX.Y.Z`
+3. Start the workflow at the exact tag:
+   - `gh workflow run release.yml --ref vX.Y.Z`
+4. Approve the `production-release` deployment after reviewing its tag and
+   unsigned build evidence. The workflow creates the release with generated
+   notes, the signed canonical manifest, detached signature set, and four
+   platform archives. It refuses an existing release.
 
 ## Post-release
 

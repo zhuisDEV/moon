@@ -1,0 +1,183 @@
+name: Release
+
+run-name: Release ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-22.04
+    outputs:
+      published_at: ${{ steps.identity.outputs.published_at }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - id: identity
+        name: Validate annotated release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release workflow must run from an exact vX.Y.Z tag" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]]; then
+            echo "Release tag must be annotated" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{}")" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag does not resolve to the workflow commit" >&2
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "moon") | .version')"
+          if [[ "${package_version}" != "${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Moon ${package_version}" >&2
+            exit 1
+          fi
+          tagger_date="$(git for-each-ref --format='%(taggerdate:iso-strict)' "refs/tags/${GITHUB_REF_NAME}")"
+          published_at="$(date --utc --date="${tagger_date}" '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "published_at=${published_at}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: validate-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            minimum_os_version: "13.0"
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            minimum_os_version: "13.0"
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            minimum_os_version: "glibc-2.35"
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            minimum_os_version: "glibc-2.35"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-23
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Verify native release target
+        run: >-
+          rustc -vV | grep -F "host: ${{ matrix.target }}"
+      - run: cargo build --locked --release
+      - name: Generate deterministic release archive
+        run: >-
+          cargo run --locked --example moon-release -- bundle
+          --binary target/release/moon
+          --minimum-os-version "${{ matrix.minimum_os_version }}"
+          --database-schema-min 6
+          --database-schema-max 7
+          --output-dir "target/release-input/${{ matrix.target }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-input-${{ matrix.target }}
+          path: target/release-input/${{ matrix.target }}
+          if-no-files-found: error
+
+  assemble:
+    needs: [validate-tag, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-23
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-input-*
+          path: target/release-input
+          merge-multiple: false
+      - name: Assemble canonical unsigned release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 target/release-publish
+          cargo run --locked --example moon-release -- manifest \
+            --asset target/release-input/release-input-aarch64-apple-darwin/release-asset.json \
+            --asset target/release-input/release-input-x86_64-apple-darwin/release-asset.json \
+            --asset target/release-input/release-input-aarch64-unknown-linux-gnu/release-asset.json \
+            --asset target/release-input/release-input-x86_64-unknown-linux-gnu/release-asset.json \
+            --published-at "${{ needs.validate-tag.outputs.published_at }}" \
+            --output target/release-publish/release-manifest.json
+          find target/release-input -type f -name 'moon-*.tar.gz' -exec cp {} target/release-publish/ \;
+          archive_count="$(find target/release-publish -maxdepth 1 -type f -name 'moon-*.tar.gz' | wc -l | tr -d ' ')"
+          test "${archive_count}" = 4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ needs.validate-tag.outputs.version }}-unsigned
+          path: target/release-publish
+          if-no-files-found: error
+
+  sign-and-publish:
+    needs: [validate-tag, assemble]
+    runs-on: ubuntu-22.04
+    environment: production-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-23
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-${{ needs.validate-tag.outputs.version }}-unsigned
+          path: target/release-publish
+      - name: Restrict release staging to the runner owner
+        run: chmod 700 target/release-publish
+      - name: Sign canonical manifest
+        shell: bash
+        env:
+          MOON_RELEASE_SIGNING_KEY: ${{ secrets.MOON_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MOON_RELEASE_SIGNING_KEY}" ]]; then
+            echo "production-release signing secret is unavailable" >&2
+            exit 1
+          fi
+          printf '%s' "${MOON_RELEASE_SIGNING_KEY}" |
+            cargo run --locked --example moon-release -- sign \
+              --secret-key-stdin \
+              --manifest target/release-publish/release-manifest.json \
+              --signature-output target/release-publish/release-manifest.sig.json
+      - name: Verify production signature and release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          verification="$(cargo run --locked --example moon-release -- verify \
+            --manifest target/release-publish/release-manifest.json \
+            --signature target/release-publish/release-manifest.sig.json)"
+          test "$(jq -r '.moon_version' <<< "${verification}")" = "${{ needs.validate-tag.outputs.version }}"
+          test "$(jq -r '.git_commit' <<< "${verification}")" = "${GITHUB_SHA}"
+          test "$(jq -r '.verified_key_ids | join(",")' <<< "${verification}")" = "moon-release-2026-01"
+      - name: Publish immutable release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing release ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            target/release-publish/moon-*.tar.gz \
+            target/release-publish/release-manifest.json \
+            target/release-publish/release-manifest.sig.json \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "Moon ${{ needs.validate-tag.outputs.version }}" \
+            --generate-notes
