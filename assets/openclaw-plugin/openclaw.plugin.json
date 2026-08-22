@@ -19,20 +19,43 @@
           "hybrid"
         ]
       },
-      "codexProvider": {
-        "type": "string"
+      "primaryModel": {
+        "type": "string",
+        "description": "Provider-qualified primary model reference. Defaults to OpenClaw's configured primary model."
       },
-      "codexModel": {
-        "type": "string"
+      "fallbackModel": {
+        "type": "string",
+        "description": "Provider-qualified fallback model reference. Defaults to OpenClaw's first configured fallback."
       },
-      "codexReasoning": {
+      "primaryReasoning": {
         "type": "string",
         "enum": [
+          "off",
+          "minimal",
           "low",
           "medium",
           "high",
-          "xhigh"
-        ]
+          "xhigh",
+          "adaptive",
+          "max",
+          "ultra"
+        ],
+        "description": "Reasoning effort for the primary model. Defaults to off."
+      },
+      "fallbackReasoning": {
+        "type": "string",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "adaptive",
+          "max",
+          "ultra"
+        ],
+        "description": "Reasoning effort for the fallback model. Defaults to off."
       },
       "modelTimeoutMs": {
         "type": "integer",
@@ -72,18 +95,6 @@
       },
       "learningEnabled": {
         "type": "boolean"
-      },
-      "learningModel": {
-        "type": "string"
-      },
-      "learningReasoning": {
-        "type": "string",
-        "enum": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
       },
       "learningTimeoutMs": {
         "type": "integer",

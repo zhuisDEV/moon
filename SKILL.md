@@ -3,7 +3,7 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.3.2 -->
+<!-- moon-version: 2.4.0 -->
 
 # Moon
 

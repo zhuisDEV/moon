@@ -57,8 +57,10 @@ Moon stores the exact byte and line range of the quote. The memory can therefore
 show where it came from instead of presenting an unsupported recollection.
 
 In OpenClaw, local eligibility rules first reject greetings and trivial turns.
-The adapter then asks `gpt-5.6-luna` with medium reasoning for at most three
-conservative proposals. A proposal is accepted only when:
+The adapter then asks the configured primary model, with reasoning off by
+default, for at most three conservative proposals. It tries the fallback when
+the primary request or structured output fails. A proposal is accepted only
+when:
 
 - its kind, key, confidence, and importance pass deterministic validation;
 - its evidence quote is one exact substring of the completed turn;
@@ -71,8 +73,8 @@ An assistant merely recalling an existing memory cannot confirm that same
 memory. Confirmation of an active claim requires an exact quote from the user's
 new message, preventing circular self-citation.
 
-The model prompt and proposal payload travel through stdin or OpenClaw's
-session-bound completion interface, not process arguments.
+The model prompt stays inside OpenClaw's session-bound embedded runner. Proposal
+payloads travel to the Moon binary through stdin, not process arguments.
 
 Canonical keys drive consolidation:
 
@@ -160,40 +162,25 @@ active memories when strict search is empty. This handles common singular,
 plural, and spelling mistakes without scanning the full reference corpus. Hybrid
 vectors add paraphrase and synonym recall.
 
-### 5. Use one Codex authentication chain for model work
+### 5. Route model work through OpenClaw
 
-Moon has no direct API-key model route. When a model step is requested,
-authentication is resolved in this order:
+Moon has no direct API-key model route or provider credential store. When a
+model step is requested, the adapter uses:
 
-1. OpenClaw's authenticated Codex model runtime.
-2. Moon's isolated Codex login under `~/.moon/auth/codex`.
-3. The normal local Codex login used by the Codex app/CLI.
+1. `agents.defaults.model.primary` from OpenClaw, unless `primaryModel`
+   overrides it.
+2. The first OpenClaw fallback, unless `fallbackModel` overrides it.
 
-The adapter uses level 1 directly. It moves to the next level only when
-authentication is missing, expired, or rejected. A rate limit, timeout, network
-failure, or model error is returned as the real error; Moon does not silently
-credential-hop.
+Both values use OpenClaw's provider-qualified `provider/model` form. Providers
+such as vLLM, OpenAI, Anthropic, or Google therefore use the same Moon path.
+OpenClaw owns their authentication and transport.
 
-Inspect levels 2 and 3 without creating a memory database:
-
-```bash
-moon --json auth status
-```
-
-The OpenClaw level is reported by the adapter at runtime because a standalone
-command cannot prove OpenClaw's active model authentication. To establish the
-optional Moon login:
-
-```bash
-moon auth login
-```
-
-This delegates the browser or device flow to Codex with an isolated
-`CODEX_HOME`. Moon never reads or copies the resulting token. If this level is
-absent, the final fallback invokes the normal local Codex runtime and lets it
-use its own credential store. Model defaults follow the operational policy:
-`gpt-5.6-sol` with high reasoning for deep work, or `gpt-5.6-luna` with medium
-reasoning for faster work.
+If the primary request fails, the adapter tries the fallback once. If both fail,
+learning follows the configured fail-open policy. Moon does not persist or print
+provider diagnostics because they may contain credentials or arbitrary remote
+response bodies. `primaryReasoning` and `fallbackReasoning` default to `off`
+independently of provider. Their overrides are passed as OpenClaw
+`reasoningLevel` values, so the two routes may use different effort.
 
 ### 6. Before an agent turn: assemble a context packet
 
@@ -316,7 +303,7 @@ A context packet is an ephemeral, bounded selection of active memories and
 supporting citations plus clearly separated unreviewed references for one query.
 It answers: “What does this agent need right now?”
 
-Keeping these layers separate is the important Codex-inspired ingredient.
+Keeping these layers separate is the important context-engine design principle.
 Evidence is not injected wholesale, memory is not treated as unquestionable
 truth, and the context window is not filled with everything Moon has stored.
 

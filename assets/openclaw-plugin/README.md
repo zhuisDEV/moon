@@ -14,9 +14,9 @@ The adapter keeps strict ownership boundaries:
 - Retrieval failures fail open by default and preserve the original messages.
 - The after-turn hook stores only the user request and final assistant answer,
   not intermediate tool traffic.
-- Luna-medium may propose at most three durable memories; exact-quote,
-  numeric-entailment, confidence, importance, and correction checks run before a
-  proposal reaches SQLite.
+- The configured primary or fallback model may propose at most three durable
+  memories; exact-quote, numeric-entailment, confidence, importance, and
+  correction checks run before a proposal reaches SQLite.
 - Greetings and irrelevant queries inject no context packet.
 - Non-trivial context requests update a local, content-free metric row with
   injection state. Logs expose only its opaque request ID and numeric summary
@@ -31,12 +31,12 @@ stopped when the adapter is disposed. Raw evidence is not embedded; active
 memories are queued ahead of reference documents. Hash vectors exist only for
 offline plumbing tests.
 
-All model work uses one strict authentication resolver: OpenClaw's session-bound
-Codex runtime first, Moon's isolated Codex login second, and the normal local
-Codex login last. It falls through only for authentication failures, never for
-rate limits, timeouts, network failures, or model errors. Turn transcripts and
-proposals sent to the Moon binary use stdin and are not exposed in process
-arguments.
+All model work stays inside OpenClaw's provider runtime. The adapter inherits
+OpenClaw's primary model and first fallback unless provider-qualified overrides
+are configured. Both reasoning levels default to `off` and may be overridden
+independently. Moon owns no provider credentials, and bounded failures never
+print arbitrary remote response bodies. Turn transcripts and proposals sent to
+the Moon binary use stdin and are not exposed in process arguments.
 
 OpenClaw keeps native automatic transcript compaction because the adapter
 advertises `ownsCompaction=false`. Moon owns retrieval and bounded packet

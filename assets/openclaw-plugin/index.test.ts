@@ -37,6 +37,16 @@ function createApi(
   embeddedRunner?: (params: Record<string, unknown>) => unknown,
 ) {
   return {
+    config: {
+      agents: {
+        defaults: {
+          model: {
+            primary: "vllm/local-primary",
+            fallbacks: ["openai/remote-fallback"],
+          },
+        },
+      },
+    },
     pluginConfig: {
       moonPath: "/tmp/bin/moon",
       moonHome: "/tmp/moon-home",
@@ -279,8 +289,10 @@ Deno.test("adapter records one completed turn and distills a validated durable m
     calls,
     {
       learningEnabled: true,
-      learningModel: "gpt-5.6-luna",
-      learningReasoning: "medium",
+      primaryModel: "vllm/qwen3.8-27b-uncensored-fp8",
+      fallbackModel: "openai/gpt-5.6-luna",
+      primaryReasoning: "high",
+      fallbackReasoning: "medium",
     },
   );
   const api = {
@@ -331,26 +343,28 @@ Deno.test("adapter records one completed turn and distills a validated durable m
           throw new Error(`unexpected command ${argv.join(" ")}`);
         },
       },
-      llm: {
-        complete(params: { model: string }) {
+      agent: {
+        runEmbeddedPiAgent(params: Record<string, unknown>) {
           modelCalls += 1;
-          assertEquals(params.model, "openai/gpt-5.6-luna");
+          assertEquals(params.provider, "vllm");
+          assertEquals(params.model, "qwen3.8-27b-uncensored-fp8");
+          assertEquals(params.reasoningLevel, "high");
           return {
-            text: JSON.stringify({
-              eligible: true,
-              memories: [{
-                canonical_key: "user:preference:response-style",
-                kind: "preference",
-                title: "Response style",
-                content: "The user prefers concise answers.",
-                evidence_quote: "I prefer concise answers.",
-                importance: 0.8,
-                confidence: 0.95,
-                supersedes_document_id: null,
-              }],
-            }),
-            provider: "openai",
-            model: "gpt-5.6-luna",
+            payloads: [{
+              text: JSON.stringify({
+                eligible: true,
+                memories: [{
+                  canonical_key: "user:preference:response-style",
+                  kind: "preference",
+                  title: "Response style",
+                  content: "The user prefers concise answers.",
+                  evidence_quote: "I prefer concise answers.",
+                  importance: 0.8,
+                  confidence: 0.95,
+                  supersedes_document_id: null,
+                }],
+              }),
+            }],
           };
         },
       },
@@ -443,6 +457,11 @@ Deno.test("plugin manifest is a strict context-engine manifest", async () => {
   assertEquals(manifest.configSchema.additionalProperties, false);
   assert(!("apiKeyEnv" in manifest.configSchema.properties));
   assert(!("endpoint" in manifest.configSchema.properties));
+  assert(
+    !Object.keys(manifest.configSchema.properties).some((key) =>
+      key.toLowerCase().includes("codex")
+    ),
+  );
 });
 
 Deno.test("plugin registers gateway-lifecycle ownership for the warm worker", async () => {
@@ -464,90 +483,155 @@ Deno.test("plugin registers gateway-lifecycle ownership for the warm worker", as
   await (service.stop as () => Promise<void>)();
 });
 
-Deno.test("model auth uses OpenClaw first", async () => {
+Deno.test("model routing uses the OpenClaw primary model", async () => {
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
     [];
+  const embeddedCalls: Record<string, unknown>[] = [];
   const api = createApi(
     { code: 1, stdout: "", stderr: "should not run" },
     calls,
     {},
-    () => ({ payloads: [{ text: "READY" }] }),
+    (params) => {
+      embeddedCalls.push(params);
+      return { payloads: [{ text: "READY" }] };
+    },
   );
   const settings = __moonTest.resolveSettings(api);
-  const result = await __moonTest.runModelWithAuthFallback(
+  const result = await __moonTest.runModelWithFallback(
     api,
     settings,
     "Return READY.",
     { sessionFile: "/tmp/moon-test-session.jsonl" },
   );
-  assertEquals(result.authLevel, "openclaw");
-  assertEquals(result.reasoning, "high");
+  assertEquals(result.modelRoute, "primary");
+  assertEquals(result.reasoning, "off");
   assertEquals(result.output, "READY");
+  assertEquals(embeddedCalls[0]?.provider, "vllm");
+  assertEquals(embeddedCalls[0]?.model, "local-primary");
+  assertEquals(embeddedCalls[0]?.reasoningLevel, "off");
   assertEquals(calls.length, 0);
 });
 
-Deno.test("model auth falls back through Moon without putting prompts in argv", async () => {
+Deno.test("model routing uses a provider-neutral fallback", async () => {
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
     [];
-  const api = createApi(
-    {
-      code: 0,
-      stdout: JSON.stringify({
-        auth_level: "codex",
-        model: "gpt-5.6-sol",
-        reasoning: "high",
-        output: "READY",
-      }),
-      stderr: "",
+  const baseApi = createApi(
+    { code: 1, stdout: "", stderr: "" },
+    calls,
+    { fallbackReasoning: "ultra" },
+  );
+  const modelCalls: Array<Record<string, unknown>> = [];
+  const api = {
+    ...baseApi,
+    runtime: {
+      ...baseApi.runtime,
+      agent: {
+        runEmbeddedPiAgent(params: Record<string, unknown>) {
+          modelCalls.push(params);
+          if (params.provider === "vllm") {
+            throw new Error("primary unavailable");
+          }
+          return { payloads: [{ text: "READY" }] };
+        },
+      },
     },
+  };
+  const settings = __moonTest.resolveSettings(api);
+  const result = await __moonTest.runModelWithFallback(
+    api,
+    settings,
+    "private canary prompt",
+    { sessionFile: "/tmp/moon-test-session.jsonl" },
+  );
+  assertEquals(result.modelRoute, "fallback");
+  assertEquals(result.model, "openai/remote-fallback");
+  assertEquals(modelCalls.map((call) => `${call.provider}/${call.model}`), [
+    "vllm/local-primary",
+    "openai/remote-fallback",
+  ]);
+  assertEquals(modelCalls.map((call) => call.reasoningLevel), ["off", "ultra"]);
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("model routing falls back when primary output fails validation", async () => {
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  const modelCalls: string[] = [];
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "" },
     calls,
     {},
-    () => {
-      throw new Error("OAuth expired");
+    (params) => {
+      const modelRef = `${params.provider}/${params.model}`;
+      modelCalls.push(modelRef);
+      return {
+        payloads: [{
+          text: params.provider === "vllm" ? "not json" : '{"ok":true}',
+        }],
+      };
     },
   );
   const settings = __moonTest.resolveSettings(api);
-  const prompt = "private canary prompt";
-  const result = await __moonTest.runModelWithAuthFallback(
+  const result = await __moonTest.runModelWithFallback(
     api,
     settings,
-    prompt,
-    { sessionFile: "/tmp/moon-test-session.jsonl" },
+    "Return JSON.",
+    {
+      sessionFile: "/tmp/moon-test-session.jsonl",
+      validateOutput: JSON.parse,
+    },
   );
-  assertEquals(result.authLevel, "codex");
-  assertEquals(calls.length, 1);
-  assertEquals(calls[0].input, prompt);
-  assert(!calls[0].argv.includes(prompt));
-  assertEquals(
-    calls[0].argv.slice(-7),
-    [
-      "--json",
-      "auth",
-      "exec",
-      "--model",
-      "gpt-5.6-sol",
-      "--reasoning",
-      "high",
-    ],
-  );
+  assertEquals(result.modelRoute, "fallback");
+  assertEquals(result.validatedOutput, { ok: true });
+  assertEquals(modelCalls, ["vllm/local-primary", "openai/remote-fallback"]);
 });
 
-Deno.test("luna defaults to medium reasoning", () => {
-  const settings = __moonTest.resolveSettings(createApi(
-    { code: 0, stdout: "", stderr: "" },
-    [],
-    { codexModel: "gpt-5.6-luna" },
-  ));
-  assertEquals(settings.codexReasoning, "medium");
-});
-
-Deno.test("learning settings default to Luna medium with a smaller packet", () => {
+Deno.test("model routing inherits OpenClaw primary and fallback models", () => {
   const settings = __moonTest.resolveSettings(createApi(
     { code: 0, stdout: "", stderr: "" },
     [],
   ));
-  assertEquals(settings.learningModel, "gpt-5.6-luna");
-  assertEquals(settings.learningReasoning, "medium");
+  assertEquals(settings.primaryModel, "vllm/local-primary");
+  assertEquals(settings.fallbackModel, "openai/remote-fallback");
+  assertEquals(settings.primaryReasoning, "off");
+  assertEquals(settings.fallbackReasoning, "off");
+});
+
+Deno.test("plugin model routing overrides OpenClaw defaults", () => {
+  const settings = __moonTest.resolveSettings(createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    {
+      primaryModel: "anthropic/claude-sonnet",
+      fallbackModel: "google/gemini-pro",
+      primaryReasoning: "high",
+      fallbackReasoning: "low",
+    },
+  ));
+  assertEquals(settings.primaryModel, "anthropic/claude-sonnet");
+  assertEquals(settings.fallbackModel, "google/gemini-pro");
+  assertEquals(settings.primaryReasoning, "high");
+  assertEquals(settings.fallbackReasoning, "low");
+});
+
+Deno.test("duplicate fallback models are ignored", () => {
+  const settings = __moonTest.resolveSettings(createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    {
+      primaryModel: "vllm/same-model",
+      fallbackModel: "vllm/same-model",
+    },
+  ));
+  assertEquals(settings.primaryModel, "vllm/same-model");
+  assertEquals(settings.fallbackModel, null);
+});
+
+Deno.test("learning settings use a smaller packet", () => {
+  const settings = __moonTest.resolveSettings(createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+  ));
   assertEquals(settings.maxChars, 3_500);
 });
 
@@ -655,21 +739,25 @@ Deno.test("assistant recall cannot create circular confirmation evidence", () =>
   assert(confirmed);
 });
 
-Deno.test("model auth does not credential-hop on non-auth failures", async () => {
+Deno.test("model routing does not expose provider error bodies", async () => {
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
     [];
-  const api = createApi(
-    { code: 0, stdout: "", stderr: "" },
-    calls,
-    {},
-    () => {
-      throw new Error("rate limit status 429");
+  const baseApi = createApi({ code: 0, stdout: "", stderr: "" }, calls);
+  const api = {
+    ...baseApi,
+    runtime: {
+      ...baseApi.runtime,
+      agent: {
+        runEmbeddedPiAgent() {
+          throw new Error("remote body API_KEY=must-not-print");
+        },
+      },
     },
-  );
+  };
   const settings = __moonTest.resolveSettings(api);
   let message = "";
   try {
-    await __moonTest.runModelWithAuthFallback(
+    await __moonTest.runModelWithFallback(
       api,
       settings,
       "Return READY.",
@@ -678,7 +766,9 @@ Deno.test("model auth does not credential-hop on non-auth failures", async () =>
   } catch (error) {
     message = String(error);
   }
-  assert(message.includes("429"));
+  assert(message.includes("primary and fallback model requests failed"));
+  assert(!message.includes("API_KEY"));
+  assert(!message.includes("must-not-print"));
   assertEquals(calls.length, 0);
 });
 

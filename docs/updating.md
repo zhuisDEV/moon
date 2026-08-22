@@ -26,6 +26,54 @@ checks free space, database health and leases, minimum OS/OpenClaw versions, the
 Moon-owned OpenClaw configuration fields, and prints the mutation plan. It does
 not stage files or stop the gateway.
 
+## Provider-neutral routing transition
+
+The first release containing provider-neutral model routing intentionally drops
+Moon's Codex-specific plugin fields. Before checking or applying that release,
+verify that OpenClaw itself has both model routes:
+
+```bash
+openclaw config get agents.defaults.model
+```
+
+Back up the live OpenClaw configuration with owner-only permissions, then remove
+the retired Moon fields in one validated patch while the old adapter is still
+installed:
+
+```bash
+moon_config_reported="$(openclaw config file)"
+moon_openclaw_config="${moon_config_reported/#\~/$HOME}"
+moon_backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+moon_openclaw_backup="${moon_openclaw_config}.before-provider-router.${moon_backup_stamp}"
+install -m 600 "$moon_openclaw_config" "$moon_openclaw_backup"
+
+openclaw config patch --stdin <<'JSON5'
+{
+  plugins: {
+    entries: {
+      moon: {
+        config: {
+          codexProvider: null,
+          codexModel: null,
+          codexReasoning: null,
+          learningModel: null,
+          learningReasoning: null,
+        },
+      },
+    },
+  },
+}
+JSON5
+
+openclaw config validate
+```
+
+The old adapter accepts those fields being absent, so this preparation does not
+require loading unreleased code. Do not remove the private backup until the new
+adapter has loaded, primary and fallback model canaries have passed, and
+rollback is no longer required. The native updater does not mutate unrelated
+OpenClaw configuration or infer provider credentials.
+
 ## Apply
 
 ```bash

@@ -32,6 +32,7 @@ fn commands_never_offer_cutover_or_delete_operations() {
         .stdout(predicate::str::contains("record"))
         .stdout(predicate::str::contains("distill"))
         .stdout(predicate::str::contains("context"))
+        .stdout(predicate::str::contains("\n  auth").not())
         .stdout(predicate::str::contains("cutover").not())
         .stdout(predicate::str::contains("uninstall").not());
 }

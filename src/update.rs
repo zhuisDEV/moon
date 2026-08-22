@@ -453,9 +453,10 @@ fn allowed_moon_config_keys() -> &'static [&'static str] {
         "moonPath",
         "moonHome",
         "mode",
-        "codexProvider",
-        "codexModel",
-        "codexReasoning",
+        "primaryModel",
+        "fallbackModel",
+        "primaryReasoning",
+        "fallbackReasoning",
         "modelTimeoutMs",
         "dimensions",
         "scope",
@@ -465,8 +466,6 @@ fn allowed_moon_config_keys() -> &'static [&'static str] {
         "timeoutMs",
         "failOpen",
         "learningEnabled",
-        "learningModel",
-        "learningReasoning",
         "learningTimeoutMs",
         "learningScope",
         "learningMaxMemories",
@@ -2317,7 +2316,14 @@ mod tests {
         let root: Value = json5::from_str(
             r#"{
               plugins: {
-                entries: { moon: { enabled: true, config: { moonPath: "/moon", mode: "hybrid", token: "secret" } } },
+                entries: { moon: { enabled: true, config: {
+                  moonPath: "/moon",
+                  mode: "hybrid",
+                  primaryModel: "vllm/local-primary",
+                  fallbackModel: "openai/remote-fallback",
+                  codexProvider: "legacy-must-not-copy",
+                  token: "secret"
+                } } },
                 slots: { contextEngine: "moon", memory: "none" }
               },
               secrets: { token: "never-copy-me" }
@@ -2339,6 +2345,10 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         let serialized = serde_json::to_string(&copied).unwrap();
         assert!(serialized.contains("moonPath"));
+        assert!(serialized.contains("vllm/local-primary"));
+        assert!(serialized.contains("openai/remote-fallback"));
+        assert!(!serialized.contains("codexProvider"));
+        assert!(!serialized.contains("legacy-must-not-copy"));
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("token"));
     }

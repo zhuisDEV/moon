@@ -15,7 +15,8 @@ tests, imports, and replays should always pass an explicit temporary `--home`.
 - QMD, Node.js, a vector server, and the legacy watcher are not required.
 - The retired runtime is retained as a dated, read-only rollback copy.
 - Moon does not require `OPENAI_API_KEY`.
-- Model calls use Codex authentication without reading or copying tokens.
+- Model calls use OpenClaw's configured primary and fallback providers. Moon
+  does not read or copy provider credentials.
 - Runtime directories are owner-only on Unix; databases, backups, and exports
   are created with owner-only file permissions.
 - `health` never creates or migrates a missing database.
@@ -231,19 +232,11 @@ provider. It does not require a model login, API key, remote vector service, or
 QMD. OpenClaw keeps one private stdio child warm so query inference does not pay
 model startup cost on every turn.
 
-```bash
-moon --home /tmp/moon-test --json auth status
-printf 'Return exactly READY.' | \
-  moon --home /tmp/moon-test --json auth exec \
-    --model gpt-5.6-sol
-```
-
-The model path first uses an authenticated OpenClaw runtime when called by the
-adapter, then a private Moon Codex login, then the normal local Codex login. Run
-`moon auth login` only if you want the middle level. Moon does not parse, copy,
-or store access tokens itself. The default is `gpt-5.6-sol` with high reasoning;
-`gpt-5.6-luna` defaults to medium reasoning in the adapter for lower-latency
-work.
+The Moon binary performs no remote model calls and owns no provider credential
+store. The adapter delegates model work to OpenClaw. By default it inherits
+`agents.defaults.model.primary` and the first entry in
+`agents.defaults.model.fallbacks`; provider authentication remains entirely
+inside OpenClaw.
 
 Embedding workers claim bounded, expiring leases before local inference.
 Memories run before references; failures back off and keep a redacted
@@ -285,10 +278,15 @@ learning fail open, and OpenClaw retains transcript compaction. For non-trivial
 queries, the adapter also marks the matching content-free metric row as injected
 or not injected and logs only its opaque request ID and numeric result summary.
 
-Normal context is capped at 3,500 characters. Learning uses `gpt-5.6-luna` with
-medium reasoning through OpenClaw's session-bound model runtime, then the Moon
-and local Codex fallbacks. No model prompt or distillation payload is placed in
-process arguments.
+Normal context is capped at 3,500 characters. Learning uses the OpenClaw primary
+model and tries the configured fallback if the primary request fails. Provider
+diagnostics are not copied into Moon logs. Both routes default to reasoning
+`off` for low-latency structured extraction.
+
+`primaryModel` and `fallbackModel` may override OpenClaw's routing with any
+provider-qualified references, such as `vllm/local-model`, `openai/gpt-model`,
+`anthropic/claude-model`, or `google/gemini-model`. `primaryReasoning` and
+`fallbackReasoning` independently override their OpenClaw reasoning levels.
 
 The adapter is installed in production from `~/.moon/openclaw-plugin`, with the
 `moon` context-engine slot active. Use
