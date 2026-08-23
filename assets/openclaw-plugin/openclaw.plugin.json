@@ -57,6 +57,35 @@
         ],
         "description": "Reasoning effort for the fallback model. Defaults to off."
       },
+      "compactionModel": {
+        "type": "string",
+        "description": "Provider-qualified model used by the Moon compaction provider. Defaults to primaryModel."
+      },
+      "compactionReasoning": {
+        "type": "string",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "adaptive",
+          "max",
+          "ultra"
+        ],
+        "description": "Thinking effort for Moon compaction summarization. Defaults to off."
+      },
+      "compactionTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000
+      },
+      "compactionMaxTokens": {
+        "type": "integer",
+        "minimum": 512,
+        "maximum": 8192
+      },
       "modelTimeoutMs": {
         "type": "integer",
         "minimum": 1000,

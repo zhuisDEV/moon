@@ -97,6 +97,10 @@ openclaw config set --batch-json '[
     "moonPath":"~/.moon/bin/moon",
     "moonHome":"~/.moon",
     "mode":"hybrid",
+    "compactionModel":"vllm/your-local-model",
+    "compactionReasoning":"off",
+    "compactionTimeoutMs":180000,
+    "compactionMaxTokens":4096,
     "embeddingEnabled":true,
     "embeddingBatchSize":64,
     "embeddingTimeoutMs":120000
@@ -104,7 +108,12 @@ openclaw config set --batch-json '[
   {"path":"plugins.slots.contextEngine","value":"moon"},
   {"path":"plugins.slots.memory","value":"none"},
   {"path":"agents.defaults.memorySearch.enabled","value":false},
-  {"path":"agents.defaults.compaction.mode","value":"default"}
+  {"path":"agents.defaults.compaction.mode","value":"safeguard"},
+  {"path":"agents.defaults.compaction.provider","value":"moon-local"},
+  {"path":"agents.defaults.compaction.model","value":"vllm/your-local-model"},
+  {"path":"agents.defaults.compaction.identifierPolicy","value":"strict"},
+  {"path":"agents.defaults.compaction.recentTurnsPreserve","value":3},
+  {"path":"agents.defaults.compaction.qualityGuard","value":{"enabled":true,"maxRetries":1}}
 ]'
 openclaw config validate
 openclaw plugins doctor
@@ -237,6 +246,14 @@ store. The adapter delegates model work to OpenClaw. By default it inherits
 `agents.defaults.model.primary` and the first entry in
 `agents.defaults.model.fallbacks`; provider authentication remains entirely
 inside OpenClaw.
+
+The adapter can also register `moon-local` as OpenClaw's safeguard compaction
+provider. This routes summary generation through `compactionModel` with
+`compactionReasoning=off` by default while OpenClaw retains tool-pairing,
+recent-turn, transcript, checkpoint, and rollback ownership. The provider
+disables hidden model fallbacks for its isolated call; configure OpenClaw's
+explicit compaction model to the same local route so its provider-failure
+fallback also stays local.
 
 Embedding workers claim bounded, expiring leases before local inference.
 Memories run before references; failures back off and keep a redacted

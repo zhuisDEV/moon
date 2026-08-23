@@ -348,7 +348,8 @@ Deno.test("adapter records one completed turn and distills a validated durable m
           modelCalls += 1;
           assertEquals(params.provider, "vllm");
           assertEquals(params.model, "qwen3.8-27b-uncensored-fp8");
-          assertEquals(params.reasoningLevel, "high");
+          assertEquals(params.thinkLevel, "high");
+          assertEquals(params.reasoningLevel, "off");
           return {
             payloads: [{
               text: JSON.stringify({
@@ -464,9 +465,10 @@ Deno.test("plugin manifest is a strict context-engine manifest", async () => {
   );
 });
 
-Deno.test("plugin registers gateway-lifecycle ownership for the warm worker", async () => {
+Deno.test("plugin registers the context engine and local compaction provider", async () => {
   const services: Record<string, unknown>[] = [];
   const engineFactories: Array<() => unknown> = [];
+  const compactionProviders: Record<string, unknown>[] = [];
   moonPlugin.register({
     registerService(value: Record<string, unknown>) {
       services.push(value);
@@ -474,12 +476,17 @@ Deno.test("plugin registers gateway-lifecycle ownership for the warm worker", as
     registerContextEngine(_id: string, factory: () => unknown) {
       engineFactories.push(factory);
     },
+    registerCompactionProvider(provider: Record<string, unknown>) {
+      compactionProviders.push(provider);
+    },
   });
   const service = services[0];
   assertEquals(service.id, "moon-local-embedding-worker");
   assert(typeof service.start === "function");
   assert(typeof service.stop === "function");
   assert(typeof engineFactories[0] === "function");
+  assertEquals(compactionProviders[0]?.id, "moon-local");
+  assert(typeof compactionProviders[0]?.summarize === "function");
   await (service.stop as () => Promise<void>)();
 });
 
@@ -508,7 +515,11 @@ Deno.test("model routing uses the OpenClaw primary model", async () => {
   assertEquals(result.output, "READY");
   assertEquals(embeddedCalls[0]?.provider, "vllm");
   assertEquals(embeddedCalls[0]?.model, "local-primary");
+  assertEquals(embeddedCalls[0]?.thinkLevel, "off");
   assertEquals(embeddedCalls[0]?.reasoningLevel, "off");
+  assertEquals(embeddedCalls[0]?.modelFallbacksOverride, []);
+  assertEquals(embeddedCalls[0]?.modelRun, true);
+  assertEquals(embeddedCalls[0]?.promptMode, "none");
   assertEquals(calls.length, 0);
 });
 
@@ -549,8 +560,103 @@ Deno.test("model routing uses a provider-neutral fallback", async () => {
     "vllm/local-primary",
     "openai/remote-fallback",
   ]);
-  assertEquals(modelCalls.map((call) => call.reasoningLevel), ["off", "ultra"]);
+  assertEquals(modelCalls.map((call) => call.thinkLevel), ["off", "ultra"]);
+  assertEquals(modelCalls.map((call) => call.reasoningLevel), ["off", "off"]);
   assertEquals(calls.length, 0);
+});
+
+Deno.test("local compaction uses an isolated reasoning-off model run", async () => {
+  const embeddedCalls: Record<string, unknown>[] = [];
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {
+      compactionModel: "vllm/local-compactor",
+      compactionReasoning: "off",
+      compactionMaxTokens: 2048,
+    },
+    (params) => {
+      embeddedCalls.push(params);
+      return { payloads: [{ text: "## Goal\nContinue local work safely." }] };
+    },
+  );
+  const output = await __moonTest.summarizeCompaction(api, {
+    messages: [{
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_123", name: "exec" }],
+    }, {
+      role: "toolResult",
+      toolCallId: "call_123",
+      content: [{ type: "text", text: "completed" }],
+    }],
+    previousSummary: "Earlier work used only local models.",
+    customInstructions: "Preserve opaque identifiers exactly.",
+    compressionRatio: 0.25,
+  });
+  assertEquals(output, "## Goal\nContinue local work safely.");
+  assertEquals(embeddedCalls.length, 1);
+  assertEquals(embeddedCalls[0]?.provider, "vllm");
+  assertEquals(embeddedCalls[0]?.model, "local-compactor");
+  assertEquals(embeddedCalls[0]?.thinkLevel, "off");
+  assertEquals(embeddedCalls[0]?.reasoningLevel, "off");
+  assertEquals(embeddedCalls[0]?.modelFallbacksOverride, []);
+  assertEquals(embeddedCalls[0]?.streamParams, { maxTokens: 2048 });
+  assertEquals(embeddedCalls[0]?.modelRun, true);
+  assertEquals(embeddedCalls[0]?.promptMode, "none");
+  assert(String(embeddedCalls[0]?.prompt).includes("call_123"));
+  assert(
+    String(embeddedCalls[0]?.prompt).includes(
+      "Preserve opaque identifiers exactly.",
+    ),
+  );
+  assert(
+    String(embeddedCalls[0]?.prompt).includes(
+      "Earlier work used only local models.",
+    ),
+  );
+  assert(String(embeddedCalls[0]?.sessionFile).includes("moon-compaction-"));
+});
+
+Deno.test("local compaction redacts provider failure details", async () => {
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "" },
+    [],
+    { compactionModel: "vllm/local-compactor" },
+    () => {
+      throw new Error("private transcript and TOKEN=must-not-leak");
+    },
+  );
+  let message = "";
+  try {
+    await __moonTest.summarizeCompaction(api, { messages: [] });
+  } catch (error) {
+    message = String(error);
+  }
+  assert(message.includes("Moon local compaction model request failed"));
+  assert(!message.includes("must-not-leak"));
+  assert(!message.includes("private transcript"));
+});
+
+Deno.test("local compaction rejects an OpenClaw error payload", async () => {
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "" },
+    [],
+    { compactionModel: "vllm/local-compactor" },
+    () => ({
+      payloads: [{
+        text: "⚠️ Agent couldn't generate a response. Please try again.",
+        isError: true,
+      }],
+    }),
+  );
+  let message = "";
+  try {
+    await __moonTest.summarizeCompaction(api, { messages: [] });
+  } catch (error) {
+    message = String(error);
+  }
+  assert(message.includes("Moon local compaction model request failed"));
+  assert(!message.includes("couldn't generate"));
 });
 
 Deno.test("model routing falls back when primary output fails validation", async () => {
@@ -595,6 +701,10 @@ Deno.test("model routing inherits OpenClaw primary and fallback models", () => {
   assertEquals(settings.fallbackModel, "openai/remote-fallback");
   assertEquals(settings.primaryReasoning, "off");
   assertEquals(settings.fallbackReasoning, "off");
+  assertEquals(settings.compactionModel, "vllm/local-primary");
+  assertEquals(settings.compactionReasoning, "off");
+  assertEquals(settings.compactionTimeoutMs, 180_000);
+  assertEquals(settings.compactionMaxTokens, 4_096);
 });
 
 Deno.test("plugin model routing overrides OpenClaw defaults", () => {

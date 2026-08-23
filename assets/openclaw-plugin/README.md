@@ -11,6 +11,10 @@ The adapter keeps strict ownership boundaries:
   Moon delegates explicit compaction only for an identified stock OpenClaw
   harness and safely refuses the lossy generic fallback for Codex or an unknown
   harness.
+- Moon also registers the optional `moon-local` compaction provider. When
+  selected through `agents.defaults.compaction.provider`, it replaces only the
+  safeguard summarization call. OpenClaw still chooses safe transcript and tool
+  boundaries, preserves recent turns, writes checkpoints, and owns rollback.
 - Retrieval failures fail open by default and preserve the original messages.
 - The after-turn hook stores only the user request and final assistant answer,
   not intermediate tool traffic.
@@ -38,9 +42,19 @@ independently. Moon owns no provider credentials, and bounded failures never
 print arbitrary remote response bodies. Turn transcripts and proposals sent to
 the Moon binary use stdin and are not exposed in process arguments.
 
+The compaction provider uses `compactionModel` (default: `primaryModel`) with
+`compactionReasoning=off` by default, disables the underlying model fallback
+chain, and runs in an isolated raw-model session without Moon retrieval or
+tools. The configured OpenClaw provider must support its native thinking-off
+request shape. OpenClaw falls back to its configured built-in compaction model
+if the provider fails or returns no summary. For a local-only privacy boundary,
+point both settings at the same local provider/model and keep OpenClaw's
+explicit compaction model local as well.
+
 OpenClaw keeps native automatic transcript compaction because the adapter
 advertises `ownsCompaction=false`. Moon owns retrieval and bounded packet
-assembly, not transcript replacement.
+assembly, not transcript replacement. Selecting `moon-local` changes the summary
+generator, not that ownership boundary.
 
 Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
 [`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md) for

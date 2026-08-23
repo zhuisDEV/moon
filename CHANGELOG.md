@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.5.0 - 2026-08-23
+
+- Added the optional `moon-local` OpenClaw compaction provider, which generates
+  summary text through an exact provider-qualified model with thinking off and
+  no implicit model-chain fallback while OpenClaw retains transcript safety and
+  rollback.
+- Corrected OpenClaw embedded-runner routing to use `thinkLevel` for model
+  effort and disable reasoning-output streaming explicitly.
+
 ## 2.4.2 - 2026-08-23
 
 - Corrected the one-time Keychain-to-GitHub secret transfer so the binary

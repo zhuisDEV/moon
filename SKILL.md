@@ -3,13 +3,20 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.4.2 -->
+<!-- moon-version: 2.5.0 -->
 
 # Moon
 
 Use the installed `moon` binary. Normal OpenClaw conversations require no manual
 Moon commands: the adapter retrieves context, records completed turns, distills
 eligible durable memories, and drains embeddings automatically.
+
+When `agents.defaults.compaction.provider` is `moon-local`, the adapter also
+generates compaction summaries with its configured provider-qualified model and
+thinking level. OpenClaw still owns tool-pair boundaries, recent-turn
+preservation, transcript mutation, quality checks, checkpoints, and rollback;
+Moon remains a non-owning context engine. Keep the provider model exact and
+local when privacy requires that no fallback can leave the machine.
 
 Before operating or migrating a runtime, verify that the shell command and the
 OpenClaw `moonPath` resolve to the same v2 binary:

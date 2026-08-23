@@ -21,7 +21,8 @@ For each agent turn:
    message.
 6. If retrieval fails, the adapter preserves the original message list by
    default.
-7. OpenClaw owns compaction throughout this phase.
+7. OpenClaw owns the compaction lifecycle. If `moon-local` is selected, Moon
+   supplies only the summary text through OpenClaw's compaction-provider seam.
 8. After a successful completed turn, the adapter records the user request and
    final answer as immutable evidence under a stable turn fingerprint.
 9. Greetings stop there. Eligible turns use the configured OpenClaw primary
@@ -72,10 +73,13 @@ openclaw plugins install --link "$PWD/assets/openclaw-plugin"
 
 Configure that temporary profile with `plugins.slots.contextEngine=moon` and
 explicit `plugins.entries.moon.config.moonPath` and `moonHome` values. Configure
-provider-qualified `agents.defaults.model.primary` and at least one fallback.
-Keep `HOME`, `OPENCLAW_STATE_DIR`, and `OPENCLAW_CONFIG_PATH` pointed at the
-same temporary root for every command so OpenClaw cannot migrate live state.
-Then require:
+provider-qualified `agents.defaults.model.primary` and at least one fallback. To
+canary local summary generation, also configure a provider-qualified
+`plugins.entries.moon.config.compactionModel`, set `compactionReasoning=off`,
+and select `agents.defaults.compaction.mode=safeguard` with
+`agents.defaults.compaction.provider=moon-local`. Keep `HOME`,
+`OPENCLAW_STATE_DIR`, and `OPENCLAW_CONFIG_PATH` pointed at the same temporary
+root for every command so OpenClaw cannot migrate live state. Then require:
 
 ```bash
 HOME="$profile_root/home" \
@@ -115,20 +119,24 @@ The runtime inspection must report:
 - Adapter success and fail-open paths pass.
 - A real hybrid adapter request succeeds through the persistent stdio worker.
 - The isolated OpenClaw profile validates and loads the runtime.
+- A `moon-local` canary uses an isolated raw-model session, thinking off, no
+  implicit model fallback, and returns non-empty summary text.
+- OpenClaw preserves complete tool-call/result pairs and recent turns around the
+  resulting summary.
 - Isolated validation does not change the live OpenClaw configuration or Moon
   process state.
 
 Before the real model canary, configure provider-qualified primary and fallback
 models in the isolated OpenClaw profile. Prove that the primary is used when it
 succeeds, the fallback is used when the primary fails or returns invalid
-structured output, and both default `reasoningLevel` values are `off`. Verify
+structured output, and both default `thinkLevel` values are `off`. Verify
 independent reasoning overrides and prove that neither provider's raw failure
 body reaches Moon logs. The Moon binary must not own or inspect any provider
 credential store.
 
-Before switching a live profile from lexical to hybrid, perform one real native
-compaction canary while the new adapter is installed but retrieval is still
-lexical:
+Before switching a live profile from lexical to hybrid or selecting
+`moon-local`, perform one real compaction canary while the new adapter is
+installed but retrieval is still lexical:
 
 1. create a private, non-delivered canary session and complete at least one
    turn;
@@ -139,7 +147,9 @@ lexical:
 4. complete a successor turn on the same key;
 5. confirm the turn is recorded once, recalled memory survives, and no Moon
    packet was copied into the native summary;
-6. retain `ownsCompaction=false` and `agents.defaults.compaction.mode=default`.
+6. retain `ownsCompaction=false`; use `mode=default` without a custom provider,
+   or `mode=safeguard` with `provider=moon-local` so OpenClaw keeps structural
+   ownership.
 
 The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative

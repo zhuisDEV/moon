@@ -179,8 +179,9 @@ If the primary request fails, the adapter tries the fallback once. If both fail,
 learning follows the configured fail-open policy. Moon does not persist or print
 provider diagnostics because they may contain credentials or arbitrary remote
 response bodies. `primaryReasoning` and `fallbackReasoning` default to `off`
-independently of provider. Their overrides are passed as OpenClaw
-`reasoningLevel` values, so the two routes may use different effort.
+independently of provider. Their overrides are passed as OpenClaw `thinkLevel`
+values, while visible reasoning output remains disabled, so the two routes may
+use different effort without exposing hidden reasoning.
 
 ### 6. Before an agent turn: assemble a context packet
 
@@ -243,6 +244,16 @@ transcript as empty. A safe no-op is preferable to losing context.
 Moon packets are ephemeral assembly input. They are not copied into the stored
 transcript, do not become durable memory by themselves, and must not be
 duplicated into a compaction summary.
+
+OpenClaw 2026.7.1 also exposes a narrower compaction-provider seam. When
+`agents.defaults.compaction.provider=moon-local`, the adapter sends only the
+prepared safeguard-summary input to `compactionModel` in an isolated raw-model
+session with `compactionReasoning=off` by default. The configured provider must
+support its native thinking-off request shape. The call has no tools, Moon
+retrieval, or hidden provider fallback. OpenClaw still chooses tool-safe chunk
+boundaries, retains recent and split turns, appends the compaction entry, and
+owns checkpoints, transcript rotation, and rollback. If the provider fails,
+OpenClaw uses its explicitly configured built-in compaction model.
 
 ### 8. Correct stale memory
 
@@ -331,17 +342,20 @@ backups, and exports are owner-only files (`0600`).
 
 ## Current integration boundary
 
-The production OpenClaw adapter owns five bounded operations:
+The production OpenClaw adapter owns six bounded operations:
 
 1. retrieve relevant context before a turn;
 2. mark whether the content-free request metric was injected;
 3. record the completed user/final-answer pair after a turn;
 4. selectively distill evidence-backed durable memories; and
-5. drain a bounded local-embedding batch after completed turns.
+5. optionally generate a safeguard compaction summary through a configured local
+   model; and
+6. drain a bounded local-embedding batch after completed turns.
 
 Retrieval and learning failures fail open by default and never suppress the
-agent's reply. OpenClaw still owns its transcript and compaction. Moon does not
-copy tool traces or reasoning, run a watcher, or require QMD.
+agent's reply. OpenClaw still owns its transcript and compaction lifecycle even
+when Moon supplies the summary text. Moon does not copy tool traces or
+reasoning, run a watcher, or require QMD.
 
 Automatic extraction remains deliberately conservative. A changed canonical
 claim is replaced only when the user explicitly corrects it and the extraction

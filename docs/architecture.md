@@ -109,3 +109,11 @@ identifies the stock OpenClaw harness. It safely declines the generic fallback
 for Codex or unknown harnesses because the current fallback can produce an empty
 summary for a populated Codex transcript. Production loads the adapter from
 `~/.moon/openclaw-plugin`.
+
+The same adapter may register `moon-local` through OpenClaw's narrower
+compaction-provider interface. That provider owns only summary generation and
+runs a configured model with thinking off in an isolated raw-model session.
+OpenClaw retains safe tool-pair and turn boundaries, recent-tail preservation,
+quality checks, transcript writes, checkpoints, rotation, and rollback. This
+does not change `ownsCompaction=false` or give Moon direct transcript-mutation
+authority.
