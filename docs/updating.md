@@ -141,16 +141,21 @@ consent flag required by OpenClaw 2026.9.2. Manually stopping the gateway does
 not help: the updater issues its own stop command. `moon update --yes` approves
 Moon's transaction but cannot repair the old subprocess arguments.
 
-From a reviewed Moon 2.5.1 checkout, run the one-time recovery helper:
+From a reviewed Moon 2.5.2 checkout, run the one-time recovery helper:
 
 ```bash
-sh tools/recover-openclaw-update.sh --version 2.5.1 --dry-run
-sh tools/recover-openclaw-update.sh --version 2.5.1
+sh tools/recover-openclaw-update.sh --version=2.5.2 --dry-run
+sh tools/recover-openclaw-update.sh --version=2.5.2
 ```
 
 First complete the provider-neutral routing preparation above if the installed
 configuration still contains the retired Codex-specific fields. The helper does
 not change configuration or credentials.
+
+Use the equals form shown above with older updaters: before Moon 2.5.2,
+combining `--json` with a separate `--version <target>` argument prints the
+installed version instead of running the update. Moon 2.5.2 fixes that parsing
+bug; the equals form also works with older releases.
 
 The helper creates a private temporary command wrapper for this invocation. It
 adds `--force` only to the old updater's exact `gateway stop --json` call and

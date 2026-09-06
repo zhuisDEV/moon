@@ -404,34 +404,33 @@ struct UpdateArgs {
 
 fn main() {
     let wants_json = env::args_os().any(|argument| argument == "--json");
-    let wants_version = env::args_os().any(|argument| argument == "--version" || argument == "-V");
-    if wants_json && wants_version {
-        match moon::version::VersionInfo::current() {
-            Ok(version) => println!(
-                "{}",
-                serde_json::to_string(&version).expect("version identity is serializable")
-            ),
-            Err(error) => {
-                let safe_message = redact_text(&format!("{error:#}")).value;
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "ok": false,
-                        "error": {
-                            "code": "version_identity_failed",
-                            "message": safe_message,
-                        }
-                    })
-                );
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
             use clap::error::ErrorKind;
+            if error.kind() == ErrorKind::DisplayVersion && wants_json {
+                match moon::version::VersionInfo::current() {
+                    Ok(version) => println!(
+                        "{}",
+                        serde_json::to_string(&version).expect("version identity is serializable")
+                    ),
+                    Err(error) => {
+                        let safe_message = redact_text(&format!("{error:#}")).value;
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "ok": false,
+                                "error": {
+                                    "code": "version_identity_failed",
+                                    "message": safe_message,
+                                }
+                            })
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
             if matches!(
                 error.kind(),
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion

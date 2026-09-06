@@ -95,3 +95,70 @@ fn json_version_recognizes_the_canonical_executable_by_file_identity() {
         canonical.to_string_lossy().as_ref()
     );
 }
+
+#[test]
+fn json_short_version_remains_offline_in_either_flag_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let moon_home = temp.path().join("missing-moon-home");
+    for args in [["--json", "-V"], ["-V", "--json"]] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("moon"))
+            .args(args)
+            .env("MOON_HOME", &moon_home)
+            .output()
+            .expect("run version");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_slice(&output.stdout).expect("version JSON");
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["name"], "moon");
+    }
+    assert!(!moon_home.exists(), "version must not create a runtime");
+}
+
+#[test]
+fn pinned_update_json_rejects_invalid_modes_before_network_or_storage() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let moon_home = temp.path().join("missing-moon-home");
+    for invalid in ["--check", "--yes", "--unknown-option"] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("moon"))
+            .args([
+                "update",
+                "--version",
+                "2.5.1",
+                "--dry-run",
+                "--json",
+                invalid,
+            ])
+            .env("MOON_HOME", &moon_home)
+            .output()
+            .expect("run invalid pinned update");
+        assert!(!output.status.success(), "{invalid}: {output:?}");
+        assert!(output.stdout.is_empty(), "{invalid}: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stderr).expect("argument error JSON");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "invalid_arguments");
+    }
+    assert!(
+        !moon_home.exists(),
+        "invalid update must not create a runtime"
+    );
+}
+
+#[test]
+fn version_flag_strings_after_separator_are_argument_data() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let moon_home = temp.path().join("isolated-moon-home");
+    for key in ["--version", "-V"] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("moon"))
+            .arg("--home")
+            .arg(&moon_home)
+            .args(["--dimensions", "64", "--json", "state", "get", "--", key])
+            .output()
+            .expect("get literal state key");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty());
+        let value: Value = serde_json::from_slice(&output.stdout).expect("state JSON");
+        assert_eq!(value, serde_json::json!({"key": key, "value": null}));
+    }
+    assert!(moon_home.join("state/moon.sqlite").is_file());
+}

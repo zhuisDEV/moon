@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.5.2 - 2026-09-06
+
+- Fix JSON output for pinned updates: `moon update --version 2.5.2 --json` now
+  selects the target release instead of printing the installed version. Root
+  version reporting follows Clap's parsed command, so option values cannot
+  accidentally trigger it.
+- Document `--version=2.5.2` for older updater recovery, avoiding the old JSON
+  argument-scanning bug while keeping the update pinned.
+
 ## 2.5.1 - 2026-09-06
 
 - Require OpenClaw 2026.9.2 or newer for its detached model-session contract;
