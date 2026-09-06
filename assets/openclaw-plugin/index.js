@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -664,6 +665,56 @@ function completedTurnFromParams(params) {
   };
 }
 
+function acceptedTurnFromParams(params) {
+  const { admission, terminal } = params ?? {};
+  if (
+    !nonEmptyString(params?.advancementKey) ||
+    !nonEmptyString(params?.sessionId) ||
+    !isObject(admission) || !isObject(terminal) ||
+    admission.role !== "user" ||
+    admission.sessionId !== params.sessionId ||
+    admission.sessionKey !== params.sessionKey ||
+    !nonEmptyString(admission.logicalTurnId) ||
+    !nonEmptyString(admission.entryId) || !nonEmptyString(terminal.entryId) ||
+    !Number.isSafeInteger(admission.rawSeq) ||
+    !Number.isSafeInteger(terminal.rawSeq) ||
+    terminal.rawSeq < admission.rawSeq ||
+    ["agentId", "sessionId", "sessionKey", "storePath", "generation"].some(
+      (field) =>
+        !nonEmptyString(admission[field]) ||
+        admission[field] !== terminal[field],
+    ) ||
+    !Array.isArray(params.messages) || params.messages[0]?.role !== "user"
+  ) {
+    throw new Error("moon received an invalid accepted turn boundary");
+  }
+  // The host supplies only the closed, accepted range. Never read the growing
+  // transcript or use an afterTurn snapshot that may include another attempt.
+  const turn = completedTurnFromParams({ ...params, prePromptMessageCount: 0 });
+  if (!turn) return null;
+  const messages = params.messages;
+  const timestamp = [...messages].reverse().find((message) =>
+    Number.isSafeInteger(message?.timestamp) && message.timestamp > 0
+  )?.timestamp;
+  if (!timestamp) {
+    throw new Error("moon accepted turn has no stable completion timestamp");
+  }
+  const advancementHash = createHash("sha256").update(params.advancementKey)
+    .digest("hex");
+  return {
+    ...turn,
+    evidenceSessionId: `openclaw:accepted:${advancementHash}`,
+    completedAtMs: timestamp,
+    metadata: {
+      ...turn.metadata,
+      advancement_hash: advancementHash,
+      admission_entry_id: admission.entryId,
+      terminal_entry_id: terminal.entryId,
+      transcript_generation: admission.generation,
+    },
+  };
+}
+
 function isLearningCandidate(turn) {
   if (!turn || isTrivialQuery(turn.userText)) {
     return false;
@@ -1317,8 +1368,12 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.5.2",
+      version: "2.5.3",
       ownsCompaction: false,
+      transcriptSemantics: {
+        currentTurnFence: "before-current-turn-entry-v1",
+        turnAdvancementIdempotency: "atomic-idempotent-v1",
+      },
     },
     bootstrap() {
       return {
@@ -1386,62 +1441,55 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
         return { messages, estimatedTokens: estimateTokens(messages) };
       }
     },
-    async afterTurn(params) {
+    async commitTurn(params) {
       const settings = resolveSettings(api);
-      const turn = completedTurnFromParams(params);
-      if (!turn) {
-        return;
+      const turn = acceptedTurnFromParams(params);
+      // Heartbeats, turns without a visible answer, and disabled learning have
+      // no Moon-owned durable effect. Replaying these is an intentional no-op.
+      if (!turn || !settings.learningEnabled) {
+        return { status: "committed" };
       }
+      // Evidence and its unique advancement identity share one SQLite
+      // transaction. Storage failures must reach OpenClaw's durable retry queue,
+      // even when optional retrieval and learning are configured to fail open.
+      const recorded = await recordCompletedTurn(api, settings, turn);
+      if (!recorded.changed) return { status: "duplicate" };
       const learningStarted = performance.now();
       const learningMetric = {
         event_kind: "learning",
-        status: settings.learningEnabled ? "ok" : "skipped",
+        status: "ok",
         duration_us: 0,
-        evidence_changed: false,
+        evidence_changed: true,
         learning_eligible: isLearningCandidate(turn),
         proposed_memories: 0,
         accepted_memories: 0,
       };
-      if (settings.learningEnabled) {
-        try {
-          const recorded = await recordCompletedTurn(api, settings, turn);
-          learningMetric.evidence_changed = recorded.changed;
-          if (!recorded.changed || !isLearningCandidate(turn)) {
-            logInfo(
-              api,
-              `moon learning evidence=${
-                recorded.changed ? "recorded" : "duplicate"
-              } distilled=0`,
-            );
-          } else {
-            const outcome = await distillCompletedTurn(
-              api,
-              settings,
-              params,
-              turn,
-              settings.mode === "lexical" ? null : workerFor(settings),
-            );
-            learningMetric.proposed_memories = outcome.proposed;
-            learningMetric.accepted_memories = outcome.distilled;
-            logInfo(
-              api,
-              `moon learning evidence=recorded proposed=${outcome.proposed} distilled=${outcome.distilled} model_route=${outcome.modelRoute}`,
-            );
-          }
-        } catch (error) {
-          learningMetric.status = "error";
-          logError(api, `learning degraded: ${String(error)}`);
-          if (!settings.failOpen) {
-            learningMetric.duration_us = elapsedMicroseconds(learningStarted);
-            await recordRuntimeMetric(
-              api,
-              settings,
-              settings.mode === "lexical" ? null : workerFor(settings),
-              learningMetric,
-            );
-            throw error;
-          }
+      try {
+        if (!isLearningCandidate(turn)) {
+          logInfo(
+            api,
+            "moon learning evidence=recorded distilled=0",
+          );
+        } else {
+          const outcome = await distillCompletedTurn(
+            api,
+            settings,
+            params,
+            turn,
+            settings.mode === "lexical" ? null : workerFor(settings),
+          );
+          learningMetric.proposed_memories = outcome.proposed;
+          learningMetric.accepted_memories = outcome.distilled;
+          logInfo(
+            api,
+            `moon learning evidence=recorded proposed=${outcome.proposed} distilled=${outcome.distilled} model_route=${outcome.modelRoute}`,
+          );
         }
+      } catch (error) {
+        // The durable evidence is already committed. Learning is best effort;
+        // replaying this turn must not generate another proposal or confirmation.
+        learningMetric.status = "error";
+        logError(api, `learning degraded: ${String(error)}`);
       }
       learningMetric.duration_us = elapsedMicroseconds(learningStarted);
       await recordRuntimeMetric(
@@ -1451,6 +1499,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
         learningMetric,
       );
       await drainEmbeddingQueue(api, settings, workerFor(settings));
+      return { status: "committed" };
     },
     async compact(params) {
       const settings = resolveSettings(api);
@@ -1500,6 +1549,7 @@ export default {
 };
 
 export const __moonTest = {
+  acceptedTurnFromParams,
   contextArguments,
   compactionPrompt,
   contextWorkerRequest,

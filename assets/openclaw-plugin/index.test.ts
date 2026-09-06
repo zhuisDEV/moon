@@ -2,6 +2,30 @@ import moonPlugin, { __moonTest } from "./index.js";
 
 const METRIC_REQUEST_ID = "0123456789abcdef0123456789abcdef";
 
+function acceptedParams(messages: Array<Record<string, unknown>>) {
+  const admission = {
+    agentId: "main",
+    sessionId: "session-1",
+    sessionKey: "agent:main:discord:channel:123",
+    storePath: "/tmp/openclaw-agent.sqlite",
+    generation: "generation-1",
+    entryId: "user-1",
+    rawSeq: 1,
+    effectiveParentId: null,
+    activeMessagePosition: 0,
+    logicalTurnId: "turn-1",
+    role: "user",
+  };
+  return {
+    advancementKey: "advancement-1",
+    admission,
+    terminal: { ...admission, entryId: "assistant-1", rawSeq: 2 },
+    sessionId: admission.sessionId,
+    sessionKey: admission.sessionKey,
+    messages,
+  };
+}
+
 function metricsEnvelope(packet: string | null) {
   return JSON.stringify({
     request_id: METRIC_REQUEST_ID,
@@ -62,7 +86,7 @@ function createApi(
         runCommandWithTimeout(
           argv: string[],
           options: { timeoutMs: number; input?: string },
-        ) {
+        ): typeof result | Promise<typeof result> {
           calls.push({
             argv,
             timeoutMs: options.timeoutMs,
@@ -277,11 +301,9 @@ Deno.test("adapter records one completed turn and distills a validated durable m
       text: "Understood. I will keep answers concise.",
     }],
   };
-  const preview = __moonTest.completedTurnFromParams({
-    sessionId: "session-1",
-    messages: [user, assistant],
-    prePromptMessageCount: 0,
-  });
+  const preview = __moonTest.acceptedTurnFromParams(
+    acceptedParams([user, assistant]),
+  );
   assert(preview);
   const expectedEvidenceId = preview.evidenceSessionId;
   const baseApi = createApi(
@@ -376,14 +398,12 @@ Deno.test("adapter records one completed turn and distills a validated durable m
     },
   };
   const engine = __moonTest.createMoonContextEngine(api);
-  await engine.afterTurn({
-    sessionId: "session-1",
-    sessionKey: "agent:main:discord:channel:123",
-    sessionFile: "/tmp/session-1.jsonl",
+  const committed = await engine.commitTurn({
+    ...acceptedParams([user, assistant]),
     runtimeContext: { cwd: "/tmp/task-workspace" },
-    messages: [user, assistant],
-    prePromptMessageCount: 0,
   });
+  assertEquals(committed, { status: "committed" });
+  assert(!("afterTurn" in engine));
   assertEquals(modelCalls, 1);
   assertEquals(calls.length, 4);
   assert(calls[0].argv.includes("record"));
@@ -1197,4 +1217,257 @@ Deno.test("adapter invokes a real Moon binary when configured", async () => {
       );
     }
   }
+});
+
+Deno.test("durable commits declare host fencing and use the accepted range only", () => {
+  const params = acceptedParams([
+    { role: "user", content: "Hello", timestamp: 100 },
+    { role: "assistant", content: "Hello there", timestamp: 200 },
+  ]);
+  const first = __moonTest.acceptedTurnFromParams(params);
+  assert(first);
+  const replay = __moonTest.acceptedTurnFromParams({
+    ...params,
+    prePromptMessageCount: 99,
+  });
+  assertEquals(first, replay);
+  assertEquals(first?.completedAtMs, 200);
+  assert(first?.evidenceSessionId.match(/^openclaw:accepted:[a-f0-9]{64}$/));
+  const next = __moonTest.acceptedTurnFromParams({
+    ...params,
+    advancementKey: "advancement-2",
+  });
+  assert(first.evidenceSessionId !== next?.evidenceSessionId);
+  const engine = __moonTest.createMoonContextEngine(createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+  ));
+  assertEquals(engine.info.transcriptSemantics, {
+    currentTurnFence: "before-current-turn-entry-v1",
+    turnAdvancementIdempotency: "atomic-idempotent-v1",
+  });
+  assert(!("afterTurn" in engine));
+});
+
+Deno.test("durable commits reject mismatched boundaries and unstable timestamps", () => {
+  const params = acceptedParams([
+    { role: "user", content: "Hello", timestamp: 100 },
+    { role: "assistant", content: "Hello there", timestamp: 200 },
+  ]);
+  const invalid = [
+    { ...params, advancementKey: "" },
+    { ...params, sessionId: "different-session" },
+    { ...params, terminal: { ...params.terminal, generation: "rotated" } },
+    { ...params, terminal: { ...params.terminal, rawSeq: 0 } },
+    { ...params, messages: [{ role: "assistant", content: "no admission" }] },
+    {
+      ...params,
+      messages: params.messages.map(({ role, content }) => ({ role, content })),
+    },
+  ];
+  for (const input of invalid) {
+    let rejected = false;
+    try {
+      __moonTest.acceptedTurnFromParams(input);
+    } catch {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+});
+
+Deno.test("durable storage failures propagate even with failOpen enabled", async () => {
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  const engine = __moonTest.createMoonContextEngine(createApi(
+    { code: 1, stdout: "", stderr: "database unavailable" },
+    calls,
+    { failOpen: true },
+  ));
+  let rejected = false;
+  try {
+    await engine.commitTurn(acceptedParams([
+      { role: "user", content: "Hello", timestamp: 100 },
+      { role: "assistant", content: "Hello there", timestamp: 200 },
+    ]));
+  } catch {
+    rejected = true;
+  }
+  assert(rejected);
+  assertEquals(calls.length, 1);
+  assert(calls[0].argv.includes("record"));
+});
+
+Deno.test("durable duplicate acknowledgement never repeats learning", async () => {
+  const params = acceptedParams([
+    { role: "user", content: "Remember my preference for tea", timestamp: 100 },
+    { role: "assistant", content: "Understood", timestamp: 200 },
+  ]);
+  const turn = __moonTest.acceptedTurnFromParams(params);
+  assert(turn);
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  const engine = __moonTest.createMoonContextEngine(createApi({
+    code: 0,
+    stdout: JSON.stringify({
+      session_id: turn.evidenceSessionId,
+      changed: false,
+    }),
+    stderr: "",
+  }, calls));
+  assertEquals(await engine.commitTurn(params), { status: "duplicate" });
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("heartbeat and disabled-learning commits have no durable side effects", async () => {
+  const params = acceptedParams([
+    { role: "user", content: "Hello", timestamp: 100 },
+    { role: "assistant", content: "Hello there", timestamp: 200 },
+  ]);
+  for (const learningEnabled of [false, true]) {
+    const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+      [];
+    const engine = __moonTest.createMoonContextEngine(createApi(
+      { code: 1, stdout: "", stderr: "must not run" },
+      calls,
+      { learningEnabled },
+    ));
+    const input = { ...params, isHeartbeat: learningEnabled };
+    assertEquals(await engine.commitTurn(input), { status: "committed" });
+    assertEquals(await engine.commitTurn(input), { status: "committed" });
+    assertEquals(calls.length, 0);
+  }
+});
+
+Deno.test("durable commit survives a lost acknowledgement with real SQLite", async () => {
+  const permission = await Deno.permissions.query({
+    name: "env",
+    variable: "MOON_TEST_BINARY",
+  });
+  if (permission.state !== "granted") return;
+  const binary = Deno.env.get("MOON_TEST_BINARY");
+  const home = Deno.env.get("MOON_TEST_HOME");
+  if (!binary || !home) return;
+  const params = acceptedParams([
+    { role: "user", content: "Hello", timestamp: 100 },
+    { role: "assistant", content: "Hello there", timestamp: 200 },
+  ]);
+  params.advancementKey = `real-sqlite-${crypto.randomUUID()}`;
+  let loseAcknowledgement = true;
+  const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
+    moonPath: binary,
+    moonHome: home,
+    failOpen: true,
+  });
+  api.runtime.system.runCommandWithTimeout = async (argv, options) => {
+    const child = new Deno.Command(argv[0], {
+      args: argv.slice(1),
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(options.input ?? ""));
+    await writer.close();
+    const output = await child.output();
+    if (loseAcknowledgement && output.code === 0 && argv.includes("record")) {
+      loseAcknowledgement = false;
+      throw new Error("simulated lost acknowledgement after SQLite commit");
+    }
+    return {
+      code: output.code,
+      stdout: new TextDecoder().decode(output.stdout),
+      stderr: new TextDecoder().decode(output.stderr),
+    };
+  };
+  let rejected = false;
+  try {
+    await __moonTest.createMoonContextEngine(api).commitTurn(params);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected);
+  const replay = __moonTest.createMoonContextEngine(api);
+  assertEquals(await replay.commitTurn(params), { status: "duplicate" });
+  const changed = {
+    ...params,
+    messages: [params.messages[0], {
+      role: "assistant",
+      content: "Conflicting answer",
+      timestamp: 200,
+    }],
+  };
+  let conflict = false;
+  try {
+    await replay.commitTurn(changed);
+  } catch {
+    conflict = true;
+  }
+  assert(conflict);
+  const next = {
+    ...params,
+    advancementKey: `${params.advancementKey}-concurrent`,
+  };
+  const outcomes = await Promise.all([
+    __moonTest.createMoonContextEngine(api).commitTurn(next),
+    __moonTest.createMoonContextEngine(api).commitTurn(next),
+  ]);
+  assertEquals(outcomes.map((result) => result.status).sort(), [
+    "committed",
+    "duplicate",
+  ]);
+});
+
+Deno.test("optional extraction failure does not undo an accepted evidence commit", async () => {
+  const params = acceptedParams([
+    { role: "user", content: "Remember my preference for tea", timestamp: 100 },
+    { role: "assistant", content: "Understood", timestamp: 200 },
+  ]);
+  const evidenceId = __moonTest.acceptedTurnFromParams(params)
+    ?.evidenceSessionId;
+  let records = 0;
+  const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
+    failOpen: false,
+  });
+  api.runtime.system.runCommandWithTimeout = (argv) => {
+    if (argv.includes("record")) {
+      records += 1;
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          session_id: evidenceId,
+          changed: records === 1,
+        }),
+        stderr: "",
+      };
+    }
+    if (argv.includes("context")) {
+      throw new Error("optional extraction unavailable");
+    }
+    return {
+      code: 0,
+      stdout: JSON.stringify({ event_id: METRIC_REQUEST_ID }),
+      stderr: "",
+    };
+  };
+  const engine = __moonTest.createMoonContextEngine(api);
+  assertEquals(await engine.commitTurn(params), { status: "committed" });
+  assertEquals(await engine.commitTurn(params), { status: "duplicate" });
+});
+
+Deno.test("a turn without a visible final answer commits as an idempotent no-op", async () => {
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  const api = createApi({ code: 1, stdout: "", stderr: "must not run" }, calls);
+  const engine = __moonTest.createMoonContextEngine(api);
+  const params = acceptedParams([
+    { role: "user", content: "Hello", timestamp: 100 },
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "private reasoning" }],
+      timestamp: 200,
+    },
+  ]);
+  assertEquals(await engine.commitTurn(params), { status: "committed" });
+  assertEquals(calls, []);
 });

@@ -11,8 +11,17 @@ provide search. QMD and a separate vector service are not involved.
 
 After OpenClaw successfully completes a non-heartbeat turn, the adapter keeps
 the user request and final assistant answer, discards intermediate tool chatter,
-and records that pair as evidence. A stable turn fingerprint makes retries
-idempotent. The parent session and channel identity stay in sanitized metadata.
+and records that pair as evidence. OpenClaw's `commitTurn` callback supplies
+only the closed, accepted transcript range. A SHA-256 identity derived from its
+advancement key is committed with the evidence in one SQLite transaction. This
+makes retries and concurrent acknowledgements idempotent. The parent session and
+channel identity stay in sanitized metadata. Moon does not read the growing
+transcript during assembly or commit.
+
+Storage failures remain in OpenClaw's durable retry queue. Extraction runs only
+after a new evidence commit and is best effort: a crash between the commit and
+extraction can skip learning, while the evidence remains available. Heartbeats,
+disabled learning, and turns without a visible final answer are no-ops.
 
 The same operation is available manually:
 

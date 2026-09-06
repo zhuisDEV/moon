@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.5.3 - 2026-09-07
+
+- Implement OpenClaw 2026.9.2's fenced, durable accepted-turn contract so
+  Discord and other transcript-backed sessions select Moon instead of degrading
+  to the legacy context engine.
+- Commit accepted user/final-answer evidence with a SHA-256 advancement identity
+  in Moon's existing atomic SQLite transaction. Retried or concurrent commits
+  cannot duplicate evidence or repeat automatic learning. Storage failures
+  remain queued by OpenClaw, including when retrieval fails open.
+- Learn only from the host's closed, accepted turn range. Heartbeats, disabled
+  learning, and turns without a visible answer have no durable Moon effect.
+  Model-based extraction remains best effort after evidence commits.
+- Add boundary, retry, conflict, and real SQLite lost-acknowledgement tests.
+
 ## 2.5.2 - 2026-09-06
 
 - Fix JSON output for pinned updates: `moon update --version 2.5.2 --json` now

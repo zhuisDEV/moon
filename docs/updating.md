@@ -9,6 +9,16 @@ releases, or copies credentials.
 
 ## Read-only inspection
 
+Moon 2.5.3 fixes the live-turn fallback seen with 2.5.2 on OpenClaw 2026.9.2.
+From 2.5.2, use `moon update --version=2.5.3`; no gateway recovery helper or
+additional configuration migration is needed. After updating, check a real
+conversation: Moon context metrics should increase for non-trivial requests, and
+gateway logs must no longer report
+`current-turn transcript fencing is not
+declared` or
+`atomic idempotent turn advancement is not declared` for Moon. Database health
+alone cannot prove that the host selected the context engine.
+
 ```bash
 moon update --check
 moon --json update --check

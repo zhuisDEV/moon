@@ -16,8 +16,15 @@ The adapter keeps strict ownership boundaries:
   safeguard summarization call. OpenClaw still chooses safe transcript and tool
   boundaries, preserves recent turns, writes checkpoints, and owns rollback.
 - Retrieval failures fail open by default and preserve the original messages.
-- The after-turn hook stores only the user request and final assistant answer,
-  not intermediate tool traffic.
+- The durable `commitTurn` hook stores only the accepted user request and final
+  assistant answer. OpenClaw supplies the closed transcript range; Moon never
+  rereads the growing transcript. Its advancement identity and evidence commit
+  in one SQLite transaction, so retries cannot duplicate evidence or learning.
+- Storage failures reject the commit for OpenClaw's durable retry queue, even
+  with `failOpen` enabled. Model-based extraction is best effort after the
+  commit; a crash after the evidence write can skip extraction, but preserves
+  evidence. Heartbeats, disabled learning, and turns without a visible answer
+  are no-ops.
 - The configured primary or fallback model may propose at most three durable
   memories; exact-quote, numeric-entailment, confidence, importance, and
   correction checks run before a proposal reaches SQLite.

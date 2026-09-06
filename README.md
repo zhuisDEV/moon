@@ -46,6 +46,11 @@ explicit non-interactive invocation. Moon never updates in the background.
 Moon 2.5.1 requires OpenClaw 2026.9.2 or newer. The signed update manifest
 checks this before installation.
 
+Moon 2.5.3 implements the accepted-turn contract required by that host. Earlier
+adapters can load and pass database health while real chat turns fall back to
+OpenClaw's legacy context engine. Verify a live turn and context injection in
+addition to installation health; see [updating](docs/updating.md).
+
 If Moon 2.5.0 or earlier fails at `gateway stop --json` on OpenClaw 2026.9.2,
 use the documented
 [one-time recovery helper](docs/updating.md#recover-an-older-updater-on-openclaw-202692)
