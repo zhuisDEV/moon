@@ -3,13 +3,15 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.5.0 -->
+<!-- moon-version: 2.5.1 -->
 
 # Moon
 
 Use the installed `moon` binary. Normal OpenClaw conversations require no manual
 Moon commands: the adapter retrieves context, records completed turns, distills
 eligible durable memories, and drains embeddings automatically.
+
+Moon 2.5.1 requires OpenClaw 2026.9.2 or newer for detached model sessions.
 
 When `agents.defaults.compaction.provider` is `moon-local`, the adapter also
 generates compaction summaries with its configured provider-qualified model and
@@ -45,6 +47,13 @@ moon update --dry-run
 restart OpenClaw. `--dry-run` verifies the signed archive and complete plan but
 still performs no local mutation. Treat a `shadowed_executable` result as a hard
 stop: use the exact canonical command reported by Moon.
+
+Moon 2.5.1 forwards update approval to OpenClaw's non-interactive gateway stop.
+If an older updater fails at `gateway stop --json` on OpenClaw 2026.9.2, use the
+one-time recovery helper described in [docs/updating.md](docs/updating.md).
+Manually stopping the gateway does not repair the old updater. Preserve its
+signed-release checks and rollback transaction; do not overwrite an installed
+release binary to bypass the failure.
 
 ## Inspect safely
 

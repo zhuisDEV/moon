@@ -57,6 +57,11 @@ must advertise `6..=7`; advertising only `7..=7` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 
+Moon 2.5.1 requires OpenClaw 2026.9.2 for detached model sessions. The bundle
+operator defaults `--openclaw-min-version` to that floor; keep it aligned with
+the adapter package's `openclaw.compat.minGatewayVersion`. Do not lower the
+signed floor without verifying the required host capabilities.
+
 The command executes the candidate's offline JSON version check and refuses
 non-release, mismatched, dirty, or unverifiable binaries. `--allow-dirty` exists
 only for local development fixtures and must never be used for a published

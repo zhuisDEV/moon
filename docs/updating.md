@@ -36,6 +36,10 @@ verify that OpenClaw itself has both model routes:
 openclaw config get agents.defaults.model
 ```
 
+Moon 2.5.1 preflight rejects the retired fields below before staging or gateway
+downtime when the target is 2.4.0 or newer. Older installed updaters still need
+this preparation even when using the recovery helper.
+
 Back up the live OpenClaw configuration with owner-only permissions, then remove
 the retired Moon fields in one validated patch while the old adapter is still
 installed:
@@ -105,7 +109,9 @@ The transaction performs these durable phases:
    non-secret Moon integration settings.
 6. Stop OpenClaw, confirm the Moon worker has exited, materialize the immutable
    release directory, atomically switch `current`, install the skill, and run
-   numbered transactional migrations.
+   numbered transactional migrations. Moon 2.5.1 forwards the approved restart
+   plan as `gateway stop --force --json`, including when OpenClaw runs without
+   interactive standard input.
 7. Verify installed identities and hashes, database/queue health, OpenClaw
    config and plugin doctor results, loaded adapter version and slots, bounded
    gateway readiness, and one local hybrid retrieval canary.
@@ -121,6 +127,52 @@ and verifies rollback health before returning `rollback_completed`. If rollback
 cannot itself be proven, it returns `rollback_failed`, preserves the lock,
 journal, failed database, releases, and backup, and must not be reported as a
 safe failure.
+
+Moon records restart intent before requesting a stop, so a failed worker check
+after service shutdown still restores gateway availability. If the candidate
+gateway has already started, rollback stops it and waits for the Moon worker
+before restoring the old release or database. Failed rollback quiescence leaves
+the candidate files and database in place for recovery.
+
+## Recover an older updater on OpenClaw 2026.9.2
+
+Moon 2.5.0 and earlier invoke `gateway stop --json` without the non-interactive
+consent flag required by OpenClaw 2026.9.2. Manually stopping the gateway does
+not help: the updater issues its own stop command. `moon update --yes` approves
+Moon's transaction but cannot repair the old subprocess arguments.
+
+From a reviewed Moon 2.5.1 checkout, run the one-time recovery helper:
+
+```bash
+sh tools/recover-openclaw-update.sh --version 2.5.1 --dry-run
+sh tools/recover-openclaw-update.sh --version 2.5.1
+```
+
+First complete the provider-neutral routing preparation above if the installed
+configuration still contains the retired Codex-specific fields. The helper does
+not change configuration or credentials.
+
+The helper creates a private temporary command wrapper for this invocation. It
+adds `--force` only to the old updater's exact `gateway stop --json` call and
+forwards every other OpenClaw command unchanged to the original executable. The
+installed Moon still verifies signatures and hashes, presents its update
+confirmation, creates its rollback bundle, and validates the installed release.
+The wrapper is removed on exit; no signed binary or shell startup file is
+modified. Subsequent updates use the repaired updater normally.
+
+After a successful update, verify:
+
+```bash
+moon --version
+moon --json health
+openclaw gateway status
+openclaw plugins inspect moon --runtime --json
+```
+
+If an older updater fails after stopping the gateway, run
+`openclaw gateway start` to restore service, then inspect the error and retained
+journal before retrying. The helper fixes the old command arguments; it does not
+add the newer updater's rollback behaviour to an old executable.
 
 ## Layout and retained recovery evidence
 

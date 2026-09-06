@@ -43,6 +43,16 @@ and OpenClaw compatibility, then prints the exact plan without changing local
 state. Applying requires one interactive confirmation, or `--yes` for an
 explicit non-interactive invocation. Moon never updates in the background.
 
+Moon 2.5.1 requires OpenClaw 2026.9.2 or newer. The signed update manifest
+checks this before installation.
+
+If Moon 2.5.0 or earlier fails at `gateway stop --json` on OpenClaw 2026.9.2,
+use the documented
+[one-time recovery helper](docs/updating.md#recover-an-older-updater-on-openclaw-202692)
+from this checkout. Moon 2.5.1 forwards gateway-stop consent itself. Older
+Codex-specific model settings also require the configuration preparation in that
+guide before upgrading from Moon 2.3.x.
+
 Moon v2.1.0 cannot invoke an updater it does not contain. Its one-time v2.2.1
 bootstrap must therefore use the controlled, pinned release procedure in
 [docs/updating.md](docs/updating.md). The no-toolchain update promise begins

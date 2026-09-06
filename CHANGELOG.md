@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 2.5.1 - 2026-09-06
+
+- Require OpenClaw 2026.9.2 or newer for its detached model-session contract;
+  signed release manifests enforce this minimum before an update can apply.
+
+- Forward approved update consent to OpenClaw's non-interactive gateway stop,
+  and provide a temporary recovery helper for older installed Moon updaters.
+- Record gateway restart intent before shutdown and quiesce a running candidate
+  before rollback restores the prior release and database. Preserve recovery
+  evidence if rollback cannot stop the candidate safely.
+- Reject retired provider-routing settings during preflight before gateway
+  downtime, and include local compaction settings in the safe rollback snapshot.
+- Use OpenClaw's current `runEmbeddedAgent` capability and give each learning or
+  compaction model attempt a detached in-memory session instead of reusing the
+  live conversation transcript or requesting unsupported file-backed sessions.
+- Honour cancellation without starting fallback, reject partial/error model
+  results, exclude reasoning and commentary payloads, and respect the host's
+  compaction identifier policy and task working directory.
+
 ## 2.5.0 - 2026-08-23
 
 - Added the optional `moon-local` OpenClaw compaction provider, which generates

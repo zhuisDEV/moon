@@ -1,9 +1,12 @@
 {
   "name": "moon",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "description": "Local-first Moon memory and hybrid context adapter for OpenClaw",
   "openclaw": {
+    "compat": {
+      "minGatewayVersion": "2026.9.2"
+    },
     "extensions": [
       "./index.js"
     ]

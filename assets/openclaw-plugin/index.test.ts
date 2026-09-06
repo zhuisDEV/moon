@@ -72,7 +72,7 @@ function createApi(
         },
       },
       agent: {
-        runEmbeddedPiAgent: embeddedRunner,
+        runEmbeddedAgent: embeddedRunner,
       },
     },
     logger: {
@@ -344,12 +344,16 @@ Deno.test("adapter records one completed turn and distills a validated durable m
         },
       },
       agent: {
-        runEmbeddedPiAgent(params: Record<string, unknown>) {
+        runEmbeddedAgent(params: Record<string, unknown>) {
           modelCalls += 1;
           assertEquals(params.provider, "vllm");
           assertEquals(params.model, "qwen3.8-27b-uncensored-fp8");
           assertEquals(params.thinkLevel, "high");
           assertEquals(params.reasoningLevel, "off");
+          assertEquals(params.workspaceDir, "/tmp/task-workspace");
+          assertEquals(params.timeoutMs, 120_000);
+          assertEquals(params.sessionPersistence, "detached");
+          assert(!("sessionFile" in params));
           return {
             payloads: [{
               text: JSON.stringify({
@@ -376,6 +380,7 @@ Deno.test("adapter records one completed turn and distills a validated durable m
     sessionId: "session-1",
     sessionKey: "agent:main:discord:channel:123",
     sessionFile: "/tmp/session-1.jsonl",
+    runtimeContext: { cwd: "/tmp/task-workspace" },
     messages: [user, assistant],
     prePromptMessageCount: 0,
   });
@@ -520,6 +525,10 @@ Deno.test("model routing uses the OpenClaw primary model", async () => {
   assertEquals(embeddedCalls[0]?.modelFallbacksOverride, []);
   assertEquals(embeddedCalls[0]?.modelRun, true);
   assertEquals(embeddedCalls[0]?.promptMode, "none");
+  assertEquals(embeddedCalls[0]?.disableTools, true);
+  assertEquals(embeddedCalls[0]?.sessionPersistence, "detached");
+  assert(!("sessionFile" in embeddedCalls[0]));
+  assertEquals(embeddedCalls[0]?.timeoutMs, 120_000);
   assertEquals(calls.length, 0);
 });
 
@@ -537,7 +546,7 @@ Deno.test("model routing uses a provider-neutral fallback", async () => {
     runtime: {
       ...baseApi.runtime,
       agent: {
-        runEmbeddedPiAgent(params: Record<string, unknown>) {
+        runEmbeddedAgent(params: Record<string, unknown>) {
           modelCalls.push(params);
           if (params.provider === "vllm") {
             throw new Error("primary unavailable");
@@ -563,6 +572,208 @@ Deno.test("model routing uses a provider-neutral fallback", async () => {
   assertEquals(modelCalls.map((call) => call.thinkLevel), ["off", "ultra"]);
   assertEquals(modelCalls.map((call) => call.reasoningLevel), ["off", "off"]);
   assertEquals(calls.length, 0);
+});
+
+Deno.test("model attempts use detached identities without a file-backed transcript target", async () => {
+  const sessionIds: string[] = [];
+  const sessionKeys: string[] = [];
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    (params) => {
+      assertEquals(params.sessionPersistence, "detached");
+      assert(!("sessionFile" in params));
+      sessionIds.push(String(params.sessionId));
+      sessionKeys.push(String(params.sessionKey));
+      if (params.provider === "vllm") {
+        throw new Error("primary unavailable");
+      }
+      return { payloads: [{ text: "READY" }] };
+    },
+  );
+  await __moonTest.runModelWithFallback(
+    api,
+    __moonTest.resolveSettings(api),
+    "Return READY.",
+    {
+      sessionFile: "/tmp/live-transcript-must-not-be-used.jsonl",
+      sessionId: "live-session",
+      sessionKey: "agent:research:discord:channel:123",
+    },
+  );
+  assertEquals(new Set(sessionIds).size, 2);
+  assert(!sessionIds.includes("live-session"));
+  assertEquals(new Set(sessionKeys).size, 2);
+  assert(
+    sessionKeys.every((key) =>
+      key.startsWith("agent:research:discord:channel:123:moon-model:")
+    ),
+  );
+});
+
+Deno.test("model routing accepts only final answer payloads", async () => {
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    () => ({
+      payloads: [
+        { text: "private reasoning", isReasoning: true },
+        { text: "working on it", isCommentary: true },
+        { text: '{"eligible":false}' },
+      ],
+    }),
+  );
+  const result = await __moonTest.runModelWithFallback(
+    api,
+    __moonTest.resolveSettings(api),
+    "Return JSON.",
+    { validateOutput: JSON.parse },
+  );
+  assertEquals(result.output, '{"eligible":false}');
+  assertEquals(result.validatedOutput, { eligible: false });
+});
+
+Deno.test("model routing honours cancellation before starting inference", async () => {
+  let calls = 0;
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    () => {
+      calls += 1;
+      return { payloads: [{ text: "READY" }] };
+    },
+  );
+  const controller = new AbortController();
+  controller.abort(new Error("private cancellation details"));
+  let message = "";
+  try {
+    await __moonTest.runModelWithFallback(
+      api,
+      __moonTest.resolveSettings(api),
+      "Return READY.",
+      { signal: controller.signal },
+    );
+  } catch (error) {
+    message = String(error);
+  }
+  assertEquals(calls, 0);
+  assert(message.includes("model request cancelled"));
+  assert(!message.includes("private cancellation details"));
+});
+
+Deno.test("cancelling an active model request stops fallback routing", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    (params) => {
+      calls += 1;
+      assert(params.abortSignal === controller.signal);
+      assertEquals(params.timeoutMs, 4_000);
+      controller.abort();
+      return { payloads: [{ text: "partial response" }] };
+    },
+  );
+  let message = "";
+  try {
+    await __moonTest.runModelWithFallback(
+      api,
+      __moonTest.resolveSettings(api),
+      "Return READY.",
+      { signal: controller.signal, timeoutMs: 4_000 },
+    );
+  } catch (error) {
+    message = String(error);
+  }
+  assertEquals(calls, 1);
+  assert(message.includes("model request cancelled"));
+});
+
+Deno.test("runtime abort metadata rejects partial output without a fallback", async () => {
+  let calls = 0;
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    () => {
+      calls += 1;
+      return {
+        payloads: [{ text: "partial response" }],
+        meta: { aborted: true },
+      };
+    },
+  );
+  let message = "";
+  try {
+    await __moonTest.runModelWithFallback(
+      api,
+      __moonTest.resolveSettings(api),
+      "Return READY.",
+    );
+  } catch (error) {
+    message = String(error);
+  }
+  assertEquals(calls, 1);
+  assert(message.includes("model request cancelled"));
+});
+
+Deno.test("runtime error metadata rejects partial output and allows model fallback", async () => {
+  const calls: string[] = [];
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    (params) => {
+      calls.push(String(params.provider));
+      return params.provider === "vllm"
+        ? {
+          payloads: [{ text: "partial response" }],
+          meta: {
+            error: { kind: "incomplete_turn", message: "private details" },
+          },
+        }
+        : { payloads: [{ text: "READY" }] };
+    },
+  );
+  const outcome = await __moonTest.runModelWithFallback(
+    api,
+    __moonTest.resolveSettings(api),
+    "Return READY.",
+  );
+  assertEquals(calls, ["vllm", "openai"]);
+  assertEquals(outcome.output, "READY");
+  assertEquals(outcome.modelRoute, "fallback");
+});
+
+Deno.test("runtime timeout metadata allows fallback without accepting partial output", async () => {
+  const calls: string[] = [];
+  const api = createApi(
+    { code: 1, stdout: "", stderr: "should not run" },
+    [],
+    {},
+    (params) => {
+      calls.push(String(params.provider));
+      return params.provider === "vllm"
+        ? {
+          payloads: [{ text: "partial response" }],
+          meta: { aborted: true, timeoutPhase: "provider" },
+        }
+        : { payloads: [{ text: "READY" }] };
+    },
+  );
+  const outcome = await __moonTest.runModelWithFallback(
+    api,
+    __moonTest.resolveSettings(api),
+    "Return READY.",
+  );
+  assertEquals(calls, ["vllm", "openai"]);
+  assertEquals(outcome.output, "READY");
+  assertEquals(outcome.modelRoute, "fallback");
 });
 
 Deno.test("local compaction uses an isolated reasoning-off model run", async () => {
@@ -614,7 +825,8 @@ Deno.test("local compaction uses an isolated reasoning-off model run", async () 
       "Earlier work used only local models.",
     ),
   );
-  assert(String(embeddedCalls[0]?.sessionFile).includes("moon-compaction-"));
+  assertEquals(embeddedCalls[0]?.sessionPersistence, "detached");
+  assert(!("sessionFile" in embeddedCalls[0]));
 });
 
 Deno.test("local compaction redacts provider failure details", async () => {
@@ -635,6 +847,25 @@ Deno.test("local compaction redacts provider failure details", async () => {
   assert(message.includes("Moon local compaction model request failed"));
   assert(!message.includes("must-not-leak"));
   assert(!message.includes("private transcript"));
+});
+
+Deno.test("local compaction follows host identifier-preservation policy", () => {
+  const custom = __moonTest.compactionPrompt({
+    messages: [],
+    summarizationInstructions: {
+      identifierPolicy: "custom",
+      identifierInstructions: "Keep only ticket identifiers exactly.",
+    },
+  });
+  assert(custom.includes("Keep only ticket identifiers exactly."));
+  assert(!custom.includes("Preserve exact opaque identifiers"));
+  const off = __moonTest.compactionPrompt({
+    messages: [],
+    summarizationInstructions: { identifierPolicy: "off" },
+  });
+  assert(!off.includes("Preserve exact opaque identifiers"));
+  const strict = __moonTest.compactionPrompt({ messages: [] });
+  assert(strict.includes("Preserve exact opaque identifiers"));
 });
 
 Deno.test("local compaction rejects an OpenClaw error payload", async () => {
@@ -858,7 +1089,7 @@ Deno.test("model routing does not expose provider error bodies", async () => {
     runtime: {
       ...baseApi.runtime,
       agent: {
-        runEmbeddedPiAgent() {
+        runEmbeddedAgent() {
           throw new Error("remote body API_KEY=must-not-print");
         },
       },

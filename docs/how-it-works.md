@@ -73,8 +73,8 @@ An assistant merely recalling an existing memory cannot confirm that same
 memory. Confirmation of an active claim requires an exact quote from the user's
 new message, preventing circular self-citation.
 
-The model prompt stays inside OpenClaw's session-bound embedded runner. Proposal
-payloads travel to the Moon binary through stdin, not process arguments.
+The model prompt stays inside OpenClaw's embedded runner. Proposal payloads
+travel to the Moon binary through stdin, not process arguments.
 
 Canonical keys drive consolidation:
 
@@ -175,13 +175,22 @@ Both values use OpenClaw's provider-qualified `provider/model` form. Providers
 such as vLLM, OpenAI, Anthropic, or Google therefore use the same Moon path.
 OpenClaw owns their authentication and transport.
 
-If the primary request fails, the adapter tries the fallback once. If both fail,
-learning follows the configured fail-open policy. Moon does not persist or print
-provider diagnostics because they may contain credentials or arbitrary remote
-response bodies. `primaryReasoning` and `fallbackReasoning` default to `off`
-independently of provider. Their overrides are passed as OpenClaw `thinkLevel`
-values, while visible reasoning output remains disabled, so the two routes may
-use different effort without exposing hidden reasoning.
+Each model attempt uses OpenClaw's `runEmbeddedAgent` capability with detached
+in-memory persistence and a unique child session key. Learning never reuses the
+live conversation's transcript or asks for a file-backed session. This requires
+OpenClaw 2026.9.2 or newer, which the signed release manifest enforces. This
+keeps existing model routing without adding model-override permissions for the
+newer `llm.complete` capability.
+
+If the primary request fails, the adapter tries the fallback once. Cancellation
+stops routing immediately; partial output from failed or timed-out runs is not
+accepted. If both routes fail, learning follows the configured fail-open policy.
+Moon does not persist or print provider diagnostics because they may contain
+credentials or arbitrary remote response bodies. `primaryReasoning` and
+`fallbackReasoning` default to `off` independently of provider. Their overrides
+are passed as OpenClaw `thinkLevel` values, while visible reasoning output
+remains disabled, so the two routes may use different effort without exposing
+hidden reasoning.
 
 ### 6. Before an agent turn: assemble a context packet
 

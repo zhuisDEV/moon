@@ -457,6 +457,10 @@ fn allowed_moon_config_keys() -> &'static [&'static str] {
         "fallbackModel",
         "primaryReasoning",
         "fallbackReasoning",
+        "compactionModel",
+        "compactionReasoning",
+        "compactionTimeoutMs",
+        "compactionMaxTokens",
         "modelTimeoutMs",
         "dimensions",
         "scope",
@@ -786,6 +790,23 @@ impl SystemOpenClaw {
         }
         Ok(output)
     }
+
+    fn stop_with_worker_check(&self, worker_is_running: impl Fn() -> Result<bool>) -> Result<()> {
+        // The caller has already approved the update, including gateway downtime.
+        // OpenClaw requires explicit consent when the stop runs through piped stdio.
+        self.run(&["gateway", "stop", "--force", "--json"])?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while worker_is_running()? {
+            if std::time::Instant::now() >= deadline {
+                return fail(
+                    "active_embedding_lease",
+                    "a Moon worker remained active after OpenClaw stopped",
+                );
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Ok(())
+    }
 }
 
 impl OpenClawControl for SystemOpenClaw {
@@ -800,18 +821,7 @@ impl OpenClawControl for SystemOpenClaw {
     }
 
     fn stop(&self) -> Result<()> {
-        self.run(&["gateway", "stop", "--json"])?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while moon_worker_is_running()? {
-            if std::time::Instant::now() >= deadline {
-                return fail(
-                    "active_embedding_lease",
-                    "a Moon worker remained active after OpenClaw stopped",
-                );
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        Ok(())
+        self.stop_with_worker_check(moon_worker_is_running)
     }
 
     fn start(&self) -> Result<()> {
@@ -965,6 +975,10 @@ fn preflight_update_with_available_bytes(
     available_override: Option<u64>,
 ) -> Result<UpdatePlan> {
     let plan = plan_update(context, release)?;
+    validate_provider_routing_transition(
+        context.openclaw.config_path.as_deref(),
+        &plan.to_version,
+    )?;
     let asset = release.asset_for_current_target()?;
     asset
         .verify_archive_bytes(archive_bytes)
@@ -992,6 +1006,52 @@ fn preflight_update_with_available_bytes(
     }
     ensure_openclaw_version(&openclaw.version()?, &asset.bundle.openclaw_min_version)?;
     Ok(plan)
+}
+
+fn validate_provider_routing_transition(
+    config_path: Option<&Path>,
+    target_version: &str,
+) -> Result<()> {
+    if Version::parse(target_version)? < Version::new(2, 4, 0) {
+        return Ok(());
+    }
+    let Some(path) = config_path else {
+        return Ok(());
+    };
+    let invalid_config = || UpdateFailure {
+        code: "plugin_validation_failed",
+        message: "OpenClaw config is unreadable, oversized, or invalid JSON5".to_owned(),
+    };
+    let bytes = read_bounded_file(path, MAX_CONFIG_BYTES).map_err(|_| invalid_config())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid_config())?;
+    let root: Value = json5::from_str(text).map_err(|_| invalid_config())?;
+    let Some(config) = root
+        .pointer("/plugins/entries/moon/config")
+        .and_then(Value::as_object)
+    else {
+        return Ok(());
+    };
+    // These values are deliberately excluded from the persisted safe snapshot.
+    let retired = [
+        "codexProvider",
+        "codexModel",
+        "codexReasoning",
+        "learningModel",
+        "learningReasoning",
+    ]
+    .into_iter()
+    .filter(|key| config.contains_key(*key))
+    .collect::<Vec<_>>();
+    if !retired.is_empty() {
+        return fail(
+            "plugin_validation_failed",
+            format!(
+                "Moon {target_version} rejects retired OpenClaw plugin settings: {}. Follow the provider-neutral routing transition in docs/updating.md before retrying; no configuration was changed",
+                retired.join(", ")
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn validate_openclaw_snapshot(context: &ApplyContext) -> Result<()> {
@@ -1153,8 +1213,11 @@ fn apply_update_inner(
         persist_journal(&journal_path, &journal)?;
         inject_crash(crash_after, journal.phase)?;
 
-        openclaw.stop()?;
+        // Persist restart intent before the stop: service shutdown can succeed
+        // even if the command or subsequent worker-quiescence check fails.
         journal.gateway_stopped = true;
+        persist_journal(&journal_path, &journal)?;
+        openclaw.stop()?;
         journal.phase = UpdatePhase::Quiesced;
         persist_journal(&journal_path, &journal)?;
         inject_crash(crash_after, journal.phase)?;
@@ -1841,6 +1904,9 @@ fn rollback_update(
     openclaw: &dyn OpenClawControl,
 ) -> Result<()> {
     if journal.current_switched {
+        // The candidate gateway may already be running. Quiesce its worker
+        // before changing the release or restoring SQLite and its sidecars.
+        openclaw.stop()?;
         let prior = journal
             .prior_release
             .as_deref()
@@ -1868,7 +1934,7 @@ fn rollback_update(
             &journal.transaction_id,
         )?;
     }
-    if journal.gateway_stopped {
+    if journal.gateway_stopped || journal.current_switched {
         openclaw.start()?;
         openclaw.wait_ready(Duration::from_secs(60))?;
         openclaw.validate(&journal.from_version, &context.openclaw)?;
@@ -2321,6 +2387,10 @@ mod tests {
                   mode: "hybrid",
                   primaryModel: "vllm/local-primary",
                   fallbackModel: "openai/remote-fallback",
+                  compactionModel: "vllm/local-compaction",
+                  compactionReasoning: "off",
+                  compactionTimeoutMs: 180000,
+                  compactionMaxTokens: 4096,
                   codexProvider: "legacy-must-not-copy",
                   token: "secret"
                 } } },
@@ -2347,10 +2417,91 @@ mod tests {
         assert!(serialized.contains("moonPath"));
         assert!(serialized.contains("vllm/local-primary"));
         assert!(serialized.contains("openai/remote-fallback"));
+        assert_eq!(copied["compactionModel"], "vllm/local-compaction");
+        assert_eq!(copied["compactionReasoning"], "off");
+        assert_eq!(copied["compactionTimeoutMs"], 180000);
+        assert_eq!(copied["compactionMaxTokens"], 4096);
         assert!(!serialized.contains("codexProvider"));
         assert!(!serialized.contains("legacy-must-not-copy"));
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("token"));
+    }
+
+    #[test]
+    fn provider_routing_preflight_rejects_retired_settings_before_update_writes() {
+        for key in [
+            "codexProvider",
+            "codexModel",
+            "codexReasoning",
+            "learningModel",
+            "learningReasoning",
+        ] {
+            let mut fixture = transaction_fixture();
+            fixture.release.manifest.moon_version = "2.4.0".to_owned();
+            let config_path = fixture.context.openclaw.config_path.as_ref().unwrap();
+            let mut config: Value =
+                serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+            config["plugins"]["entries"]["moon"]["config"][key] =
+                Value::String("private-retired-setting-value".to_owned());
+            let config_bytes = serde_json::to_vec(&config).unwrap();
+            fs::write(config_path, &config_bytes).unwrap();
+            let openclaw = MockOpenClaw::default();
+            let error = apply_update(
+                &fixture.context,
+                &fixture.release,
+                &fixture.archive,
+                &openclaw,
+            )
+            .expect_err("retired setting must fail preflight");
+            assert_eq!(error_code(&error), Some("plugin_validation_failed"));
+            let message = format!("{error:#}");
+            assert!(message.contains(key));
+            assert!(message.contains("docs/updating.md"));
+            assert!(!message.contains("private-retired-setting-value"));
+            assert!(!fixture.context.home.join("update").exists());
+            assert!(openclaw.events.lock().unwrap().is_empty());
+            assert_eq!(fs::read(config_path).unwrap(), config_bytes);
+            let snapshot = inspect_openclaw_config_at(Some(config_path)).unwrap();
+            assert!(!serde_json::to_string(&snapshot).unwrap().contains(key));
+        }
+    }
+
+    #[test]
+    fn provider_routing_preflight_accepts_supported_settings_and_legacy_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("openclaw.json");
+        fs::write(
+            &config,
+            "{plugins: {entries: {moon: {config: {codexModel: null}}}}}",
+        )
+        .unwrap();
+        validate_provider_routing_transition(Some(&config), "2.3.2").unwrap();
+        assert!(validate_provider_routing_transition(Some(&config), "2.4.0").is_err());
+        fs::write(
+            &config,
+            "{plugins: {entries: {moon: {config: {primaryModel: 'vllm/local', compactionModel: 'vllm/summary', primaryReasoning: 'off'}}}}}",
+        )
+        .unwrap();
+        validate_provider_routing_transition(Some(&config), "2.4.0").unwrap();
+        validate_provider_routing_transition(Some(&config), "2.5.1").unwrap();
+    }
+
+    #[test]
+    fn provider_routing_preflight_bounds_config_and_hides_parse_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("openclaw.json");
+        fs::write(&config, "{secret: private-malformed-config-value").unwrap();
+        let error = validate_provider_routing_transition(Some(&config), "2.4.0")
+            .expect_err("invalid JSON5 must fail");
+        assert_eq!(error_code(&error), Some("plugin_validation_failed"));
+        assert!(!format!("{error:#}").contains("private-malformed-config-value"));
+        File::create(&config)
+            .unwrap()
+            .set_len(MAX_CONFIG_BYTES + 1)
+            .unwrap();
+        let error = validate_provider_routing_transition(Some(&config), "2.4.0")
+            .expect_err("oversized config must fail");
+        assert_eq!(error_code(&error), Some("plugin_validation_failed"));
     }
 
     #[test]
@@ -2541,9 +2692,62 @@ mod tests {
         reclaimed.release().unwrap();
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn approved_gateway_stop_passes_noninteractive_consent_before_checking_workers() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("openclaw");
+        write_new_file(
+            &executable,
+            br##"#!/bin/sh
+if [ "$*" != "gateway stop --force --json" ]; then
+    printf '%s\n' '{"ok":false,"error":"non-interactive stop requires --force"}'
+    exit 1
+fi
+printf '%s\n' "$@" > "$0.calls"
+printf '%s\n' '{"action":"stop","ok":true}'
+"##,
+            0o700,
+        )
+        .unwrap();
+        let openclaw = SystemOpenClaw { executable };
+        let worker_checks = std::cell::Cell::new(0);
+        openclaw
+            .stop_with_worker_check(|| {
+                assert!(temp.path().join("openclaw.calls").exists());
+                worker_checks.set(worker_checks.get() + 1);
+                Ok(false)
+            })
+            .unwrap();
+        assert_eq!(worker_checks.get(), 1);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("openclaw.calls")).unwrap(),
+            "gateway\nstop\n--force\n--json\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejected_gateway_stop_does_not_continue_to_worker_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("openclaw");
+        write_new_file(
+            &executable,
+            b"#!/bin/sh\nprintf '%s\\n' 'stop failed' >&2\nexit 1\n",
+            0o700,
+        )
+        .unwrap();
+        let openclaw = SystemOpenClaw { executable };
+        let error = openclaw
+            .stop_with_worker_check(|| panic!("worker check must follow a successful stop"))
+            .unwrap_err();
+        assert_eq!(error_code(&error), Some("plugin_validation_failed"));
+    }
+
     #[derive(Default)]
     struct MockOpenClaw {
         events: Mutex<Vec<String>>,
+        stop_failure_call: Option<usize>,
         validation_failures: Mutex<usize>,
         ready_failures: Mutex<usize>,
     }
@@ -2554,7 +2758,18 @@ mod tests {
         }
 
         fn stop(&self) -> Result<()> {
-            self.events.lock().unwrap().push("stop".to_owned());
+            let mut events = self.events.lock().unwrap();
+            events.push("stop".to_owned());
+            let calls = events
+                .iter()
+                .filter(|event| event.as_str() == "stop")
+                .count();
+            if self.stop_failure_call == Some(calls) {
+                return fail(
+                    "active_embedding_lease",
+                    "injected failure after service stop",
+                );
+            }
             Ok(())
         }
 
@@ -2898,6 +3113,42 @@ mod tests {
     }
 
     #[test]
+    fn partial_gateway_stop_failure_restarts_without_switching_or_restoring_database() {
+        let fixture = transaction_fixture();
+        let prior_binary = fs::read(fixture.context.home.join("bin/moon")).unwrap();
+        let openclaw = MockOpenClaw {
+            stop_failure_call: Some(1),
+            ..MockOpenClaw::default()
+        };
+        let error = apply_update(
+            &fixture.context,
+            &fixture.release,
+            &fixture.archive,
+            &openclaw,
+        )
+        .expect_err("injected post-stop failure");
+        assert_eq!(error_code(&error), Some("rollback_completed"));
+        assert_eq!(
+            fs::read(fixture.context.home.join("bin/moon")).unwrap(),
+            prior_binary
+        );
+        assert!(healthy_runtime(&fixture.context).unwrap().ok);
+        assert!(!fixture.context.home.join("update/update.lock").exists());
+        assert_eq!(
+            fs::read_dir(fixture.context.home.join("state"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("failed-"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            openclaw.events.lock().unwrap().as_slice(),
+            ["stop", "start", "ready", "validate:2.1.0"]
+        );
+    }
+
+    #[test]
     fn post_switch_failure_restores_prior_release_database_and_gateway() {
         let fixture = transaction_fixture();
         let openclaw = MockOpenClaw {
@@ -2926,10 +3177,54 @@ mod tests {
                 "start",
                 "ready",
                 "validate:2.2.0",
+                "stop",
                 "start",
                 "ready",
                 "validate:2.1.0"
             ]
+        );
+    }
+
+    #[test]
+    fn rollback_stop_failure_preserves_candidate_runtime_and_database() {
+        let fixture = transaction_fixture();
+        let openclaw = MockOpenClaw {
+            stop_failure_call: Some(2),
+            validation_failures: Mutex::new(1),
+            ..MockOpenClaw::default()
+        };
+        let error = apply_update(
+            &fixture.context,
+            &fixture.release,
+            &fixture.archive,
+            &openclaw,
+        )
+        .expect_err("injected rollback stop failure");
+        assert_eq!(error_code(&error), Some("rollback_failed"));
+        assert_eq!(
+            fs::canonicalize(fixture.context.home.join("current")).unwrap(),
+            fs::canonicalize(fixture.context.home.join("releases/2.2.0")).unwrap()
+        );
+        assert!(fixture.context.home.join("state/moon.sqlite").is_file());
+        assert!(fixture.context.home.join("update/update.lock").exists());
+        assert!(
+            fs::read_dir(fixture.context.home.join("state"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains("failed-"))
+        );
+        let journal_path = fs::read_dir(fixture.context.home.join("update/journals"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let journal: UpdateJournal =
+            serde_json::from_slice(&fs::read(journal_path).unwrap()).unwrap();
+        assert_eq!(journal.phase, UpdatePhase::RollbackFailed);
+        assert_eq!(
+            openclaw.events.lock().unwrap().as_slice(),
+            ["stop", "start", "ready", "validate:2.2.0", "stop"]
         );
     }
 
@@ -2955,7 +3250,15 @@ mod tests {
         let events = openclaw.events.lock().unwrap();
         assert_eq!(
             events.as_slice(),
-            ["stop", "start", "ready", "start", "ready", "validate:2.1.0"]
+            [
+                "stop",
+                "start",
+                "ready",
+                "stop",
+                "start",
+                "ready",
+                "validate:2.1.0"
+            ]
         );
     }
 
@@ -2988,7 +3291,7 @@ mod tests {
         assert_eq!(journal.error_code.as_deref(), Some("migration_failed"));
         assert_eq!(
             openclaw.events.lock().unwrap().as_slice(),
-            ["stop", "start", "ready", "validate:2.1.0"]
+            ["stop", "stop", "start", "ready", "validate:2.1.0"]
         );
     }
 
@@ -3188,6 +3491,15 @@ mod tests {
                     fs::canonicalize(fixture.context.home.join("current")).unwrap(),
                     fs::canonicalize(fixture.context.home.join("releases/2.1.0")).unwrap(),
                     "phase {phase:?}"
+                );
+                assert!(
+                    openclaw.events.lock().unwrap().ends_with(&[
+                        "stop".to_owned(),
+                        "start".to_owned(),
+                        "ready".to_owned(),
+                        "validate:2.1.0".to_owned(),
+                    ]),
+                    "recovery must restart the old gateway after phase {phase:?}"
                 );
             }
         }

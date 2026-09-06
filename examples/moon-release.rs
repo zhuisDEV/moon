@@ -107,7 +107,7 @@ struct BundleArgs {
     /// Database schema produced by this release after migration.
     #[arg(long)]
     database_schema_max: i64,
-    #[arg(long, default_value = "2026.7.1")]
+    #[arg(long, default_value = "2026.9.2")]
     openclaw_min_version: String,
     /// Permit development fixtures from dirty or unverifiable source state.
     #[arg(long)]
@@ -930,6 +930,37 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("--database-schema-min"));
         assert!(message.contains("--database-schema-max"));
+    }
+
+    #[test]
+    fn bundle_host_floor_matches_the_adapter_capability_requirement() {
+        let cli = Cli::try_parse_from([
+            "moon-release",
+            "bundle",
+            "--binary",
+            "/tmp/moon",
+            "--output-dir",
+            "/tmp/release",
+            "--minimum-os-version",
+            "13.0",
+            "--database-schema-min",
+            "6",
+            "--database-schema-max",
+            "7",
+        ])
+        .expect("explicit bundle inputs");
+        let ReleaseCommand::Bundle(args) = cli.command else {
+            panic!("bundle command")
+        };
+        let package: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/openclaw-plugin/package.json")).unwrap();
+        assert_eq!(
+            package
+                .pointer("/openclaw/compat/minGatewayVersion")
+                .and_then(serde_json::Value::as_str),
+            Some(args.openclaw_min_version.as_str())
+        );
+        assert_eq!(args.openclaw_min_version, "2026.9.2");
     }
 
     #[test]
