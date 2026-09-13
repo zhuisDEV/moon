@@ -53,7 +53,7 @@ cargo run --locked --example moon-release -- bundle \
 
 The schema range is intentionally required. Set the minimum to the oldest
 installed schema the release can migrate or open, and the maximum to the schema
-the release produces. For example, Moon 2.6.0 migrates schema 6 or 7 to schema 8
+the release produces. For example, Moon 2.6.1 migrates schema 6 or 7 to schema 8
 and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.

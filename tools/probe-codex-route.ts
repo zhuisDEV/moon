@@ -256,7 +256,7 @@ export class RpcClient {
 
   async notify(method: string, params: JsonObject = {}) {
     if (this.failure) throw this.failure;
-    let timer: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         this.writer.write(
@@ -281,7 +281,7 @@ export class RpcClient {
   ): Promise<JsonObject> {
     if (this.failure) throw this.failure;
     const id = this.nextId++;
-    let timer: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const reply = new Promise<JsonObject>((resolve, reject) => {
       timer = setTimeout(() => {
         this.pending.delete(id);

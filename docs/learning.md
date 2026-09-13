@@ -5,7 +5,7 @@ unprocessed evidence in daily batches, compares it with related memories and
 their original evidence, and proposes confirmations, corrections, exact-content
 merges, or review items. L2 is disabled by default.
 
-These commands require Moon 2.6.0 or newer. Upgrading does not automatically
+These commands require Moon 2.6.1 or newer. Upgrading does not automatically
 enable daily synthesis. For a source checkout, run `cargo build --locked` and
 use `./target/debug/moon` in place of `moon` in the isolated examples below.
 

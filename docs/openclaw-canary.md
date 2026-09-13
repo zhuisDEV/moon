@@ -258,7 +258,7 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.6.0 or newer, back up the database and configuration,
+Before deploying Moon 2.6.1 or newer, back up the database and configuration,
 rehearse schema 8 on a copy, and retain the prior binary with its matching
 database backup. The release schema range is 6–8. Do not change live
 configuration, install the adapter, restart the gateway, or enable daily L2

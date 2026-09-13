@@ -3,7 +3,7 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.6.0 -->
+<!-- moon-version: 2.6.1 -->
 
 # Moon
 
@@ -197,7 +197,7 @@ verified plan, preserve its rollback bundle, and never add `--yes` merely to
 bypass a missing confirmation. Never test mutation against `~/.moon`; pass an
 explicit temporary `--home`.
 
-Moon 2.6.0's L1/L2 implementation migrates to schema 8, with release
+Moon 2.6.1's L1/L2 implementation migrates to schema 8, with release
 compatibility from schema 6 through 8. Back up both database and configuration
 before deployment. Preserve the prior binary with its matching database backup;
 do not open schema 8 with an older binary. Runtime `moon.toml` sits outside

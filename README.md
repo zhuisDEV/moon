@@ -343,7 +343,7 @@ tools disabled. The current native Codex backend ignores the requested
 `max_output_tokens`; input, timeout, batch, and attempt caps are enforced
 separately. A routing smoke test does not establish memory quality.
 
-Moon 2.6.0 introduces these learning changes and migrates storage to schema 8.
+Moon 2.6.1 introduces these learning changes and migrates storage to schema 8.
 Back up the database and configuration before deploying, and retain a matching
 database backup for the previous binary. Runtime `moon.toml` lives outside
 release directories and survives updates.

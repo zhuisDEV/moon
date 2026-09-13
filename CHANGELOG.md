@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-## 2.6.0 - 2026-09-14
+## 2.6.1 - 2026-09-14
+
+The unpublished `v2.6.0` candidate was superseded before signing because its
+diagnostic tests did not type-check under Deno 2.9.6. This release uses portable
+timer handle types and retains the original candidate tag without rewriting it.
 
 - Configure L1 distillation and daily L2 synthesis independently in runtime
   `moon.toml`, including models, effort, fallback, timeouts, budgets, and
