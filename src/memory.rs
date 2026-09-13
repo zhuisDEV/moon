@@ -637,6 +637,7 @@ pub(crate) fn distill_in_transaction(
             &citation,
             redacted_quote.value.trim(),
         )?;
+        sync_memory_indexes(transaction, *document_id)?;
         let evidence_count = citation_count(transaction, *document_id)?;
         return Ok(DistillOutcome {
             document_id: *document_id,
@@ -773,6 +774,7 @@ pub(crate) fn distill_in_transaction(
         &citation,
         redacted_quote.value.trim(),
     )?;
+    sync_memory_indexes(transaction, outcome.document_id)?;
     let evidence_count = citation_count(transaction, outcome.document_id)?;
 
     Ok(DistillOutcome {
@@ -787,6 +789,49 @@ pub(crate) fn distill_in_transaction(
         evidence_count,
         redactions,
     })
+}
+
+pub(crate) fn sync_memory_indexes(transaction: &Transaction<'_>, document_id: i64) -> Result<()> {
+    let at_ms = now_ms();
+    let eligible = transaction.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM documents d JOIN memory_items m ON m.document_id = d.id
+             WHERE d.id = ?1 AND d.active = 1 AND m.superseded_by IS NULL
+               AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?2)
+         )",
+        params![document_id, at_ms],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !eligible {
+        // Historical observations still keep their immutable content and
+        // citations, but must not schedule work for an already expired claim.
+        transaction.execute(
+            "DELETE FROM embedding_queue WHERE chunk_id IN (
+                 SELECT id FROM chunks WHERE document_id = ?1
+             )",
+            [document_id],
+        )?;
+        return Ok(());
+    }
+
+    // A fresh confirmation can revive an unchanged claim after index rebuild
+    // removed its expired cache. Reuse any surviving vectors and leases.
+    transaction.execute(
+        "INSERT INTO chunk_fts(rowid, title, content, source_uri, scope, source_kind)
+         SELECT c.id, d.title, c.content, d.source_uri, d.scope, d.source_kind
+         FROM chunks c JOIN documents d ON d.id = c.document_id
+         WHERE d.id = ?1 AND NOT EXISTS(
+             SELECT 1 FROM chunk_fts WHERE rowid = c.id
+         )",
+        [document_id],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO embedding_queue(chunk_id, queued_at_ms, priority)
+         SELECT id, ?2, 100 FROM chunks
+         WHERE document_id = ?1 AND embedding_model IS NULL",
+        params![document_id, at_ms],
+    )?;
+    Ok(())
 }
 
 fn is_relevant_context_hit(query: &str, content: &str) -> bool {

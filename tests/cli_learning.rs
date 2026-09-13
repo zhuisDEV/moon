@@ -1,6 +1,9 @@
 use assert_cmd::Command;
 use moon::learning::{ApplyInput, PrepareRequest};
-use moon::{ContextRequest, DistillAction, DistillInput, EvidenceInput, SearchMode, Store};
+use moon::{
+    ContextRequest, DistillAction, DistillInput, EvidenceInput, HashEmbedding, SearchMode,
+    SearchRequest, Store,
+};
 use serde_json::{Value, json};
 
 fn moon(home: &std::path::Path) -> Command {
@@ -344,6 +347,134 @@ fn expired_observations_are_not_retrieved_and_confirmation_keeps_expiry() {
         .unwrap();
     assert_eq!(related["memories"][0]["observed_at_ms"], 100);
     assert_eq!(related["memories"][0]["valid_until_ms"], 200);
+    let health = store.health().unwrap();
+    assert!(health.ok);
+    assert_eq!(health.pending_embeddings, 0);
+    assert_eq!(
+        store
+            .embed_pending(&HashEmbedding::new(64), 10)
+            .unwrap()
+            .selected,
+        0
+    );
+}
+
+#[test]
+fn l2_historical_observations_commit_without_index_corruption_or_embedding_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let content = "Atlas service is responding.";
+    record(&mut store, "historical", "global", content, 100);
+    let prepared = store.learning_prepare(&request("historical:day")).unwrap();
+    let mut value = action("create", "atlas:status", "historical", content);
+    value["kind"] = "observation".into();
+    value["valid_until_ms"] = 200.into();
+    let outcome = store
+        .learning_apply(
+            prepared["run_id"].as_str().unwrap(),
+            input(vec![value]),
+            false,
+        )
+        .unwrap();
+    assert_eq!(outcome["processed_evidence"], 1);
+    let health = store.health().unwrap();
+    assert!(health.ok);
+    assert_eq!(health.active_memories, 0);
+    assert_eq!(health.citations, 1);
+    assert_eq!(health.pending_embeddings, 0);
+    let report = store.embed_pending(&HashEmbedding::new(64), 10).unwrap();
+    assert_eq!(report.selected, 0);
+    assert_eq!(report.embedded, 0);
+    assert_eq!(report.remaining, 0);
+    let hits = store
+        .search(
+            &SearchRequest {
+                query: "Atlas service".into(),
+                mode: SearchMode::Lexical,
+                limit: 1,
+                scope: Some("global".into()),
+                source_kind: Some("memory".into()),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(hits.is_empty());
+    assert!(
+        Store::open_existing(store.path(), 64)
+            .unwrap()
+            .health()
+            .unwrap()
+            .ok
+    );
+}
+
+#[test]
+fn fresh_confirmation_restores_expired_indexes_after_maintenance() {
+    for keep_cached_vector in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = store(&temp);
+        let content = "Atlas service is responding.";
+        record(&mut store, "old", "global", content, 100);
+        let mut value = proposal("atlas:status", "old", content);
+        value.valid_until_ms = Some(chrono::Utc::now().timestamp_millis() + 86_400_000);
+        let original = store.distill_memory(value).unwrap();
+        let provider = HashEmbedding::new(64);
+        assert_eq!(store.embed_pending(&provider, 10).unwrap().embedded, 1);
+        // Move the fixture past its deadline without invoking any maintenance
+        // path, leaving the same cached indexes as natural wall-clock expiry.
+        let connection = rusqlite::Connection::open(store.path()).unwrap();
+        connection
+            .execute(
+                "UPDATE memory_items SET valid_until_ms=200 WHERE document_id=?1",
+                [original.document_id],
+            )
+            .unwrap();
+        let expired = Store::open_existing(store.path(), 64)
+            .unwrap()
+            .health()
+            .unwrap();
+        assert!(expired.ok);
+        assert_eq!(expired.active_memories, 0);
+        assert_eq!(expired.vectors, 1);
+        store.rebuild_fts().unwrap();
+        if !keep_cached_vector {
+            assert_eq!(store.requeue_embeddings().unwrap(), 0);
+        }
+        assert!(store.health().unwrap().ok);
+
+        record(&mut store, "fresh", "global", content, 300);
+        let mut confirmation = proposal("atlas:status", "fresh", content);
+        confirmation.valid_until_ms = Some(chrono::Utc::now().timestamp_millis() + 86_400_000);
+        let outcome = store.distill_memory(confirmation).unwrap();
+        assert_eq!(outcome.document_id, original.document_id);
+        assert_eq!(outcome.action, DistillAction::Confirmed);
+        assert_eq!(outcome.evidence_count, 2);
+        let health = store.health().unwrap();
+        assert!(health.ok);
+        assert_eq!(health.active_memories, 1);
+        assert_eq!(health.pending_embeddings, usize::from(!keep_cached_vector));
+        assert_eq!(
+            store.embed_pending(&provider, 10).unwrap().embedded,
+            usize::from(!keep_cached_vector)
+        );
+        for mode in [SearchMode::Lexical, SearchMode::Semantic] {
+            let hits = store
+                .search(
+                    &SearchRequest {
+                        query: "Atlas service".into(),
+                        mode,
+                        limit: 1,
+                        scope: Some("global".into()),
+                        source_kind: Some("memory".into()),
+                    },
+                    Some(&provider),
+                )
+                .unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].document_id, original.document_id);
+        }
+        assert!(store.health().unwrap().ok);
+    }
 }
 
 #[test]

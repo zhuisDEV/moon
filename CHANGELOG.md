@@ -15,6 +15,11 @@
 - Ground corrections in newer exact user evidence, preserve uncertainty and
   negation, expire temporary observations from evidence time, and merge only
   identical claims while preserving citations and lifecycle history.
+- Keep expired observations out of embedding work without treating lazily
+  retained indexes as corruption, and interrupt the learning worker promptly
+  when the OpenClaw service stops.
+- Wait for transient Moon commands as well as the embedding server to exit
+  before the updater takes its rollback snapshot.
 - Give every OpenClaw model helper an owner-preserving native incognito key and
   detached persistence with tools disabled. Retain OpenClaw's native Codex app
   binary/user OAuth route without reading or copying credentials. Add a separate

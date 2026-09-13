@@ -1327,6 +1327,148 @@ fn export_excludes_expired_memories() {
 }
 
 #[test]
+fn expired_cached_candidates_do_not_starve_fresh_search_results() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut store = open_store(&temp);
+    let memory = MemoryInput {
+        memory_kind: "observation".into(),
+        scope: "global".into(),
+        title: None,
+        content: "Atlas sentinel".into(),
+        importance: 0.5,
+        confidence: 1.0,
+        pinned: false,
+    };
+    for _ in 0..32 {
+        store.remember(memory.clone()).unwrap();
+    }
+    let fresh = store
+        .remember(MemoryInput {
+            content: "Atlas sentinel is responding with current verified status.".into(),
+            ..memory
+        })
+        .unwrap();
+    let provider = HashEmbedding::new(64);
+    assert_eq!(store.embed_pending(&provider, 100).unwrap().embedded, 33);
+    let connection = rusqlite::Connection::open(store.path()).unwrap();
+    // Leave the cached FTS/vector rows in place, as happens when time passes
+    // while no writer or rebuild process is running.
+    connection
+        .execute(
+            "UPDATE memory_items SET valid_until_ms=1 WHERE document_id<>?1",
+            [fresh.document_id],
+        )
+        .unwrap();
+    let readonly = Store::open_existing(store.path(), 64).unwrap();
+    let health = readonly.health().unwrap();
+    assert!(health.ok);
+    assert_eq!(health.active_memories, 1);
+    assert_eq!(health.vectors, 33);
+    for mode in [
+        SearchMode::Lexical,
+        SearchMode::Semantic,
+        SearchMode::Hybrid,
+    ] {
+        let hits = readonly
+            .search(
+                &SearchRequest {
+                    query: "Atlas sentinel".into(),
+                    mode,
+                    limit: 1,
+                    scope: Some("global".into()),
+                    source_kind: Some("memory".into()),
+                },
+                Some(&provider),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document_id, fresh.document_id);
+        assert!(hits[0].lexical_rank.is_none_or(|rank| rank == 1));
+        assert!(hits[0].vector_rank.is_none_or(|rank| rank == 1));
+    }
+}
+
+#[test]
+fn embedding_cancels_expired_jobs_before_selection_and_after_provider_work() {
+    struct ExpiringProvider {
+        database: std::path::PathBuf,
+        must_not_run: bool,
+        fail: bool,
+    }
+    impl EmbeddingProvider for ExpiringProvider {
+        fn name(&self) -> &str {
+            "expiry-fixture"
+        }
+        fn model(&self) -> &str {
+            "moon-hash-v1"
+        }
+        fn dimensions(&self) -> usize {
+            64
+        }
+        fn embed_documents(&self, inputs: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+            assert!(
+                !self.must_not_run,
+                "expired work must not invoke the provider"
+            );
+            rusqlite::Connection::open(&self.database)?
+                .execute("UPDATE memory_items SET valid_until_ms=1", [])?;
+            if self.fail {
+                anyhow::bail!("synthetic provider failure after expiry");
+            }
+            HashEmbedding::new(64).embed_documents(inputs)
+        }
+        fn embed_query(&self, input: &str) -> anyhow::Result<Vec<f32>> {
+            HashEmbedding::new(64).embed_query(input)
+        }
+    }
+    for (expires_before_selection, provider_fails) in [(true, false), (false, false), (false, true)]
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(&temp);
+        store
+            .remember(MemoryInput {
+                memory_kind: "observation".into(),
+                scope: "global".into(),
+                title: None,
+                content: "Atlas service is responding.".into(),
+                importance: 0.5,
+                confidence: 1.0,
+                pinned: false,
+            })
+            .unwrap();
+        if expires_before_selection {
+            rusqlite::Connection::open(store.path())
+                .unwrap()
+                .execute("UPDATE memory_items SET valid_until_ms=1", [])
+                .unwrap();
+        }
+        assert_eq!(store.health().unwrap().pending_embeddings, 1);
+        let result = store.embed_pending(
+            &ExpiringProvider {
+                database: store.path().to_path_buf(),
+                must_not_run: expires_before_selection,
+                fail: provider_fails,
+            },
+            10,
+        );
+        if provider_fails {
+            assert!(result.is_err());
+        } else {
+            let report = result.unwrap();
+            assert_eq!(report.selected, usize::from(!expires_before_selection));
+            assert_eq!(report.embedded, 0);
+            assert_eq!(report.remaining, 0);
+        }
+        let health = store.health().unwrap();
+        assert!(health.ok);
+        assert_eq!(health.active_memories, 0);
+        assert_eq!(health.pending_embeddings, 0);
+        assert_eq!(health.leased_embeddings, 0);
+        assert_eq!(health.vectors, 0);
+    }
+}
+
+#[test]
 fn failed_embedding_releases_lease_and_records_a_redacted_error() {
     struct FailingProvider;
     impl EmbeddingProvider for FailingProvider {

@@ -800,7 +800,7 @@ impl SystemOpenClaw {
             if std::time::Instant::now() >= deadline {
                 return fail(
                     "active_embedding_lease",
-                    "a Moon worker remained active after OpenClaw stopped",
+                    "a Moon process remained active after OpenClaw stopped",
                 );
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -2559,22 +2559,50 @@ fn run_output_bounded(
 }
 
 fn moon_worker_is_running() -> Result<bool> {
+    // Inspect executable names, never command arguments: a shell or editor can
+    // mention `moon serve` without running Moon. All actual Moon processes can
+    // hold SQLite state; even nominal read commands may open a migrating store.
     let output = run_output_bounded(
         Path::new("/bin/ps"),
-        &["-axo", "command="],
+        &["-ww", "-axo", "pid=,comm="],
         8 * 1024 * 1024,
         Duration::from_secs(5),
     )?;
+    moon_processes_from_ps(&output, std::process::id())
+}
+
+fn moon_processes_from_ps(output: &Output, updater_pid: u32) -> Result<bool> {
     ensure!(output.status.success(), "process inspection failed");
-    let commands = String::from_utf8_lossy(&output.stdout);
-    Ok(commands.lines().any(|line| {
-        let words = line.split_whitespace().collect::<Vec<_>>();
-        words.iter().any(|word| {
-            Path::new(word)
+    let processes =
+        std::str::from_utf8(&output.stdout).context("process inspection is not UTF-8")?;
+    let mut inspected = false;
+    let mut active = false;
+    for line in processes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let (pid, executable) = line
+            .split_once(char::is_whitespace)
+            .context("process inspection row is malformed")?;
+        let pid = pid
+            .parse::<u32>()
+            .context("process inspection PID is invalid")?;
+        let executable = executable.trim();
+        ensure!(
+            !executable.is_empty(),
+            "process inspection executable is missing"
+        );
+        inspected = true;
+        // macOS comm includes the executable path; Linux usually reports just
+        // its basename. Keeping the entire remainder also handles path spaces.
+        active |= pid != updater_pid
+            && Path::new(executable)
                 .file_name()
-                .is_some_and(|name| name == "moon")
-        }) && words.contains(&"serve")
-    }))
+                .is_some_and(|name| name == "moon");
+    }
+    ensure!(inspected, "process inspection returned no processes");
+    Ok(active)
 }
 
 fn bounded_command_error(output: &Output) -> String {
@@ -3038,6 +3066,78 @@ printf '%s\n' '{"action":"stop","ok":true}'
             .stop_with_worker_check(|| panic!("worker check must follow a successful stop"))
             .unwrap_err();
         assert_eq!(error_code(&error), Some("plugin_validation_failed"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_quiescence_detects_every_moon_executable_and_excludes_this_updater() {
+        use std::os::unix::process::ExitStatusExt;
+        for executable in [
+            "moon",
+            "/Users/lilac/.moon/bin/moon",
+            "/home/operator/.moon/releases/2.6.0/bin/moon",
+            "/Users/Operator Name/Moon Runtime/bin/moon",
+        ] {
+            // Executable identity covers serve and transient record, distill,
+            // learning apply/prepare/fail, metrics and future CLI commands.
+            let output = Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: format!("  123 {executable}\n  456 /bin/ps\n").into_bytes(),
+                stderr: vec![],
+            };
+            assert!(moon_processes_from_ps(&output, 999).unwrap());
+            assert!(!moon_processes_from_ps(&output, 123).unwrap());
+        }
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"123 moon\n124 moon\n456 /bin/ps\n".to_vec(),
+            stderr: vec![],
+        };
+        assert!(moon_processes_from_ps(&output, 123).unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn process_quiescence_ignores_other_executables_and_fails_closed() {
+        use std::os::unix::process::ExitStatusExt;
+        // ps emits comm only, so shell/editor arguments containing `moon`,
+        // `record`, or `serve` never enter the classifier or its output.
+        let mut output = Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"10 /bin/zsh\n11 /usr/bin/rg\n12 moon-helper\n13 /opt/moon/bin/node\n14 /Applications/Moon Tools/editor\n".to_vec(),
+            stderr: vec![],
+        };
+        assert!(!moon_processes_from_ps(&output, 999).unwrap());
+        output.status = std::process::ExitStatus::from_raw(1 << 8);
+        assert!(moon_processes_from_ps(&output, 999).is_err());
+        output.status = std::process::ExitStatus::from_raw(0);
+        for malformed in ["", "   \n", "invalid /bin/ps", "12", "12   "] {
+            output.stdout = malformed.as_bytes().to_vec();
+            assert!(moon_processes_from_ps(&output, 999).is_err());
+        }
+        output.stdout = vec![0xff];
+        assert!(moon_processes_from_ps(&output, 999).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn gateway_stop_waits_for_transient_writers_and_propagates_inspection_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("openclaw");
+        write_new_file(&executable, b"#!/bin/sh\nexit 0\n", 0o700).unwrap();
+        let openclaw = SystemOpenClaw { executable };
+        let checks = std::cell::Cell::new(0);
+        openclaw
+            .stop_with_worker_check(|| {
+                checks.set(checks.get() + 1);
+                Ok(checks.get() == 1)
+            })
+            .unwrap();
+        assert_eq!(checks.get(), 2);
+        let error = openclaw
+            .stop_with_worker_check(|| anyhow::bail!("synthetic process inspection failure"))
+            .unwrap_err();
+        assert!(error.to_string().contains("process inspection failure"));
     }
 
     #[derive(Default)]

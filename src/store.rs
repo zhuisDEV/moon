@@ -419,6 +419,7 @@ impl Store {
                 provider.model()
             );
         }
+        prune_inactive_embedding_jobs(&transaction, claimed_at)?;
         let worker_id = random_nonce(&transaction)?;
         let mut selected = {
             let mut statement = transaction.prepare(
@@ -524,6 +525,10 @@ impl Store {
                 "embedding model changed while a batch was in flight; results were not written"
             );
         }
+        // A claim can expire or be retired while the provider computes its
+        // vector. Cancelling its lease also prevents a stale worker from
+        // overwriting a later confirmation's newly queued work.
+        prune_inactive_embedding_jobs(&transaction, now_ms())?;
         let mut embedded = 0usize;
         for ((chunk_id, _, source_kind, scope), vector) in selected.iter().zip(vectors) {
             let still_claimed = transaction.query_row(
@@ -574,6 +579,7 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        prune_inactive_embedding_jobs(&transaction, failed_at)?;
         for (chunk_id, _, _, _) in selected {
             transaction.execute(
                 "UPDATE embedding_queue
@@ -797,13 +803,19 @@ impl Store {
                     .collect::<rusqlite::Result<Vec<_>>>()?
             } else {
                 let mut statement = self.connection.prepare(
-                    "SELECT rowid, bm25(chunk_fts, 4.0, 1.0, 0.0, 0.0) AS lexical_score
+                    "SELECT chunk_fts.rowid, bm25(chunk_fts, 4.0, 1.0, 0.0, 0.0) AS lexical_score
                      FROM chunk_fts
+                     LEFT JOIN chunks c ON c.id = chunk_fts.rowid
+                     LEFT JOIN memory_items m ON m.document_id = c.document_id
                      WHERE chunk_fts MATCH ?1
-                       AND (?2 IS NULL OR scope = ?2)
-                       AND (?3 IS NULL OR source_kind = ?3)
-                     ORDER BY lexical_score, rowid
-                     LIMIT ?4",
+                       AND (?2 IS NULL OR chunk_fts.scope = ?2)
+                       AND (?3 IS NULL OR chunk_fts.source_kind = ?3)
+                       AND (m.document_id IS NULL OR (
+                           m.superseded_by IS NULL
+                           AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?4)
+                       ))
+                     ORDER BY lexical_score, chunk_fts.rowid
+                     LIMIT ?5",
                 )?;
                 statement
                     .query_map(
@@ -811,6 +823,7 @@ impl Store {
                             fts_query,
                             request.scope.as_deref(),
                             request.source_kind.as_deref(),
+                            now_ms(),
                             candidate_limit as i64,
                         ],
                         |row| row.get::<_, i64>(0),
@@ -870,6 +883,8 @@ impl Store {
         query_vector: &[f32],
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
+        // sqlite-vec applies rowid IN during KNN selection. A post-join expiry
+        // filter would let stale cached vectors consume k before fresh hits.
         let mut sql = String::from(
             "SELECT
                  d.id, c.id, d.source_uri, d.source_kind, d.scope, d.title, c.content,
@@ -877,18 +892,16 @@ impl Store {
              FROM chunk_vectors v
              JOIN chunks c ON c.id = v.rowid
              JOIN documents d ON d.id = c.document_id
-             WHERE v.embedding MATCH ?1 AND k = ?2 AND d.active = 1
-               AND (
-                   NOT EXISTS (
-                       SELECT 1 FROM memory_items m
-                       WHERE m.document_id = d.id
-                   )
-                   OR EXISTS (
-                       SELECT 1 FROM memory_items m
-                       WHERE m.document_id = d.id
-                         AND m.superseded_by IS NULL
+             WHERE v.embedding MATCH ?1 AND k = ?2
+               AND v.rowid IN (
+                   SELECT eligible_chunk.id FROM chunks eligible_chunk
+                   JOIN documents eligible_document ON eligible_document.id = eligible_chunk.document_id
+                   LEFT JOIN memory_items m ON m.document_id = eligible_document.id
+                   WHERE eligible_document.active = 1
+                     AND (m.document_id IS NULL OR (
+                         m.superseded_by IS NULL
                          AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?3)
-                   )
+                     ))
                )",
         );
         let candidate_limit = limit.saturating_mul(4).clamp(1, 400) as i64;
@@ -1019,6 +1032,10 @@ impl Store {
             |row| row.get::<_, i64>(0),
         )? as usize;
         let now = now_ms();
+        // Expiry is a read-time eligibility rule. Cached FTS/vector content may
+        // remain after the clock passes its deadline, or be removed by rebuild;
+        // neither state is corruption. Supersession still retires indexes in
+        // the same transaction, so an indexed superseded claim is invalid.
         let unexpected_fts_rows = self.connection.query_row(
             "SELECT count(*)
              FROM chunk_fts
@@ -1027,14 +1044,8 @@ impl Store {
              LEFT JOIN memory_items m ON m.document_id = d.id
              WHERE c.id IS NULL
                 OR d.active <> 1
-                OR (
-                    m.document_id IS NOT NULL
-                    AND (
-                        m.superseded_by IS NOT NULL
-                        OR (m.valid_until_ms IS NOT NULL AND m.valid_until_ms <= ?1)
-                    )
-                )",
-            [now],
+                OR m.superseded_by IS NOT NULL",
+            [],
             |row| row.get::<_, i64>(0),
         )? as usize;
         let missing_fts_rows = self.connection.query_row(
@@ -1613,6 +1624,21 @@ fn embedding_priority(source_kind: &str) -> Option<i64> {
         "memory" => Some(100),
         _ => Some(50),
     }
+}
+
+fn prune_inactive_embedding_jobs(transaction: &Transaction<'_>, at_ms: i64) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM embedding_queue WHERE chunk_id IN (
+             SELECT q.chunk_id FROM embedding_queue q
+             JOIN chunks c ON c.id = q.chunk_id
+             JOIN documents d ON d.id = c.document_id
+             LEFT JOIN memory_items m ON m.document_id = d.id
+             WHERE d.active <> 1 OR m.superseded_by IS NOT NULL
+                OR (m.valid_until_ms IS NOT NULL AND m.valid_until_ms <= ?1)
+         )",
+        [at_ms],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn random_nonce(connection: &Connection) -> Result<String> {

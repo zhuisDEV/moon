@@ -143,6 +143,12 @@ not reuse the conversation transcript, and their tool route is disabled.
 Conflicting or ambiguous agent ownership fails instead of selecting a different
 agent silently. Primary and fallback attempts use separate identities.
 
+OpenClaw 2026.9.4 retains completed native incognito subscriptions until its
+Codex client shuts down. Moon does not close that shared client after each
+helper because it can also own unrelated user threads. Ephemeral persistence
+does not mean immediate removal from gateway memory; long-running native memory
+usage needs separate measurement.
+
 See [the canary guide](openclaw-canary.md#native-codex-route-check) for the
 account/model discovery tool and the separate, opt-in two-turn native smoke
 test. A successful constant-response probe verifies routing and effort support;

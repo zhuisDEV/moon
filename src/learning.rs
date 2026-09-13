@@ -3,6 +3,7 @@
 use crate::chunking::sha256_hex;
 use crate::memory::{
     distill_in_transaction, fuzzy_context_score, insert_citation, load_evidence, locate_citation,
+    sync_memory_indexes,
 };
 use crate::model::DistillInput;
 use crate::redaction::redact_text;
@@ -793,6 +794,7 @@ fn merge_identical(
         "UPDATE chunks SET embedding_model=NULL,embedded_at_ms=NULL WHERE document_id=?1",
         [previous],
     )?;
+    sync_memory_indexes(transaction, retained)?;
     Ok(())
 }
 

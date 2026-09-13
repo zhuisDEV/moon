@@ -129,7 +129,7 @@ function createApi(
       system: {
         runCommandWithTimeout(
           argv: string[],
-          options: { timeoutMs: number; input?: string },
+          options: { timeoutMs: number; input?: string; signal?: AbortSignal },
         ): typeof result | Promise<typeof result> {
           calls.push({
             argv,
@@ -745,6 +745,235 @@ Deno.test("plugin registers the context engine and local compaction provider", a
   assertEquals(compactionProviders[0]?.id, "moon-local");
   assert(typeof compactionProviders[0]?.summarize === "function");
   await (service.stop as () => Promise<void>)();
+});
+
+async function beforeServiceStopDeadline<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        // Leave margin inside OpenClaw's five-second replacement deadline.
+        timer = setTimeout(
+          () => reject(new Error("service did not settle")),
+          4000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+Deno.test("service shutdown interrupts L2 embedding and restart owns a fresh worker", async () => {
+  const prototype = __moonTest.MoonStdioClient.prototype;
+  const originalRequest = prototype.request;
+  const originalDispose = prototype.dispose;
+  const workers: object[] = [];
+  const blocked = new Map<object, (error: Error) => void>();
+  let embeddingEntered = Promise.withResolvers<void>();
+  let configs = 0;
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    { embeddingEnabled: true },
+    () => ({ payloads: [{ text: '{"actions":[]}' }] }),
+  );
+  api.runtime.system.runCommandWithTimeout = (argv) => {
+    let output;
+    if (argv.includes("config")) {
+      configs += 1;
+      output = learningConfig({}, {
+        enabled: true,
+        fallback_enabled: false,
+        max_batches_per_day: configs,
+      });
+    } else if (argv.includes("prepare")) {
+      const key = argv[argv.indexOf("--run-key") + 1];
+      output = configs > 1 && key.endsWith(":0") ? { status: "committed" } : {
+        status: "prepared",
+        run_id: `run-${configs}`,
+        scope: "global",
+        evidence: [],
+        memories: [],
+      };
+    } else if (argv.includes("apply")) {
+      output = { status: "committed", action_count: 0, processed_evidence: 0 };
+    } else throw new Error("unexpected command");
+    return { code: 0, stdout: JSON.stringify(output), stderr: "" };
+  };
+  const services: Array<{ start(): void; stop(): Promise<void> }> = [];
+  moonPlugin.register({
+    ...api,
+    registerService(service: typeof services[number]) {
+      services.push(service);
+    },
+    registerContextEngine() {},
+    registerCompactionProvider() {},
+  });
+  const service = services[0];
+  prototype.request = function (
+    this: typeof prototype,
+    operation: { op: string },
+  ) {
+    assertEquals(operation.op, "embed");
+    workers.push(this);
+    embeddingEntered.resolve();
+    return new Promise((_, reject) => blocked.set(this, reject));
+  };
+  prototype.dispose = function (this: typeof prototype) {
+    blocked.get(this)?.(new Error("fixture worker disposed"));
+    blocked.delete(this);
+    return originalDispose.call(this);
+  };
+  try {
+    service.start();
+    await beforeServiceStopDeadline(embeddingEntered.promise);
+    await beforeServiceStopDeadline(service.stop());
+    assertEquals(blocked.size, 0);
+
+    embeddingEntered = Promise.withResolvers<void>();
+    service.start();
+    await beforeServiceStopDeadline(embeddingEntered.promise);
+    assertEquals(workers.length, 2);
+    assert(workers[0] !== workers[1]);
+    await beforeServiceStopDeadline(service.stop());
+    assertEquals(blocked.size, 0);
+  } finally {
+    for (const release of blocked.values()) {
+      release(new Error("fixture cleanup"));
+    }
+    blocked.clear();
+    await service.stop();
+    prototype.request = originalRequest;
+    prototype.dispose = originalDispose;
+  }
+});
+
+Deno.test("scheduler shutdown aborts pending config, prepare and apply commands", async () => {
+  for (const phase of ["config", "prepare", "apply"]) {
+    const entered = Promise.withResolvers<void>();
+    const blocked = Promise.withResolvers<
+      { code: number; stdout: string; stderr: string }
+    >();
+    let cancelled = false;
+    let cleanupTimeout: number | undefined;
+    const api = createApi(
+      { code: 0, stdout: "", stderr: "" },
+      [],
+      {},
+      () => ({ payloads: [{ text: '{"actions":[]}' }] }),
+    );
+    api.runtime.system.runCommandWithTimeout = (argv, options) => {
+      if (argv.includes(phase)) {
+        assert(options.signal instanceof AbortSignal);
+        options.signal.addEventListener("abort", () => {
+          cancelled = true;
+          blocked.reject(new Error("fixture command cancelled"));
+        }, { once: true });
+        entered.resolve();
+        return blocked.promise;
+      }
+      const output = argv.includes("config")
+        ? learningConfig({}, { enabled: true, fallback_enabled: false })
+        : argv.includes("prepare")
+        ? {
+          status: "prepared",
+          run_id: "run",
+          scope: "global",
+          evidence: [],
+          memories: [],
+        }
+        : { status: "failed" };
+      if (argv.includes("fail")) {
+        cleanupTimeout = options.timeoutMs;
+        assert(options.signal === undefined);
+      }
+      return { code: 0, stdout: JSON.stringify(output), stderr: "" };
+    };
+    const scheduler = __moonTest.createLearningScheduler(api);
+    const running = scheduler.tick();
+    try {
+      await beforeServiceStopDeadline(entered.promise);
+      await beforeServiceStopDeadline(scheduler.stop());
+      assert(cancelled);
+      if (phase === "apply") assertEquals(cleanupTimeout, 1000);
+    } finally {
+      blocked.reject(new Error("fixture cleanup"));
+      await scheduler.stop();
+      await running;
+    }
+  }
+});
+
+Deno.test("late L2 apply completion cannot create an embedding worker after service stop", async () => {
+  const entered = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<
+    { code: number; stdout: string; stderr: string }
+  >();
+  const prototype = __moonTest.MoonStdioClient.prototype;
+  const originalRequest = prototype.request;
+  let embeddingRequests = 0;
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    { embeddingEnabled: true },
+    () => ({ payloads: [{ text: '{"actions":[]}' }] }),
+  );
+  api.runtime.system.runCommandWithTimeout = (argv) => {
+    if (argv.includes("apply")) {
+      entered.resolve();
+      // Model a command that committed just as cancellation was requested.
+      return completed.promise;
+    }
+    const output = argv.includes("config")
+      ? learningConfig({}, {
+        enabled: true,
+        fallback_enabled: false,
+        max_batches_per_day: 1,
+      })
+      : {
+        status: "prepared",
+        run_id: "run",
+        scope: "global",
+        evidence: [],
+        memories: [],
+      };
+    return { code: 0, stdout: JSON.stringify(output), stderr: "" };
+  };
+  const services: Array<{ start(): void; stop(): Promise<void> }> = [];
+  moonPlugin.register({
+    ...api,
+    registerService(service: typeof services[number]) {
+      services.push(service);
+    },
+    registerContextEngine() {},
+    registerCompactionProvider() {},
+  });
+  prototype.request = () => {
+    embeddingRequests += 1;
+    return Promise.resolve({ embedded: 0, remaining: 0 });
+  };
+  try {
+    services[0].start();
+    await beforeServiceStopDeadline(entered.promise);
+    const stopping = services[0].stop();
+    completed.resolve({
+      code: 0,
+      stdout: JSON.stringify({
+        status: "committed",
+        action_count: 0,
+        processed_evidence: 0,
+      }),
+      stderr: "",
+    });
+    await beforeServiceStopDeadline(stopping);
+    assertEquals(embeddingRequests, 0);
+  } finally {
+    completed.resolve({ code: 1, stdout: "", stderr: "fixture cleanup" });
+    await services[0].stop();
+    prototype.request = originalRequest;
+  }
 });
 
 Deno.test("model routing uses the OpenClaw primary model", async () => {

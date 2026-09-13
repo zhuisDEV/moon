@@ -1088,12 +1088,18 @@ function learningPrompt(turn, activeMemories, settings) {
   ].join("\n\n");
 }
 
-async function loadLearningConfig(api, settings) {
-  const output = await runMoonCommand(api, [
-    ...baseMoonArguments(settings, true),
-    "config",
-    "show",
-  ], settings.timeoutMs);
+async function loadLearningConfig(api, settings, signal) {
+  const output = await runMoonCommand(
+    api,
+    [
+      ...baseMoonArguments(settings, true),
+      "config",
+      "show",
+    ],
+    settings.timeoutMs,
+    undefined,
+    signal,
+  );
   const config = JSON.parse(output);
   if (!isObject(config?.learning?.l1) || !isObject(config?.learning?.l2)) {
     throw new Error("Moon learning configuration is invalid");
@@ -1471,23 +1477,30 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
   for (let batch = 0; batch < (l2.max_batches_per_day ?? 8); batch += 1) {
     if (signal?.aborted) throw modelCancellationError();
     const prepared = JSON.parse(
-      await runMoonCommand(api, [
-        ...baseMoonArguments(settings, true),
-        "learning",
-        "prepare",
-        "--run-key",
-        `l2:${window.key}:${batch}`,
-        "--before-ms",
-        String(window.cutoffMs),
-        "--limit",
-        String(l2.batch_size),
-        "--max-chars",
-        String(l2.max_input_chars),
-        "--lease-ms",
-        String(
-          settings.modelTimeoutMs * (settings.fallbackModel ? 2 : 1) + 120_000,
-        ),
-      ], settings.timeoutMs),
+      await runMoonCommand(
+        api,
+        [
+          ...baseMoonArguments(settings, true),
+          "learning",
+          "prepare",
+          "--run-key",
+          `l2:${window.key}:${batch}`,
+          "--before-ms",
+          String(window.cutoffMs),
+          "--limit",
+          String(l2.batch_size),
+          "--max-chars",
+          String(l2.max_input_chars),
+          "--lease-ms",
+          String(
+            settings.modelTimeoutMs * (settings.fallbackModel ? 2 : 1) +
+              120_000,
+          ),
+        ],
+        settings.timeoutMs,
+        undefined,
+        signal,
+      ),
     );
     if (["empty", "busy", "exhausted"].includes(prepared.status)) {
       return { status: prepared.status, batches };
@@ -1534,6 +1547,7 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
           ],
           settings.timeoutMs,
           JSON.stringify(payload),
+          signal,
         ),
       );
       if (applied.status !== "committed") {
@@ -1544,16 +1558,24 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
         api,
         `moon synthesis status=committed actions=${applied.action_count} evidence=${applied.processed_evidence} model_route=${result.modelRoute}`,
       );
-      await onApplied?.();
+      await onApplied?.(signal);
     } catch {
       try {
-        await runMoonCommand(api, [
-          ...baseMoonArguments(settings, true),
-          "learning",
-          "fail",
-          "--run-id",
-          prepared.run_id,
-        ], settings.timeoutMs);
+        // Cancellation still gets a short best-effort lease release. Do not
+        // let cleanup consume OpenClaw's five-second service-stop deadline.
+        await runMoonCommand(
+          api,
+          [
+            ...baseMoonArguments(settings, true),
+            "learning",
+            "fail",
+            "--run-id",
+            prepared.run_id,
+          ],
+          signal?.aborted ? 1_000 : settings.timeoutMs,
+          undefined,
+          signal?.aborted ? undefined : signal,
+        );
       } catch {
         /* The durable lease permits recovery after a process failure. */
       }
@@ -1573,16 +1595,17 @@ function createLearningScheduler(api, onApplied) {
     if (pending || controller.signal.aborted) {
       return pending ?? Promise.resolve();
     }
+    const signal = controller.signal;
     pending = (async () => {
       try {
         const base = resolveSettings(api);
-        const config = await loadLearningConfig(api, base);
+        const config = await loadLearningConfig(api, base, signal);
         return await runDailySynthesis(
           api,
           base,
           config,
           nowMs,
-          controller.signal,
+          signal,
           onApplied,
         );
       } catch {
@@ -1632,10 +1655,12 @@ function logInfo(api, message) {
   }
 }
 
-async function runMoonCommand(api, argv, timeoutMs, input) {
+async function runMoonCommand(api, argv, timeoutMs, input, signal) {
+  if (signal?.aborted) throw modelCancellationError();
   const result = await api.runtime.system.runCommandWithTimeout(argv, {
     timeoutMs,
     ...(input === undefined ? {} : { input }),
+    ...(signal ? { signal } : {}),
   });
   if (result.code !== 0) {
     throw new Error(
@@ -2144,6 +2169,9 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
   let stdioClient = null;
   function workerFor(settings) {
     if (sharedWorkerState) {
+      if (sharedWorkerState.stopping) {
+        throw new Error("Moon service is stopping");
+      }
       if (!sharedWorkerState.client) {
         sharedWorkerState.client = new MoonStdioClient(settings);
       }
@@ -2319,8 +2347,9 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
 export default {
   id: "moon",
   register(api) {
-    const sharedWorkerState = { client: null };
-    const scheduler = createLearningScheduler(api, async () => {
+    const sharedWorkerState = { client: null, stopping: false };
+    const scheduler = createLearningScheduler(api, async (signal) => {
+      if (sharedWorkerState.stopping || signal?.aborted) return;
       const settings = resolveSettings(api);
       if (!settings.embeddingEnabled) return;
       sharedWorkerState.client ??= new MoonStdioClient(settings);
@@ -2329,13 +2358,17 @@ export default {
     api.registerService({
       id: "moon-local-embedding-worker",
       start() {
+        sharedWorkerState.stopping = false;
         scheduler.start();
       },
       async stop() {
-        await scheduler.stop();
+        sharedWorkerState.stopping = true;
+        const stopped = scheduler.stop();
+        // Disposing rejects an in-flight embedding request so the scheduler
+        // can settle promptly, without waiting for the embedding timeout.
         const disposed = sharedWorkerState.client?.dispose();
         sharedWorkerState.client = null;
-        await disposed;
+        await Promise.all([stopped, disposed]);
       },
     });
     api.registerContextEngine(
