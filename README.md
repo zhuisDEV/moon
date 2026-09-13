@@ -17,6 +17,9 @@ tests, imports, and replays should always pass an explicit temporary `--home`.
 - Moon does not require `OPENAI_API_KEY`.
 - Model calls use OpenClaw's configured primary and fallback providers. Moon
   does not read or copy provider credentials.
+- L1 and L2 have independent settings in the runtime's `moon.toml`. Daily L2
+  synthesis is disabled by default; missing configuration preserves existing
+  model routing.
 - Runtime directories are owner-only on Unix; databases, backups, and exports
   are created with owner-only file permissions.
 - `health` never creates or migrates a missing database.
@@ -264,8 +267,9 @@ QMD. OpenClaw keeps one private stdio child warm so query inference does not pay
 model startup cost on every turn.
 
 The Moon binary performs no remote model calls and owns no provider credential
-store. The adapter delegates model work to OpenClaw. By default it inherits
-`agents.defaults.model.primary` and the first entry in
+store. The adapter delegates model work to OpenClaw. Each learning stage may
+select its own model, reasoning, fallback, timeout, and prompt in `moon.toml`.
+Unset routes inherit `agents.defaults.model.primary` and the first entry in
 `agents.defaults.model.fallbacks`; provider authentication remains entirely
 inside OpenClaw.
 
@@ -317,15 +321,32 @@ learning fail open, and OpenClaw retains transcript compaction. For non-trivial
 queries, the adapter also marks the matching content-free metric row as injected
 or not injected and logs only its opaque request ID and numeric result summary.
 
-Normal context is capped at 3,500 characters. Learning uses the OpenClaw primary
-model and tries the configured fallback if the primary request fails. Provider
-diagnostics are not copied into Moon logs. Both routes default to reasoning
-`off` for low-latency structured extraction.
+Normal context is capped at 3,500 characters. L1 distills eligible completed
+turns. Optional daily L2 compares unprocessed evidence with related memories and
+their original sources, applies supported corrections and exact-content merges,
+and records uncertain conflicts for review. Temporary operational observations
+expire from recall using their evidence date. Evidence, revisions, and citations
+remain available for audit.
 
-`primaryModel` and `fallbackModel` may override OpenClaw's routing with any
-provider-qualified references, such as `vllm/local-model`, `openai/gpt-model`,
-`anthropic/claude-model`, or `google/gemini-model`. `primaryReasoning` and
-`fallbackReasoning` independently override their OpenClaw reasoning levels.
+The new [learning guide](docs/learning.md) covers `config init`, `config show`,
+`config validate`, independent `[learning.l1]` and `[learning.l2]` settings, and
+isolated preview/apply commands. The starter uses `openai/gpt-6-astra` with
+`low` effort for L1 and `xhigh` for L2, leaving L2 disabled until verified.
+Existing `primaryModel`, `fallbackModel`, `primaryReasoning`, and
+`fallbackReasoning` plugin settings remain the inheritance source when stage
+fields are unset.
+
+On the verified native Codex route, OpenClaw uses the Codex app binary and the
+existing user's OAuth authentication. Moon does not copy credentials or need an
+API key. Helpers use fresh incognito identities and detached persistence with
+tools disabled. The current native Codex backend ignores the requested
+`max_output_tokens`; input, timeout, batch, and attempt caps are enforced
+separately. A routing smoke test does not establish memory quality.
+
+Moon 2.6.0 introduces these learning changes and migrates storage to schema 8.
+Back up the database and configuration before deploying, and retain a matching
+database backup for the previous binary. Runtime `moon.toml` lives outside
+release directories and survives updates.
 
 The adapter is installed in production from `~/.moon/openclaw-plugin`, with the
 `moon` context-engine slot active. Use

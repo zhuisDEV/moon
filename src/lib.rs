@@ -1,5 +1,7 @@
 pub mod chunking;
+pub mod config;
 pub mod embedding;
+pub mod learning;
 pub mod legacy;
 pub mod memory;
 pub mod metrics;

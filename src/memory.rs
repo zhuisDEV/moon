@@ -294,17 +294,28 @@ impl Store {
                 continue;
             }
 
-            let mut shell = memory.clone();
-            shell.content.clear();
             let base_length = packet.render_markdown().chars().count();
-            packet.memories.push(shell);
-            let shell_length = packet.render_markdown().chars().count();
-            packet.memories.pop();
-            let overhead = shell_length.saturating_sub(base_length);
-            let available = request
-                .max_chars
-                .saturating_sub(base_length)
-                .saturating_sub(overhead);
+            let mut available = 0;
+            // Keep recency metadata and a useful claim even in a small packet.
+            // Shorten its exact quote before dropping the whole memory.
+            for quote_chars in [240, 120, 64] {
+                if let Some(citation) = memory.citations.first_mut() {
+                    truncate_citation_quote(citation, quote_chars);
+                }
+                let mut shell = memory.clone();
+                shell.content.clear();
+                packet.memories.push(shell);
+                let shell_length = packet.render_markdown().chars().count();
+                packet.memories.pop();
+                let overhead = shell_length.saturating_sub(base_length);
+                available = request
+                    .max_chars
+                    .saturating_sub(base_length)
+                    .saturating_sub(overhead);
+                if available >= 80 {
+                    break;
+                }
+            }
             if available >= 80 {
                 memory.content = truncate_chars(&memory.content, available);
                 let _ = push_if_fits(&mut packet, memory);
@@ -425,7 +436,10 @@ impl Store {
             .connection
             .query_row(
                 "SELECT d.id, m.canonical_key, m.memory_kind, d.scope, d.title, d.body,
-                        m.importance, m.confidence, m.pinned
+                        m.importance, m.confidence, m.pinned, m.observed_at_ms,
+                        m.last_confirmed_at_ms, m.valid_until_ms,
+                        EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id
+                            OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
                  FROM memory_items m
                  JOIN documents d ON d.id = m.document_id
                  WHERE d.id = ?1
@@ -444,6 +458,10 @@ impl Store {
                         importance: row.get(6)?,
                         confidence: row.get(7)?,
                         pinned: row.get(8)?,
+                        observed_at_ms: row.get(9)?,
+                        last_confirmed_at_ms: row.get(10)?,
+                        valid_until_ms: row.get(11)?,
+                        review_required: row.get(12)?,
                         relevance_score,
                         citations: Vec::new(),
                     })
@@ -491,9 +509,9 @@ impl Store {
     }
 }
 
-fn distill_in_transaction(
+pub(crate) fn distill_in_transaction(
     transaction: &Transaction<'_>,
-    input: DistillInput,
+    mut input: DistillInput,
 ) -> Result<DistillOutcome> {
     validate_canonical_key(&input.canonical_key)?;
     validate_identifier("memory_kind", &input.memory_kind, 128)?;
@@ -519,12 +537,29 @@ fn distill_in_transaction(
         + redacted_quote.count
         + redacted_title.as_ref().map_or(0, |redacted| redacted.count);
     let evidence = load_evidence(transaction, &input.evidence_session_id)?;
+    if evidence.scope != input.scope {
+        anyhow::bail!("evidence and memory must have the same scope");
+    }
+    if input
+        .valid_until_ms
+        .is_some_and(|until| until <= evidence.completed_at_ms)
+    {
+        anyhow::bail!("valid_until_ms must be later than the evidence observation time");
+    }
     let citation = locate_citation(&evidence.body, redacted_quote.value.trim())?;
     let content_hash = sha256_hex(&redacted_content.value);
 
+    // An alias names the same claim; revisions retain its original canonical key.
+    if let Some(key) = transaction.query_row(
+        "SELECT m.canonical_key FROM memory_aliases a JOIN memory_items m ON m.document_id = a.document_id WHERE a.canonical_key = ?1",
+        [&input.canonical_key], |row| row.get::<_, String>(0),
+    ).optional()? {
+        input.canonical_key = key;
+    }
+
     let head = transaction
         .query_row(
-            "SELECT h.document_id, d.content_hash
+            "SELECT h.document_id, d.content_hash, d.scope, m.memory_kind, m.last_confirmed_at_ms
              FROM memory_heads h
              JOIN documents d ON d.id = h.document_id
              JOIN memory_items m ON m.document_id = h.document_id
@@ -532,11 +567,43 @@ fn distill_in_transaction(
                AND d.active = 1
                AND m.superseded_by IS NULL",
             [&input.canonical_key],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
         )
         .optional()?;
 
-    if let Some((document_id, existing_hash)) = head.as_ref()
+    if let Some((_, _, scope, kind, _)) = &head
+        && (scope != &input.scope || kind != &input.memory_kind)
+    {
+        anyhow::bail!("canonical key already belongs to a different scope or memory kind");
+    }
+    // Exact duplicate content cannot acquire a second active identity merely by
+    // choosing a new key. Fuzzy meaning is deliberately not merged here.
+    let duplicate = if head.is_none() && input.supersedes.is_none() {
+        transaction.query_row(
+            "SELECT m.document_id, m.canonical_key FROM memory_items m JOIN documents d ON d.id = m.document_id
+             WHERE d.active = 1 AND d.scope = ?1 AND m.memory_kind = ?2 AND d.content_hash = ?3
+               AND m.superseded_by IS NULL AND m.canonical_key IS NOT NULL ORDER BY m.document_id LIMIT 1",
+            params![input.scope, input.memory_kind, content_hash],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional()?
+    } else {
+        None
+    };
+    if let Some((document_id, key)) = duplicate {
+        transaction.execute("INSERT INTO memory_aliases(canonical_key, document_id, created_at_ms) VALUES(?1, ?2, ?3)", params![input.canonical_key, document_id, now_ms()])?;
+        input.canonical_key = key;
+        return distill_in_transaction(transaction, input);
+    }
+
+    if let Some((document_id, existing_hash, _, _, _)) = head.as_ref()
         && existing_hash == &content_hash
     {
         if input.supersedes.is_some() {
@@ -550,14 +617,17 @@ fn distill_in_transaction(
              SET importance = max(importance, ?2),
                  confidence = max(confidence, ?3),
                  pinned = max(pinned, ?4),
-                 last_confirmed_at_ms = ?5
+                 last_confirmed_at_ms = max(coalesce(last_confirmed_at_ms, ?5), ?5),
+                 valid_until_ms = CASE WHEN ?5 >= coalesce(last_confirmed_at_ms, ?5)
+                                      THEN coalesce(?6, valid_until_ms) ELSE valid_until_ms END
              WHERE document_id = ?1",
             params![
                 document_id,
                 input.importance,
                 input.confidence,
                 input.pinned,
-                now_ms(),
+                evidence.completed_at_ms,
+                input.valid_until_ms,
             ],
         )?;
         insert_citation(
@@ -579,12 +649,15 @@ fn distill_in_transaction(
     }
 
     let superseded_document_id = match head {
-        Some((document_id, _)) => {
+        Some((document_id, _, _, _, confirmed_at)) => {
             if input.supersedes != Some(document_id) {
                 anyhow::bail!(
                     "memory `{}` already has different active content in document {document_id}; pass --supersedes {document_id} after review",
                     input.canonical_key
                 );
+            }
+            if confirmed_at.is_some_and(|confirmed| evidence.completed_at_ms <= confirmed) {
+                anyhow::bail!("supersession requires evidence newer than the current confirmation");
             }
             Some(document_id)
         }
@@ -618,23 +691,29 @@ fn distill_in_transaction(
     transaction.execute(
         "INSERT INTO memory_items(
              document_id, memory_kind, importance, confidence, valid_from_ms, pinned,
-             canonical_key, last_confirmed_at_ms
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?5)",
+             canonical_key, last_confirmed_at_ms, observed_at_ms, valid_until_ms
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?5, ?5, ?7)",
         params![
             outcome.document_id,
             input.memory_kind,
             input.importance,
             input.confidence,
-            now_ms(),
+            evidence.completed_at_ms,
             input.pinned,
+            input.valid_until_ms,
         ],
     )?;
     if let Some(previous_document_id) = superseded_document_id {
         let updated = transaction.execute(
             "UPDATE memory_items
-             SET superseded_by = ?2, valid_until_ms = ?3
+             SET superseded_by = ?2, valid_until_ms = CASE
+                 WHEN valid_until_ms IS NULL THEN ?3 ELSE min(valid_until_ms, ?3) END
              WHERE document_id = ?1 AND superseded_by IS NULL",
-            params![previous_document_id, outcome.document_id, now_ms()],
+            params![
+                previous_document_id,
+                outcome.document_id,
+                evidence.completed_at_ms
+            ],
         )?;
         if updated != 1 {
             anyhow::bail!(
@@ -673,6 +752,12 @@ fn distill_in_transaction(
         "UPDATE memory_items SET canonical_key = ?2 WHERE document_id = ?1",
         params![outcome.document_id, input.canonical_key],
     )?;
+    if let Some(previous_document_id) = superseded_document_id {
+        transaction.execute(
+            "UPDATE memory_aliases SET document_id = ?2 WHERE document_id = ?1",
+            params![previous_document_id, outcome.document_id],
+        )?;
+    }
     transaction.execute(
         "INSERT INTO memory_heads(canonical_key, document_id, updated_at_ms)
          VALUES(?1, ?2, ?3)
@@ -883,10 +968,13 @@ fn bounded_damerau_levenshtein(left: &str, right: &str, limit: usize) -> Option<
     (previous[right.len()] <= limit).then_some(previous[right.len()])
 }
 
-fn load_evidence(transaction: &Transaction<'_>, session_id: &str) -> Result<EvidenceRecord> {
+pub(crate) fn load_evidence(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> Result<EvidenceRecord> {
     transaction
         .query_row(
-            "SELECT e.id, e.document_id, d.body
+            "SELECT e.id, e.document_id, d.body, d.scope, e.completed_at_ms
              FROM evidence_sessions e
              JOIN documents d ON d.id = e.document_id
              WHERE e.session_id = ?1 AND d.active = 1",
@@ -896,6 +984,8 @@ fn load_evidence(transaction: &Transaction<'_>, session_id: &str) -> Result<Evid
                     id: row.get(0)?,
                     document_id: row.get(1)?,
                     body: row.get(2)?,
+                    scope: row.get(3)?,
+                    completed_at_ms: row.get(4)?,
                 })
             },
         )
@@ -904,21 +994,23 @@ fn load_evidence(transaction: &Transaction<'_>, session_id: &str) -> Result<Evid
 }
 
 #[derive(Debug)]
-struct EvidenceRecord {
-    id: i64,
-    document_id: i64,
-    body: String,
+pub(crate) struct EvidenceRecord {
+    pub(crate) id: i64,
+    pub(crate) document_id: i64,
+    pub(crate) body: String,
+    pub(crate) scope: String,
+    pub(crate) completed_at_ms: i64,
 }
 
 #[derive(Debug)]
-struct CitationLocation {
+pub(crate) struct CitationLocation {
     start_byte: usize,
     end_byte: usize,
     start_line: usize,
     end_line: usize,
 }
 
-fn locate_citation(body: &str, quote: &str) -> Result<CitationLocation> {
+pub(crate) fn locate_citation(body: &str, quote: &str) -> Result<CitationLocation> {
     let matches = body.match_indices(quote).collect::<Vec<_>>();
     if matches.is_empty() {
         anyhow::bail!("evidence_quote was not found exactly in the recorded evidence");
@@ -946,7 +1038,7 @@ fn locate_citation(body: &str, quote: &str) -> Result<CitationLocation> {
     })
 }
 
-fn insert_citation(
+pub(crate) fn insert_citation(
     transaction: &Transaction<'_>,
     memory_document_id: i64,
     evidence: &EvidenceRecord,

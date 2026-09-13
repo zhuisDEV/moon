@@ -1507,7 +1507,7 @@ fn schema_four_migrates_transactionally_to_auto_embedding_schema() {
     let store = Store::open(&database, 64).expect("migrate to v7");
     let health = store.health().expect("health");
     assert!(health.ok);
-    assert_eq!(health.schema_version, 7);
+    assert_eq!(health.schema_version, 8);
     let columns = rusqlite::Connection::open(database)
         .expect("inspect")
         .prepare("PRAGMA table_info(embedding_queue)")
@@ -1738,5 +1738,6 @@ fn distill_input(
         evidence_session_id: session_id.to_string(),
         evidence_quote: evidence_quote.to_string(),
         supersedes: None,
+        valid_until_ms: None,
     }
 }

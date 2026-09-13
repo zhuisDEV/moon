@@ -20,8 +20,10 @@ transcript during assembly or commit.
 
 Storage failures remain in OpenClaw's durable retry queue. Extraction runs only
 after a new evidence commit and is best effort: a crash between the commit and
-extraction can skip learning, while the evidence remains available. Heartbeats,
-disabled learning, and turns without a visible final answer are no-ops.
+extraction can skip L1, while the evidence remains available for optional daily
+L2 synthesis. Heartbeats, plugin-level disabled learning, and turns without a
+visible final answer are no-ops. Disabling only the L1 stage still records
+evidence.
 
 The same operation is available manually:
 
@@ -71,21 +73,30 @@ Moon stores the exact byte and line range of the quote. The memory can therefore
 show where it came from instead of presenting an unsupported recollection.
 
 In OpenClaw, local eligibility rules first reject greetings and trivial turns.
-The adapter then asks the configured primary model, with reasoning off by
-default, for at most three conservative proposals. It tries the fallback when
-the primary request or structured output fails. A proposal is accepted only
-when:
+The adapter asks the independently configured L1 model for conservative
+proposals, three by default. The runtime's `moon.toml` can select Astra `low`
+without changing the conversation model or L2's effort. It tries an enabled
+fallback when the primary request or JSON output fails. A proposal is accepted
+only when:
 
 - its kind, key, confidence, and importance pass deterministic validation;
 - its evidence quote is one exact substring of the completed turn;
 - every numeric claim in the memory appears in that quote;
-- the quote has sufficient wording overlap with the proposed claim; and
+- the quote has sufficient wording overlap and preserves uncertainty,
+  hypothetical wording, negation, and temporary status; and
 - any requested supersession points to an active retrieved memory and the user
   explicitly expressed a correction.
 
 An assistant merely recalling an existing memory cannot confirm that same
 memory. Confirmation of an active claim requires an exact quote from the user's
 new message, preventing circular self-citation.
+
+Correction turns receive a larger bounded set of related claims for comparison.
+New operational-status memories receive a temporary observation lifetime. Expiry
+is measured from source evidence time, and a legacy claim can acquire an expiry
+while preserving its existing kind. Expired claims are omitted from normal
+recall while their revisions and evidence remain available. These deterministic
+checks are conservative heuristics, not a proof of semantic truth.
 
 The model prompt stays inside OpenClaw's embedded runner. Proposal payloads
 travel to the Moon binary through stdin, not process arguments.
@@ -178,8 +189,10 @@ vectors add paraphrase and synonym recall.
 
 ### 5. Route model work through OpenClaw
 
-Moon has no direct API-key model route or provider credential store. When a
-model step is requested, the adapter uses:
+Moon has no direct API-key model route or provider credential store. L1 and L2
+read separate settings from `<selected-home>/moon.toml`, outside installed
+release directories. The adapter reloads that file on each accepted turn and
+scheduler tick. Optional stage fields override the inherited route:
 
 1. `agents.defaults.model.primary` from OpenClaw, unless `primaryModel`
    overrides it.
@@ -187,24 +200,67 @@ model step is requested, the adapter uses:
 
 Both values use OpenClaw's provider-qualified `provider/model` form. Providers
 such as vLLM, OpenAI, Anthropic, or Google therefore use the same Moon path.
-OpenClaw owns their authentication and transport.
+OpenClaw owns their authentication and transport. In the verified native Codex
+setup, the `openai` provider uses the app's Codex binary with the user's
+existing `CODEX_HOME` OAuth and `homeScope: "user"`; Moon reads no auth file and
+creates no second login.
 
 Each model attempt uses OpenClaw's `runEmbeddedAgent` capability with detached
-in-memory persistence and a unique child session key. Learning never reuses the
-live conversation's transcript or asks for a file-backed session. This requires
-OpenClaw 2026.9.2 or newer, which the signed release manifest enforces. This
-keeps existing model routing without adding model-override permissions for the
-newer `llm.complete` capability.
+in-memory persistence and an owner-preserving
+`agent:<owner>:internal-session-effects:incognito-<id>` key. Native Codex
+recognises that shape as an ephemeral thread. Helpers have tools disabled,
+reject ambiguous owner selection, and never reuse the live conversation's
+transcript. This requires OpenClaw 2026.9.2 or newer, which the signed release
+manifest enforces. It retains existing model routing without adding
+model-override permissions for the newer `llm.complete` capability.
 
-If the primary request fails, the adapter tries the fallback once. Cancellation
-stops routing immediately; partial output from failed or timed-out runs is not
-accepted. If both routes fail, learning follows the configured fail-open policy.
-Moon does not persist or print provider diagnostics because they may contain
-credentials or arbitrary remote response bodies. `primaryReasoning` and
-`fallbackReasoning` default to `off` independently of provider. Their overrides
-are passed as OpenClaw `thinkLevel` values, while visible reasoning output
-remains disabled, so the two routes may use different effort without exposing
-hidden reasoning.
+If the primary request fails, the adapter tries an enabled fallback once.
+Cancellation stops routing immediately; partial output from failed or timed-out
+runs is not accepted. If both routes fail, the recorded evidence remains
+available. Moon does not persist or print arbitrary provider diagnostics.
+Independent stage effort is passed as OpenClaw `thinkLevel`, with visible
+reasoning output disabled. The starter chooses Astra `low` for L1 and `xhigh`
+for L2. Missing configuration preserves the existing route and disables L2;
+valid inherited Astra effort is retained, and incompatible inherited `off` is
+adapted to the stage's supported default.
+
+Custom UTF-8 prompts up to 64 KiB supplement fixed guards rather than replacing
+them. Input, timeout, action, and attempt limits are enforced separately. The
+native Codex backend inspected with OpenClaw 2026.9.4 ignores the requested
+`max_output_tokens`; it must not be presented as an enforced token-usage cap.
+See [learning.md](learning.md) for the complete configuration and limits.
+
+### Daily reconciliation alongside turn-time learning
+
+L2 runs only when enabled in `moon.toml`. The existing plugin service checks
+every minute and on startup, using an IANA timezone and the most recent due
+daily cutoff. DST gaps shift the occurrence forward; repeated wall times share
+one date key. Restart catch-up includes older pending evidence without creating
+a separate model job for every missed day. Each date's batches share one fixed
+evidence cutoff.
+
+`learning prepare` leases a bounded snapshot of the oldest unprocessed evidence
+in one scope, related active memories, and their original source evidence. It
+reports partial comparison context explicitly. The default daily budget is eight
+batches of at most 32 selected records and 64,000 packet characters, with at
+most 16 proposed actions per batch. A batch key permits three failed attempts
+before that occurrence stops; each attempt can use one primary and one enabled
+fallback. Lease expiry and committed run keys survive restarts.
+
+L2 can create, confirm, supersede, merge, or request review. Every action needs
+an exact citation from selected evidence, and new claims must be grounded in the
+newest cited source. Confirmations preserve exact content. Merges require
+identical content, scope, and kind, and retain citations, aliases, expiry,
+confirmation history, and unresolved review information. Uncertain or semantic
+duplicates remain review items. Bounded related selection does not guarantee
+that all possible conflicts were compared.
+
+`learning apply` checks that the leased snapshot is still current and commits
+all actions and evidence-processing marks atomically. Failed or cancelled work
+leaves evidence pending. `prepare --preview` is read-only; `apply --dry-run`
+requires a real active lease and rolls back its transaction. The Rust commands
+do not run a model. The full isolated workflow and review limits are in
+[learning.md](learning.md#inspect-and-rehearse-with-the-cli).
 
 ### 6. Before an agent turn: assemble a context packet
 
@@ -351,6 +407,10 @@ The main lifecycle tables are:
 - `memory_items`: durable claims and lifecycle state.
 - `memory_heads`: the current document for each canonical key.
 - `memory_citations`: exact links from a claim to evidence byte and line ranges.
+- `memory_aliases`: historical keys retained when identical claims consolidate.
+- `learning_runs`, `learning_processed_evidence`, and `learning_reviews`:
+  reconciliation snapshots, expiring leases, processing history, and unresolved
+  conflicts with evidence identifiers.
 - `embedding_queue`: prioritized, leased, retryable vector work.
 - `context_metrics`: content-free request performance, delivery, and bounded
   human review labels.
@@ -358,32 +418,38 @@ The main lifecycle tables are:
 - `runtime_state`: adapter checkpoints.
 
 Numbered migrations update these tables transactionally. Generated Markdown is
-never a second writable source of truth.
+never a second writable source of truth. The unreleased learning implementation
+uses schema 8; back up the database and configuration before deployment and
+retain a matching database for the previous binary.
 
 On Unix, runtime directories are owner-only (`0700`) and SQLite databases,
 backups, and exports are owner-only files (`0600`).
 
 ## Current integration boundary
 
-The production OpenClaw adapter owns six bounded operations:
+The OpenClaw adapter owns seven bounded operations:
 
 1. retrieve relevant context before a turn;
 2. mark whether the content-free request metric was injected;
 3. record the completed user/final-answer pair after a turn;
-4. selectively distill evidence-backed durable memories; and
+4. selectively distill evidence-backed memories through L1;
 5. optionally generate a safeguard compaction summary through a configured local
    model; and
-6. drain a bounded local-embedding batch after completed turns.
+6. drain a bounded local-embedding batch after completed turns and successful L2
+   batches; and
+7. optionally reconcile pending evidence through daily L2 synthesis.
 
 Retrieval and learning failures fail open by default and never suppress the
 agent's reply. OpenClaw still owns its transcript and compaction lifecycle even
 when Moon supplies the summary text. Moon does not copy tool traces or
-reasoning, run a watcher, or require QMD.
+reasoning, run a separate watcher, or require QMD.
 
 Automatic extraction remains deliberately conservative. A changed canonical
-claim is replaced only when the user explicitly corrects it and the extraction
-proposal names the active head that was supplied for comparison. Other conflicts
-remain recorded as evidence but do not overwrite durable memory.
+claim is replaced only when an explicit correction is supported by newer
+evidence and the proposal names the active head supplied for comparison. Other
+conflicts retain their evidence and may produce review items without replacing
+the claim. Temporary observations can expire from normal recall without being
+deleted.
 
 Recall and lifecycle improvements follow the executable evaluation protocol in
 [memory-improvement-plan.md](memory-improvement-plan.md). Automatic metrics

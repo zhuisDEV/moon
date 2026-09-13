@@ -29,7 +29,7 @@ Use this process for tagged public releases (for example `v2.2.0`).
    - `deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md`
    - `deno lint assets/openclaw-plugin tools`
    - `sh tools/test-openclaw-adapter.sh "$PWD/target/release/moon"` (requires
-     both real-binary integration tests in a temporary synthetic runtime)
+     all three real-binary integration tests in a temporary synthetic runtime)
    - an isolated migration and real-binary adapter canary
    - a consistent live backup plus `moon --json health`
 
@@ -47,14 +47,14 @@ cargo run --locked --example moon-release -- bundle \
   --binary target/release/moon \
   --minimum-os-version 13.0 \
   --database-schema-min 6 \
-  --database-schema-max 7 \
+  --database-schema-max 8 \
   --output-dir /path/to/release-staging
 ```
 
 The schema range is intentionally required. Set the minimum to the oldest
 installed schema the release can migrate or open, and the maximum to the schema
-the release produces. For example, a release that migrates schema 6 to schema 7
-must advertise `6..=7`; advertising only `7..=7` would cause the existing
+the release produces. For example, Moon 2.6.0 migrates schema 6 or 7 to schema 8
+and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 

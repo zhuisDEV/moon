@@ -56,6 +56,7 @@ pub struct DistillInput {
     pub evidence_session_id: String,
     pub evidence_quote: String,
     pub supersedes: Option<i64>,
+    pub valid_until_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -214,7 +215,11 @@ pub struct ContextMemory {
     pub importance: f64,
     pub confidence: f64,
     pub pinned: bool,
+    pub observed_at_ms: Option<i64>,
+    pub last_confirmed_at_ms: Option<i64>,
+    pub valid_until_ms: Option<i64>,
     pub relevance_score: f64,
+    pub review_required: bool,
     pub citations: Vec<ContextCitation>,
 }
 
@@ -433,15 +438,29 @@ fn render_context_memory(memory: &ContextMemory) -> String {
     let heading = memory.title.as_deref().unwrap_or("Untitled memory");
     let key = memory.canonical_key.as_deref().unwrap_or("unkeyed");
     let mut output = format!(
-        "### Memory {}\n\n- title: {}\n- key: {}\n- kind: {}\n- scope: {}\n- confidence: {:.3}\n\nUntrusted recalled content:\n\n{}",
+        "### Memory {}\n\n- title: {}\n- key: {}\n- kind: {}\n- scope: {}\n- confidence: {:.3}\n- observed_at_ms: {}\n- last_confirmed_at_ms: {}\n- valid_until_ms: {}\n\nUntrusted recalled content:\n\n{}",
         memory.document_id,
         inline_json(heading),
         inline_json(key),
         inline_json(&memory.memory_kind),
         inline_json(&memory.scope),
         memory.confidence,
+        memory
+            .observed_at_ms
+            .map_or_else(|| "unknown".into(), |v| v.to_string()),
+        memory
+            .last_confirmed_at_ms
+            .map_or_else(|| "unknown".into(), |v| v.to_string()),
+        memory
+            .valid_until_ms
+            .map_or_else(|| "none".into(), |v| v.to_string()),
         untrusted_fence(&memory.content),
     );
+    if memory.review_required {
+        output.push_str(
+            "\n- review_required: unresolved evidence conflict; do not present as settled fact\n",
+        );
+    }
     if !memory.citations.is_empty() {
         output.push_str("\nEvidence metadata and untrusted exact quotes:\n\n");
         for citation in &memory.citations {
@@ -539,7 +558,11 @@ mod tests {
                 importance: 1.0,
                 confidence: 1.0,
                 pinned: false,
+                observed_at_ms: None,
+                last_confirmed_at_ms: None,
+                valid_until_ms: None,
                 relevance_score: 1.0,
+                review_required: false,
                 citations: Vec::new(),
             }],
             references: vec![ContextReference {

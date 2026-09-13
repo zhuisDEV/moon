@@ -23,11 +23,17 @@ The adapter keeps strict ownership boundaries:
 - Storage failures reject the commit for OpenClaw's durable retry queue, even
   with `failOpen` enabled. Model-based extraction is best effort after the
   commit; a crash after the evidence write can skip extraction, but preserves
-  evidence. Heartbeats, disabled learning, and turns without a visible answer
-  are no-ops.
-- The configured primary or fallback model may propose at most three durable
-  memories; exact-quote, numeric-entailment, confidence, importance, and
-  correction checks run before a proposal reaches SQLite.
+  evidence for optional L2 synthesis. Heartbeats, plugin-level disabled
+  learning, and turns without a visible answer are no-ops. Disabling only L1
+  still records evidence.
+- L1's configured primary or fallback model may propose up to
+  `learningMaxMemories` memories, three by default. Exact-quote, numeric,
+  confidence, importance, correction, and freshness checks run before a proposal
+  reaches SQLite.
+- L2 is disabled by default. When enabled, the plugin service reconciles bounded
+  evidence batches daily, using durable leases, date keys, and three attempts
+  per batch key. It retains review items for uncertain conflicts, preserves
+  evidence, and never merges differently worded claims automatically.
 - Greetings and irrelevant queries inject no context packet.
 - Non-trivial context requests update a local, content-free metric row with
   injection state. Logs expose only its opaque request ID and numeric summary
@@ -42,21 +48,36 @@ stopped when the adapter is disposed. Raw evidence is not embedded; active
 memories are queued ahead of reference documents. Hash vectors exist only for
 offline plumbing tests.
 
-All model work stays inside OpenClaw's provider runtime. The adapter inherits
-OpenClaw's primary model and first fallback unless provider-qualified overrides
-are configured. Both reasoning levels default to `off` and may be overridden
-independently. Moon owns no provider credentials, and bounded failures never
-print arbitrary remote response bodies. Turn transcripts and proposals sent to
-the Moon binary use stdin and are not exposed in process arguments.
+All model work stays inside OpenClaw's provider runtime. The runtime's
+`moon.toml` supplies independent L1 and L2 models, reasoning, fallbacks,
+timeouts, requested output limits, and optional prompt files. Unset fields
+inherit the existing plugin/OpenClaw settings. With no file, L1 keeps its
+existing route and L2 is disabled. The Astra starter uses `low` for L1 and
+`xhigh` for L2. Custom prompts supplement fixed evidence guards and must be
+readable UTF-8 files no larger than 64 KiB. Config is reloaded per completed
+turn and scheduler tick; in-flight work keeps its initial settings.
+
+On the verified native Codex setup, the `openai` provider uses OpenClaw's Codex
+plugin, the app's Codex binary, and `homeScope: "user"` with the existing user
+`CODEX_HOME` OAuth. Moon owns no provider credentials, creates no second login,
+and prints no arbitrary provider failure bodies. Turn transcripts and proposals
+sent to the Moon binary use stdin and are not exposed in process arguments.
 
 OpenClaw 2026.9.2 model calls use the neutral `runEmbeddedAgent` runtime API.
-Every learning or summarization attempt gets a fresh session identity with
-`sessionPersistence="detached"`, including fallback attempts. OpenClaw owns the
-in-memory session; model helpers never reuse the completed turn's live
-transcript or write durable transcript metadata. File-backed session targets are
-no longer accepted by this runtime. Cancellation stops routing without starting
-a fallback, and only final answer payloads are accepted for learning or
-summarization.
+Every learning or summarization attempt gets a fresh
+`agent:<owner>:internal-session-effects:incognito-<id>` session key with
+`sessionPersistence="detached"`, including fallback attempts. This preserves
+agent ownership, selects an ephemeral native Codex thread, and keeps OpenClaw's
+session in memory. Ambiguous ownership is rejected. Helpers do not reuse the
+completed turn's transcript, and their tool route is disabled. File-backed
+session targets are not accepted by this runtime. Cancellation stops routing
+without starting a fallback, and only final answer payloads are accepted.
+
+The native Codex backend inspected with OpenClaw 2026.9.4 ignores
+`max_output_tokens`; Moon passes it as a provider request, not an enforced token
+cap. Input size, timeout, actions, daily batches, and attempts have separate
+limits. A successful model-route probe does not establish synthesis quality or
+an exact subscription-usage budget.
 
 Moon retains its existing configured model routing through this API. Switching
 to OpenClaw's session-bound `llm.complete` API requires a separate operator
@@ -79,6 +100,9 @@ assembly, not transcript replacement. Selecting `moon-local` changes the summary
 generator, not that ownership boundary.
 
 Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
+[`docs/learning.md`](../../docs/learning.md) for configuration, daily
+scheduling, freshness, review limits, schema-8 migration, and isolated CLI
+rehearsals. See
 [`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md) for
 the metrics commands, privacy boundary, and multi-day recall evaluation before
 changing retrieval policy.

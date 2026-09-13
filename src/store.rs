@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -223,6 +223,13 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0007_context_metrics.sql"))?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(7, ?1)",
+                [now_ms()],
+            )?;
+        }
+        if existing_version < 8 {
+            transaction.execute_batch(include_str!("../migrations/0008_learning_lifecycle.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(8, ?1)",
                 [now_ms()],
             )?;
         }
@@ -1088,8 +1095,25 @@ impl Store {
             [],
             |row| row.get::<_, i64>(0),
         )? as usize;
-        let memory_violations =
-            invalid_heads + duplicate_active_keys + missing_heads + supersession_cycles;
+        let invalid_aliases = self.connection.query_row(
+            "SELECT count(*) FROM memory_aliases a
+             LEFT JOIN memory_items m ON m.document_id=a.document_id
+             LEFT JOIN memory_heads h ON h.canonical_key=a.canonical_key
+             WHERE m.document_id IS NULL OR m.superseded_by IS NOT NULL OR m.canonical_key IS NULL OR h.document_id IS NOT NULL",
+            [], |row|row.get::<_,i64>(0),
+        )? as usize;
+        let invalid_learning_ledger = self.connection.query_row(
+            "SELECT count(*) FROM learning_processed_evidence p JOIN learning_runs r ON r.run_id=p.run_id
+             JOIN evidence_sessions e ON e.id=p.evidence_session_id JOIN documents d ON d.id=e.document_id
+             WHERE r.status<>'committed' OR d.scope<>r.scope",
+            [], |row|row.get::<_,i64>(0),
+        )? as usize;
+        let memory_violations = invalid_heads
+            + duplicate_active_keys
+            + missing_heads
+            + supersession_cycles
+            + invalid_aliases
+            + invalid_learning_ledger;
         let citation_violations = invalid_citations;
         let logical_violations = memory_violations
             + citation_violations

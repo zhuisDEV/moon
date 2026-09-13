@@ -52,7 +52,7 @@ jobs:
           --binary target/release/moon
           --minimum-os-version "${{ matrix.minimum_os_version }}"
           --database-schema-min 6
-          --database-schema-max 7
+          --database-schema-max 8
           --output-dir "target/release-check/${{ matrix.target }}"
       - uses: actions/upload-artifact@v7
         with:
@@ -98,6 +98,8 @@ jobs:
           deno-version: v2.x
       - run: deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md
       - run: deno lint assets/openclaw-plugin tools
+      - name: Test native Codex route diagnostic without accessing auth or models
+        run: deno test --no-config tools/probe-codex-route.test.ts
       - uses: actions/download-artifact@v8
         with:
           name: unsigned-release-x86_64-unknown-linux-gnu

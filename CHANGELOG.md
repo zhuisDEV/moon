@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 2.6.0 - 2026-09-14
+
+- Configure L1 distillation and daily L2 synthesis independently in runtime
+  `moon.toml`, including models, effort, fallback, timeouts, budgets, and
+  bounded custom prompts. Add strict `config init`, `show`, and `validate`
+  commands without opening a database; keep L2 disabled by default.
+- Add schema-8 evidence reconciliation with bounded previews, atomic apply/dry
+  runs, frozen snapshots, durable leases, daily cutoff keys, and a three-attempt
+  scheduler retry limit. Preserve pending evidence after failures and expose
+  review reasons with source identifiers.
+- Ground corrections in newer exact user evidence, preserve uncertainty and
+  negation, expire temporary observations from evidence time, and merge only
+  identical claims while preserving citations and lifecycle history.
+- Give every OpenClaw model helper an owner-preserving native incognito key and
+  detached persistence with tools disabled. Retain OpenClaw's native Codex app
+  binary/user OAuth route without reading or copying credentials. Add a separate
+  opt-in native route probe and document that the current Codex backend ignores
+  requested output-token limits.
+- Document isolated learning rehearsals and the required database/configuration
+  backup before a schema-8 deployment; preserve runtime configuration outside
+  release directories. Update release schema compatibility to 6–8.
+
 ## 2.5.4 - 2026-09-07
 
 - Quiesce OpenClaw before taking the rollback database snapshot, and persist

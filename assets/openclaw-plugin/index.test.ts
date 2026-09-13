@@ -60,6 +60,27 @@ function metricsEnvelope(packet: string | null) {
   });
 }
 
+function learningConfig(l1 = {}, l2 = {}) {
+  return {
+    path: "/tmp/moon-home/moon.toml",
+    present: true,
+    learning: {
+      observation_ttl_hours: 24,
+      l1: { enabled: true, ...l1 },
+      l2: {
+        enabled: false,
+        daily_at: "03:00",
+        timezone: "Australia/Sydney",
+        batch_size: 32,
+        max_input_chars: 64_000,
+        max_batches_per_day: 8,
+        max_actions: 16,
+        ...l2,
+      },
+    },
+  };
+}
+
 function assert(
   condition: unknown,
   message = "assertion failed",
@@ -373,6 +394,13 @@ Deno.test("adapter records one completed turn and distills a validated durable m
               stderr: "",
             };
           }
+          if (argv.includes("config")) {
+            return {
+              code: 0,
+              stdout: JSON.stringify(learningConfig()),
+              stderr: "",
+            };
+          }
           if (argv.includes("distill-batch")) {
             return {
               code: 0,
@@ -430,22 +458,23 @@ Deno.test("adapter records one completed turn and distills a validated durable m
   assertEquals(committed, { status: "committed" });
   assert(!("afterTurn" in engine));
   assertEquals(modelCalls, 1);
-  assertEquals(calls.length, 4);
+  assertEquals(calls.length, 5);
   assert(calls[0].argv.includes("record"));
   assertEquals(
     calls[0].input,
     "User:\nI prefer concise answers.\n\nAssistant:\nUnderstood. I will keep answers concise.",
   );
   assert(!calls[0].argv.includes("I prefer concise answers."));
-  assert(calls[2].argv.includes("distill-batch"));
-  assert(!calls[2].argv.includes("--proposal-json"));
-  assert(!calls[2].argv.includes("The user prefers concise answers."));
-  const proposal = JSON.parse(calls[2].input ?? "")[0];
+  assert(calls[1].argv.includes("config"));
+  assert(calls[3].argv.includes("distill-batch"));
+  assert(!calls[3].argv.includes("--proposal-json"));
+  assert(!calls[3].argv.includes("The user prefers concise answers."));
+  const proposal = JSON.parse(calls[3].input ?? "")[0];
   assertEquals(proposal.evidence_quote, "I prefer concise answers.");
-  assert(calls[3].argv.includes("record-runtime"));
-  assert(calls[3].argv.includes("--evidence-changed"));
-  assert(calls[3].argv.includes("--learning-eligible"));
-  assert(calls[3].argv.includes("--proposed-memories"));
+  assert(calls[4].argv.includes("record-runtime"));
+  assert(calls[4].argv.includes("--evidence-changed"));
+  assert(calls[4].argv.includes("--learning-eligible"));
+  assert(calls[4].argv.includes("--proposed-memories"));
 });
 
 Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
@@ -830,7 +859,7 @@ Deno.test("model attempts use detached identities without a file-backed transcri
   assertEquals(new Set(sessionKeys).size, 2);
   assert(
     sessionKeys.every((key) =>
-      key.startsWith("agent:research:discord:channel:123:moon-model:")
+      /^agent:research:internal-session-effects:incognito-[^:]+$/.test(key)
     ),
   );
 });
@@ -856,6 +885,150 @@ Deno.test("model routing accepts only final answer payloads", async () => {
   );
   assertEquals(result.output, '{"eligible":false}');
   assertEquals(result.validatedOutput, { eligible: false });
+});
+
+Deno.test("model helpers use native ephemeral identities with the correct agent owner", async () => {
+  const cases = [
+    {
+      agents: {
+        entries: { research: {}, system: {} },
+        defaults: { systemAgent: { agentId: "system" } },
+      },
+      params: {
+        sessionKey: "agent:research:discord:channel:123",
+        agentId: "research",
+      },
+      owner: "research",
+    },
+    {
+      agents: { entries: { research: {}, system: {} } },
+      params: { agentId: "research" },
+      owner: "research",
+    },
+    {
+      agents: {
+        entries: { research: {}, system: {} },
+        defaults: { systemAgent: { agentId: "system" } },
+      },
+      params: {},
+      owner: "system",
+    },
+    { agents: { entries: { research: {} } }, params: {}, owner: "research" },
+    { agents: { list: [{ id: "research" }] }, params: {}, owner: "research" },
+    {
+      agents: { entries: { research: { default: true }, system: {} } },
+      params: {},
+      owner: "research",
+    },
+    {
+      agents: { list: [{ id: "research", default: true }, { id: "system" }] },
+      params: {},
+      owner: "research",
+    },
+    { agents: { defaults: {} }, params: {}, owner: "main" },
+  ];
+  for (const example of cases) {
+    const runs: Array<Record<string, unknown>> = [];
+    const api = createApi(
+      { code: 1, stdout: "", stderr: "unexpected command" },
+      [],
+      {},
+      (params) => {
+        runs.push(params);
+        return { payloads: [{ text: "READY" }] };
+      },
+    );
+    Object.assign(api.config, { agents: example.agents });
+    await __moonTest.runOpenClawModel(
+      api,
+      __moonTest.resolveSettings(api),
+      "Return READY",
+      {
+        ...example.params,
+        modelRef: "openai/gpt-6-astra",
+        reasoning: "low",
+        route: "primary",
+      },
+    );
+    const run = runs[0];
+    assertEquals(run.agentId, example.owner);
+    const key = String(run.sessionKey);
+    assert(
+      /^agent:[a-z0-9][a-z0-9_-]{0,63}:internal-session-effects:incognito-[^:]+$/
+        .test(key),
+    );
+    assert(
+      key.startsWith(
+        `agent:${example.owner}:internal-session-effects:incognito-`,
+      ),
+    );
+    const suffix = key.split(":incognito-")[1];
+    assertEquals(run.sessionId, `internal-session-effects-${suffix}`);
+    assertEquals(run.sessionPersistence, "detached");
+    assertEquals(run.toolsAllow, []);
+    assertEquals(run.disableTools, true);
+    assertEquals(run.disableMessageTool, true);
+    assert(run.config === api.config);
+  }
+});
+
+Deno.test("model helpers reject ambiguous and conflicting agent owners before inference", async () => {
+  const cases = [
+    {
+      agents: {},
+      params: { sessionKey: "agent:research:discord:123", agentId: "other" },
+    },
+    { agents: {}, params: { sessionKey: "agent::discord:123" } },
+    { agents: {}, params: { agentId: "bad:owner" } },
+    { agents: { entries: {} }, params: {} },
+    { agents: { list: [] }, params: {} },
+    { agents: { entries: { first: {}, second: {} } }, params: {} },
+    {
+      agents: {
+        ownership: "explicit",
+        entries: { first: { default: true }, second: {} },
+      },
+      params: {},
+    },
+    {
+      agents: {
+        entries: { first: {} },
+        defaults: { systemAgent: { agentId: "" } },
+      },
+      params: {},
+    },
+  ];
+  for (const example of cases) {
+    let runs = 0;
+    const api = createApi(
+      { code: 1, stdout: "", stderr: "unexpected command" },
+      [],
+      {},
+      () => {
+        runs += 1;
+        return { payloads: [{ text: "READY" }] };
+      },
+    );
+    Object.assign(api.config, { agents: example.agents });
+    let rejected = false;
+    try {
+      await __moonTest.runOpenClawModel(
+        api,
+        __moonTest.resolveSettings(api),
+        "Return READY",
+        {
+          ...example.params,
+          modelRef: "openai/gpt-6-astra",
+          reasoning: "low",
+          route: "primary",
+        },
+      );
+    } catch {
+      rejected = true;
+    }
+    assert(rejected);
+    assertEquals(runs, 0);
+  }
 });
 
 Deno.test("model routing honours cancellation before starting inference", async () => {
@@ -1337,9 +1510,9 @@ Deno.test("automatic supersession requires an explicit correction and active hea
   const corrected = __moonTest.normalizeProposal(
     raw,
     {
-      userText: "Actually, update my preference.",
+      userText: "Actually, the preferred model is Luna.",
       transcript:
-        "User:\nActually, update my preference.\n\nAssistant:\nActually, the preferred model is Luna.",
+        "User:\nActually, the preferred model is Luna.\n\nAssistant:\nUnderstood.",
     },
     settings,
     new Set([42]),
@@ -1356,8 +1529,7 @@ Deno.test("automatic supersession requires an explicit correction and active hea
     settings,
     new Set([42]),
   );
-  assert(uncorrected);
-  assertEquals(uncorrected.supersedesDocumentId, null);
+  assertEquals(uncorrected, null);
 });
 
 Deno.test("assistant recall cannot create circular confirmation evidence", () => {
@@ -1760,4 +1932,829 @@ Deno.test("a turn without a visible final answer commits as an idempotent no-op"
   ]);
   assertEquals(await engine.commitTurn(params), { status: "committed" });
   assertEquals(calls, []);
+});
+
+Deno.test("L1 and L2 settings are independent and preserve the native Codex host route", async () => {
+  const runs: Array<Record<string, unknown>> = [];
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    [],
+    {},
+    (params) => {
+      runs.push(params);
+      return { payloads: [{ text: '{"actions":[]}' }] };
+    },
+  );
+  Object.assign(api.config, {
+    plugins: {
+      entries: {
+        codex: {
+          config: {
+            appServer: {
+              homeScope: "user",
+              command: "/Applications/ChatGPT.app/Contents/Resources/codex",
+            },
+          },
+        },
+      },
+    },
+  });
+  const base = __moonTest.resolveSettings(api);
+  const config = learningConfig(
+    {
+      model: "openai/gpt-6-astra",
+      reasoning: "low",
+      fallback_enabled: false,
+      timeout_ms: 120_000,
+      max_output_tokens: 8192,
+    },
+    {
+      enabled: true,
+      model: "openai/gpt-6-astra",
+      reasoning: "xhigh",
+      fallback_enabled: false,
+      timeout_ms: 600_000,
+      max_output_tokens: 32768,
+    },
+  );
+  for (const stage of ["l1", "l2"]) {
+    const settings = __moonTest.stageSettings(base, config, stage);
+    await __moonTest.runModelWithFallback(api, settings, "Return JSON", {
+      maxTokens: settings.maxOutputTokens,
+    });
+  }
+  assertEquals(runs.map((run) => run.thinkLevel), ["low", "xhigh"]);
+  assertEquals(runs.map((run) => run.timeoutMs), [120_000, 600_000]);
+  assertEquals(runs.map((run) => run.streamParams), [{ maxTokens: 8192 }, {
+    maxTokens: 32768,
+  }]);
+  for (const run of runs) {
+    assert(
+      run.config === api.config,
+      "native host configuration must pass through unchanged",
+    );
+    assertEquals(run.provider, "openai");
+    assertEquals(run.model, "gpt-6-astra");
+    assertEquals(run.modelFallbacksOverride, []);
+    assertEquals(run.sessionPersistence, "detached");
+    assertEquals(run.toolsAllow, []);
+    assertEquals(run.disableTools, true);
+    assert(!("authProfile" in run) && !("apiKey" in run) && !("env" in run));
+  }
+  assertEquals(base.primaryModel, "vllm/local-primary");
+  assertEquals(
+    __moonTest.stageSettings(
+      base,
+      learningConfig({ model: "openai/gpt-6-astra" }),
+      "l1",
+    ).primaryReasoning,
+    "low",
+  );
+});
+
+Deno.test("learning evidence preserves negation, hypothetical meaning and historical tense", () => {
+  for (
+    const [claim, quote] of [
+      ["Astrofaith API key is stored.", "No Astrofaith API key is stored."],
+      [
+        "Diana has Virgo on the second-house cusp.",
+        "If Diana had Virgo on the second-house cusp, this would be a hypothetical example.",
+      ],
+      [
+        "Astrofaith uses Live Room credentials.",
+        "Astrofaith previously used Live Room credentials, which are now retired.",
+      ],
+      ["服务已经修复。", "假设服务已经修复。"],
+      ["密钥已经存储。", "密钥没有存储。"],
+    ]
+  ) assert(!__moonTest.evidenceSupportsContent(claim, quote), claim);
+  assert(
+    __moonTest.evidenceSupportsContent(
+      "No Astrofaith API key is stored.",
+      "No Astrofaith API key is stored.",
+    ),
+  );
+  assert(
+    __moonTest.evidenceSupportsContent(
+      "Astrofaith Live Room is retired.",
+      "Astrofaith Live Room is retired.",
+    ),
+  );
+});
+
+Deno.test("correction detection includes retirement and Chinese without creating a competing claim", () => {
+  const settings = __moonTest.resolveSettings(
+    createApi({ code: 0, stdout: "", stderr: "" }, []),
+  );
+  for (
+    const text of [
+      "The Live Room has been retired.",
+      "Please see any updates because this has been retired.",
+      "更正一下，Live Room 已停用。",
+      "我们不再使用这个模型。",
+    ]
+  ) {
+    assert(__moonTest.correctionRequested(text));
+    assert(
+      __moonTest.isLearningCandidate({ userText: text, assistantText: "OK" }),
+    );
+  }
+  const quote = "Actually, the release colour is violet.";
+  const raw = {
+    canonical_key: "project:colour",
+    kind: "fact",
+    content: "The release colour is violet.",
+    evidence_quote: quote,
+    importance: 0.9,
+    confidence: 0.99,
+    supersedes_document_id: 77,
+  };
+  const turn = {
+    userText: quote,
+    transcript: `User:\n${quote}`,
+    completedAtMs: 1000,
+  };
+  assertEquals(
+    __moonTest.normalizeProposal(raw, turn, settings, new Set()),
+    null,
+  );
+  assertEquals(
+    __moonTest.normalizeProposal(raw, turn, settings, new Set([77]))
+      ?.supersedesDocumentId,
+    77,
+  );
+});
+
+Deno.test("changed canonical keys cannot bypass assistant echo and exploration guards", () => {
+  const settings = __moonTest.resolveSettings(
+    createApi({ code: 0, stdout: "", stderr: "" }, []),
+  );
+  const quote = "Diana has Scorpio on the second-house cusp.";
+  const raw = {
+    canonical_key: "diana:new-key",
+    kind: "fact",
+    content: quote,
+    evidence_quote: quote,
+    importance: 0.9,
+    confidence: 0.99,
+  };
+  const old = [{
+    document_id: 42,
+    canonical_key: "diana:old-key",
+    content: quote,
+  }];
+  for (
+    const userText of [
+      "Tell me about Diana.",
+      "I am just exploring different signs on the cusp.",
+    ]
+  ) {
+    const turn = {
+      userText,
+      transcript: `User:\n${userText}\n\nAssistant:\n${quote}`,
+      completedAtMs: 1000,
+    };
+    assertEquals(
+      __moonTest.normalizeProposal(
+        raw,
+        turn,
+        settings,
+        new Set([42]),
+        new Set(["diana:old-key"]),
+        old,
+      ),
+      null,
+    );
+  }
+});
+
+Deno.test("temporary observations expire from evidence time while durable preferences remain", () => {
+  const settings = {
+    ...__moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    observationTtlHours: 12,
+  };
+  const quote = "The Proton service is working now.";
+  const raw = {
+    canonical_key: "proton:status",
+    kind: "fact",
+    content: quote,
+    evidence_quote: quote,
+    importance: 0.9,
+    confidence: 0.99,
+  };
+  const turn = {
+    userText: quote,
+    transcript: `User:\n${quote}`,
+    completedAtMs: 1000,
+  };
+  const result = __moonTest.normalizeProposal(raw, turn, settings, new Set());
+  assertEquals(result?.kind, "observation");
+  assertEquals(result?.validUntilMs, 43_201_000);
+  const preference = "I currently prefer concise answers.";
+  const stable = __moonTest.normalizeProposal(
+    {
+      ...raw,
+      kind: "preference",
+      content: preference,
+      evidence_quote: preference,
+    },
+    { ...turn, userText: preference, transcript: `User:\n${preference}` },
+    settings,
+    new Set(),
+  );
+  assertEquals(stable?.validUntilMs, null);
+  const legacy = __moonTest.normalizeProposal(
+    { ...raw, kind: "observation" },
+    turn,
+    settings,
+    new Set([42]),
+    new Set([raw.canonical_key]),
+    [{
+      document_id: 42,
+      canonical_key: raw.canonical_key,
+      kind: "fact",
+      content: quote,
+    }],
+  );
+  assertEquals(legacy?.kind, "fact");
+  assertEquals(legacy?.validUntilMs, 43_201_000);
+});
+
+Deno.test("elliptical retrieval follows the preceding user topic without recycling assistant recall", () => {
+  const messages = [
+    {
+      role: "user",
+      content: "How do you interpret Cancer on the second-house cusp?",
+    },
+    {
+      role: "assistant",
+      content: "Unrelated discussion of Diana and other people",
+    },
+    { role: "user", content: "How about Leo?" },
+  ];
+  const query = __moonTest.queryFromParams({ messages });
+  assert(query.includes("second-house cusp"));
+  assert(query.includes("Leo"));
+  assert(!query.includes("Diana"));
+  assertEquals(
+    __moonTest.queryFromParams({
+      messages,
+      prompt: "What is the Proton status?",
+    }),
+    "What is the Proton status?",
+  );
+});
+
+Deno.test("daily synthesis cutoffs handle Sydney catch-up and both DST transitions", () => {
+  for (
+    const [now, at, key, cutoff] of [
+      ["2026-09-13T19:00:00Z", "03:00", "2026-09-14", "2026-09-13T17:00:00Z"],
+      ["2026-09-13T16:00:00Z", "03:00", "2026-09-13", "2026-09-12T17:00:00Z"],
+      ["2026-10-03T16:15:00Z", "02:30", "2026-10-03", "2026-10-02T16:30:00Z"],
+      ["2026-10-03T16:45:00Z", "02:30", "2026-10-04", "2026-10-03T16:30:00Z"],
+      ["2026-04-04T16:45:00Z", "02:30", "2026-04-05", "2026-04-04T16:30:00Z"],
+    ]
+  ) {
+    assertEquals(
+      __moonTest.dailySynthesisWindow(Date.parse(now), at, "Australia/Sydney"),
+      { key, cutoffMs: Date.parse(cutoff) },
+    );
+  }
+});
+
+function synthesisFixture() {
+  const quote = "I prefer concise answers.";
+  return {
+    prepared: {
+      status: "prepared",
+      run_id: "run-1",
+      scope: "global",
+      evidence: [{
+        session_id: "source:new",
+        completed_at_ms: 1000,
+        selected: true,
+        content: `User:\n${quote}\n\nAssistant:\nUnderstood.`,
+      }],
+      memories: [],
+    },
+    action: {
+      action: "create",
+      canonical_key: "user:preference:style",
+      kind: "preference",
+      title: "Response style",
+      content: "The user prefers concise answers.",
+      importance: 0.9,
+      confidence: 0.99,
+      evidence: [{ session_id: "source:new", quote }],
+    },
+  };
+}
+
+Deno.test("L2 validates original citations and rejects unsupported changes even with custom guidance", () => {
+  const { prepared, action } = synthesisFixture();
+  const settings = __moonTest.stageSettings(
+    __moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    learningConfig(),
+    "l2",
+  );
+  assertEquals(
+    __moonTest.normalizeSynthesisResult(
+      { actions: [action] },
+      prepared,
+      settings,
+      16,
+    ).actions.length,
+    1,
+  );
+  for (
+    const changed of [
+      { ...action, content: "The user prefers 500-word answers." },
+      {
+        ...action,
+        evidence: [{ session_id: "forged", quote: action.evidence[0].quote }],
+      },
+      {
+        ...action,
+        evidence: [{ session_id: "source:new", quote: "The user likes cake." }],
+      },
+      { ...action, action: "supersede", target_document_id: 999 },
+    ]
+  ) {
+    let rejected = false;
+    try {
+      __moonTest.normalizeSynthesisResult(
+        { actions: [changed] },
+        prepared,
+        settings,
+        16,
+      );
+    } catch {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+  const prompt = __moonTest.synthesisPrompt(prepared, {
+    ...settings,
+    promptText: "Focus on concise preferences.",
+  }, 16);
+  assert(prompt.includes("Focus on concise preferences."));
+  assert(prompt.includes("untrusted data"));
+  assert(prompt.includes("original evidence"));
+  assert(prompt.includes("at least one selected=true"));
+});
+
+Deno.test("L2 rejects malformed structure and missing selected evidence before fallback validation completes", () => {
+  const { prepared, action } = synthesisFixture();
+  const settings = __moonTest.stageSettings(
+    __moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    learningConfig(),
+    "l2",
+  );
+  const target = {
+    document_id: 42,
+    canonical_key: action.canonical_key,
+    kind: action.kind,
+    content: action.content,
+  };
+  const snapshot = { ...prepared, memories: [target] };
+  const valid = { ...action, action: "confirm", target_document_id: 42 };
+  const invalid = [
+    { ...valid, target_document_id: undefined },
+    { ...valid, target_document_id: "42" },
+    { ...valid, target_document_id: 99 },
+    { ...valid, canonical_key: "another:key" },
+    { ...valid, content: "The user prefers very concise answers." },
+    { ...valid, confidence: "0.99" },
+    { ...valid, importance: null },
+    { ...valid, title: 123 },
+    { ...valid, extra: true },
+    { ...valid, merge_document_ids: [42] },
+    { ...valid, action: "create" },
+    { ...valid, action: "merge", merge_document_ids: [] },
+    { ...valid, action: "merge", merge_document_ids: [42] },
+    { action: "review", target_document_id: 42, evidence: action.evidence },
+  ];
+  for (const proposal of invalid) {
+    let rejected = false;
+    try {
+      __moonTest.normalizeSynthesisResult(
+        { actions: [proposal] },
+        snapshot,
+        settings,
+        16,
+      );
+    } catch {
+      rejected = true;
+    }
+    assert(
+      rejected,
+      `accepted malformed proposal: ${JSON.stringify(proposal)}`,
+    );
+  }
+  for (
+    const modified of [
+      {
+        ...snapshot,
+        evidence: snapshot.evidence.map((item) => ({
+          ...item,
+          selected: false,
+        })),
+      },
+    ]
+  ) {
+    let rejected = false;
+    try {
+      __moonTest.normalizeSynthesisResult(
+        { actions: [valid] },
+        modified,
+        settings,
+        16,
+      );
+    } catch {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+  const review = __moonTest.normalizeSynthesisResult(
+    {
+      actions: [{
+        ...valid,
+        action: "review",
+        content: "The preference is uncertain.",
+        confidence: 0.3,
+      }],
+    },
+    snapshot,
+    settings,
+    16,
+  );
+  assertEquals(review.actions[0].action, "review");
+});
+
+Deno.test("L2 can expire a legacy operational workflow while retaining its kind", () => {
+  const { prepared, action } = synthesisFixture();
+  const quote = "The Proton service is working now.";
+  const snapshot = {
+    ...prepared,
+    evidence: [{
+      ...prepared.evidence[0],
+      content: `User:\n${quote}\n\nAssistant:\nUnderstood.`,
+    }],
+    memories: [{
+      document_id: 42,
+      canonical_key: "proton:status",
+      kind: "workflow",
+      content: quote,
+    }],
+  };
+  const settings = __moonTest.stageSettings(
+    __moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    learningConfig(),
+    "l2",
+  );
+  const result = __moonTest.normalizeSynthesisResult(
+    {
+      actions: [{
+        ...action,
+        action: "confirm",
+        target_document_id: 42,
+        canonical_key: "proton:status",
+        kind: "workflow",
+        durability: "temporary",
+        content: quote,
+        evidence: [{ session_id: "source:new", quote }],
+      }],
+    },
+    snapshot,
+    settings,
+    16,
+  );
+  assertEquals(result.actions[0].kind, "workflow");
+  assertEquals(result.actions[0].valid_until_ms, 86_401_000);
+  assert(!("durability" in result.actions[0]));
+});
+
+Deno.test("daily L2 skips committed batches and sends xhigh with a fixed evidence cutoff", async () => {
+  const { prepared, action } = synthesisFixture();
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  let prepares = 0;
+  let runs = 0;
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    calls,
+    {},
+    (params) => {
+      runs += 1;
+      assertEquals(params.thinkLevel, "xhigh");
+      assertEquals(params.model, "gpt-6-astra");
+      assertEquals(params.sessionPersistence, "detached");
+      return { payloads: [{ text: JSON.stringify({ actions: [action] }) }] };
+    },
+  );
+  api.runtime.system.runCommandWithTimeout = (argv, options) => {
+    calls.push({ argv, timeoutMs: options.timeoutMs, input: options.input });
+    let result;
+    if (argv.includes("prepare")) {
+      result = prepares++ === 0
+        ? { status: "committed" }
+        : prepares === 2
+        ? prepared
+        : { status: "empty" };
+    } else if (argv.includes("apply")) {
+      result = { status: "committed", action_count: 1, processed_evidence: 1 };
+    } else throw new Error("unexpected command");
+    return { code: 0, stdout: JSON.stringify(result), stderr: "" };
+  };
+  const config = learningConfig({}, {
+    enabled: true,
+    model: "openai/gpt-6-astra",
+    reasoning: "xhigh",
+    fallback_enabled: false,
+  });
+  const result = await __moonTest.runDailySynthesis(
+    api,
+    __moonTest.resolveSettings(api),
+    config,
+    Date.parse("2026-09-13T19:00:00Z"),
+  );
+  assertEquals(result, { status: "empty", batches: 1 });
+  assertEquals(runs, 1);
+  const windows = calls.filter((call) => call.argv.includes("prepare")).map((
+    call,
+  ) => call.argv[call.argv.indexOf("--before-ms") + 1]);
+  assertEquals(new Set(windows).size, 1);
+  const payload = JSON.parse(
+    calls.find((call) => call.argv.includes("apply"))?.input ?? "{}",
+  );
+  assertEquals(payload.metadata.model, "openai/gpt-6-astra");
+  assertEquals(payload.metadata.reasoning, "xhigh");
+  assert(/^[a-f0-9]{64}$/.test(payload.metadata.prompt_hash));
+  assert(!("prompt" in payload.metadata));
+});
+
+Deno.test("failed L2 releases its lease and never applies an invalid proposal", async () => {
+  const { prepared } = synthesisFixture();
+  const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
+    [];
+  const api = createApi(
+    { code: 0, stdout: "", stderr: "" },
+    calls,
+    {},
+    () => ({ payloads: [{ text: '{"actions":[{"action":"delete"}]}' }] }),
+  );
+  api.runtime.system.runCommandWithTimeout = (argv, options) => {
+    calls.push({ argv, timeoutMs: options.timeoutMs });
+    return {
+      code: 0,
+      stdout: JSON.stringify(
+        argv.includes("prepare") ? prepared : { status: "failed" },
+      ),
+      stderr: "",
+    };
+  };
+  let rejected = false;
+  try {
+    await __moonTest.runDailySynthesis(
+      api,
+      __moonTest.resolveSettings(api),
+      learningConfig({}, { enabled: true, fallback_enabled: false }),
+      Date.now(),
+    );
+  } catch {
+    rejected = true;
+  }
+  assert(rejected);
+  assert(calls.some((call) => call.argv.includes("fail")));
+  assert(!calls.some((call) => call.argv.includes("apply")));
+});
+
+Deno.test("Astra inherits supported explicit effort and question-only correction evidence is rejected", () => {
+  const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
+    primaryModel: "openai/gpt-6-astra",
+    primaryReasoning: "xhigh",
+    fallbackModel: "openai/gpt-6-astra-fallback",
+    fallbackReasoning: "max",
+  });
+  const base = __moonTest.resolveSettings(api);
+  const settings = __moonTest.stageSettings(base, learningConfig(), "l1");
+  assertEquals(settings.primaryReasoning, "xhigh");
+  assertEquals(settings.fallbackReasoning, "max");
+  const userText = "Actually, is the Proton service working?";
+  const raw = {
+    canonical_key: "proton:status",
+    kind: "fact",
+    content: "The Proton service is working.",
+    evidence_quote: userText,
+    importance: 0.9,
+    confidence: 0.99,
+    supersedes_document_id: 4,
+  };
+  assertEquals(
+    __moonTest.normalizeProposal(
+      raw,
+      {
+        userText,
+        transcript: `User:\n${userText}\n\nAssistant:\nYes.`,
+        completedAtMs: 1000,
+      },
+      settings,
+      new Set([4]),
+    ),
+    null,
+  );
+  assert(
+    __moonTest.evidenceSupportsContent(
+      "When TLS fails, check the certificate.",
+      "When TLS fails, check the certificate.",
+    ),
+  );
+});
+
+Deno.test({
+  name:
+    "real SQLite L1 capture and daily L2 correction retain evidence and resume idempotently",
+  ignore: !realMoonConfig,
+  fn: async () => {
+    assert(realMoonConfig);
+    const home = `${realMoonConfig.home}/learning-${crypto.randomUUID()}`;
+    const baseArgs = [
+      "--home",
+      home,
+      "--database",
+      `${home}/state/moon.sqlite`,
+      "--dimensions",
+      "64",
+      "--json",
+    ];
+    const execute = async (
+      argv: string[],
+      options: { input?: string } = {},
+    ) => {
+      const child = new Deno.Command(argv[0], {
+        args: argv.slice(1),
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(options.input ?? ""));
+      await writer.close();
+      const output = await child.output();
+      return {
+        code: output.code,
+        stdout: new TextDecoder().decode(output.stdout),
+        stderr: new TextDecoder().decode(output.stderr),
+      };
+    };
+    const cli = async (args: string[], input?: string) => {
+      const result = await execute([
+        realMoonConfig.binary,
+        ...baseArgs,
+        ...args,
+      ], { input });
+      assertEquals(result.code, 0);
+      return JSON.parse(result.stdout);
+    };
+    await cli(["config", "init"]);
+    const oldQuote = "Remember: The release colour for Project Canary is blue.";
+    const newQuote =
+      "Actually, the release colour for Project Canary is violet.";
+    const key = "project:canary:release-colour";
+    let l1Runs = 0;
+    let l2Runs = 0;
+    let prepared: Record<string, unknown> | null = null;
+    const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
+      moonPath: realMoonConfig.binary,
+      moonHome: home,
+      dimensions: 64,
+    }, (params) => {
+      if (String(params.prompt).includes("L2 memory curator")) {
+        l2Runs += 1;
+        assertEquals(params.model, "gpt-6-astra");
+        assertEquals(params.thinkLevel, "xhigh");
+        assert(prepared);
+        const memories = prepared.memories as Array<Record<string, unknown>>;
+        const evidence = prepared.evidence as Array<Record<string, unknown>>;
+        const target = memories.find((memory) => memory.canonical_key === key);
+        const source = evidence.find((item) =>
+          String(item.content).includes(newQuote)
+        );
+        assert(target && source);
+        return {
+          payloads: [{
+            text: JSON.stringify({
+              actions: [{
+                action: "supersede",
+                canonical_key: key,
+                kind: "fact",
+                title: "Canary colour",
+                content: "The release colour for Project Canary is violet.",
+                importance: 0.9,
+                confidence: 0.99,
+                target_document_id: target.document_id,
+                evidence: [{ session_id: source.session_id, quote: newQuote }],
+              }],
+            }),
+          }],
+        };
+      }
+      l1Runs += 1;
+      assertEquals(params.model, "gpt-6-astra");
+      assertEquals(params.thinkLevel, "low");
+      return {
+        payloads: [{
+          text: JSON.stringify(
+            l1Runs === 1
+              ? {
+                eligible: true,
+                memories: [{
+                  canonical_key: key,
+                  kind: "fact",
+                  content: "The release colour for Project Canary is blue.",
+                  evidence_quote: oldQuote,
+                  importance: 0.9,
+                  confidence: 0.99,
+                }],
+              }
+              : { eligible: false, memories: [] },
+          ),
+        }],
+      };
+    });
+    api.runtime.system.runCommandWithTimeout = async (argv, options) => {
+      const result = await execute(argv, options);
+      if (result.code === 0 && argv.includes("prepare")) {
+        prepared = JSON.parse(result.stdout);
+      }
+      return result;
+    };
+    const engine = __moonTest.createMoonContextEngine(api);
+    for (const [index, quote] of [oldQuote, newQuote].entries()) {
+      const time = Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000;
+      const params = acceptedParams([{
+        role: "user",
+        content: quote,
+        timestamp: time,
+      }, {
+        role: "assistant",
+        content: "Understood.",
+        timestamp: time + 1000,
+      }]);
+      params.advancementKey = `l2-sqlite-${index}`;
+      assertEquals(await engine.commitTurn(params), { status: "committed" });
+    }
+    const before = await cli(["health"]);
+    assertEquals(before.evidence_sessions, 2);
+    assertEquals(before.active_memories, 1);
+    const config = await cli(["config", "show"]);
+    config.learning.l2.enabled = true;
+    config.learning.l2.fallback_enabled = false;
+    const now = Date.parse("2026-09-13T19:00:00Z");
+    assertEquals(
+      (await __moonTest.runDailySynthesis(
+        api,
+        __moonTest.resolveSettings(api),
+        config,
+        now,
+      )).batches,
+      1,
+    );
+    await __moonTest.runDailySynthesis(
+      api,
+      __moonTest.resolveSettings(api),
+      config,
+      now,
+    );
+    assertEquals(l1Runs, 2);
+    assertEquals(l2Runs, 1);
+    const status = await cli(["learning", "status"]);
+    assertEquals(status.processed_evidence, 2);
+    const packet = await cli([
+      "context",
+      "--query",
+      "Project Canary release colour",
+      "--mode",
+      "lexical",
+    ]);
+    assertEquals(packet.memories.length, 1);
+    assert(packet.memories[0].content.includes("violet"));
+    assert(!packet.memories[0].content.includes("blue"));
+    await cli(["embed", "--provider", "hash"]);
+    const health = await cli(["health"]);
+    assertEquals(health.ok, true);
+    assertEquals(health.evidence_sessions, 2);
+    assertEquals(health.active_memories, 1);
+    assertEquals(health.active_memory_vectors, 1);
+    assertEquals(health.evidence_vectors, 0);
+    engine.dispose();
+  },
 });

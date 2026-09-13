@@ -43,6 +43,8 @@ struct Cli {
 enum Command {
     /// Create or migrate the isolated database.
     Init,
+    /// Inspect or initialise learning settings in the selected home's moon.toml.
+    Config(ConfigArgs),
     /// Store one structured canonical memory.
     Remember(RememberArgs),
     /// Record one completed session as immutable, secret-scrubbed evidence.
@@ -51,6 +53,8 @@ enum Command {
     Distill(DistillArgs),
     /// Distill a validated batch from one completed evidence session.
     DistillBatch(DistillBatchArgs),
+    /// Prepare, validate and commit durable daily memory reconciliation.
+    Learning(LearningArgs),
     /// Assemble a bounded, cited memory packet for an agent turn.
     Context(ContextArgs),
     /// Incrementally index a file or directory.
@@ -83,6 +87,22 @@ enum Command {
     Serve(ServeArgs),
     /// Check for or apply a signed compatibility-set update.
     Update(UpdateArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Show resolved settings without opening or creating the database.
+    Show,
+    /// Check settings without opening or creating the database.
+    Validate,
+    /// Create a starter moon.toml; never replace an existing file.
+    Init,
 }
 
 #[derive(Debug, Args)]
@@ -157,6 +177,60 @@ struct DistillArgs {
     /// Active memory document id being deliberately replaced.
     #[arg(long)]
     supersedes: Option<i64>,
+    /// Expiry of a temporary observation, measured from the source evidence.
+    #[arg(long)]
+    valid_until_ms: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+struct LearningArgs {
+    #[command(subcommand)]
+    command: LearningCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LearningCommand {
+    Prepare {
+        #[arg(long)]
+        run_key: String,
+        #[arg(long, default_value_t = 32)]
+        limit: usize,
+        #[arg(long, default_value_t = 64_000)]
+        max_chars: usize,
+        #[arg(long, default_value_t = 1_200_000)]
+        lease_ms: i64,
+        #[arg(long, default_value_t = 3)]
+        max_attempts: usize,
+        #[arg(long)]
+        before_ms: Option<i64>,
+        #[arg(long)]
+        after_ms: Option<i64>,
+        #[arg(long)]
+        preview: bool,
+    },
+    Apply {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value = "-")]
+        input: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    Fail {
+        #[arg(long)]
+        run_id: String,
+    },
+    Related {
+        #[arg(long)]
+        query: String,
+        #[arg(long)]
+        scope: String,
+        #[arg(long, default_value_t = 32)]
+        limit: usize,
+        #[arg(long, default_value_t = 16_000)]
+        max_chars: usize,
+    },
+    Status,
 }
 
 #[derive(Debug, Args)]
@@ -499,6 +573,14 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::Update(args) = &cli.command {
         return run_update(&home, cli.dimensions, cli.json, args);
     }
+    if let Command::Config(args) = &cli.command {
+        let config = match args.command {
+            ConfigCommand::Show => moon::config::load(&home)?,
+            ConfigCommand::Validate => moon::config::validate(&home)?,
+            ConfigCommand::Init => moon::config::init(&home)?,
+        };
+        return emit(&config, cli.json);
+    }
     let database = cli
         .database
         .clone()
@@ -512,7 +594,19 @@ fn run(cli: Cli) -> Result<()> {
         }
         return Ok(());
     }
-    let mut store = Store::open(&database, cli.dimensions)?;
+    let read_only_learning = matches!(
+        &cli.command,
+        Command::Learning(LearningArgs {
+            command: LearningCommand::Status
+                | LearningCommand::Related { .. }
+                | LearningCommand::Prepare { preview: true, .. }
+        })
+    );
+    let mut store = if read_only_learning {
+        Store::open_existing(&database, cli.dimensions)?
+    } else {
+        Store::open(&database, cli.dimensions)?
+    };
 
     match cli.command {
         Command::Init => emit(
@@ -579,6 +673,7 @@ fn run(cli: Cli) -> Result<()> {
                 evidence_session_id: args.session_id,
                 evidence_quote,
                 supersedes: args.supersedes,
+                valid_until_ms: args.valid_until_ms,
             })?;
             emit(&outcome, cli.json)
         }
@@ -607,6 +702,7 @@ fn run(cli: Cli) -> Result<()> {
                     evidence_session_id: args.session_id.clone(),
                     evidence_quote: proposal.evidence_quote,
                     supersedes: proposal.supersedes_document_id,
+                    valid_until_ms: proposal.valid_until_ms,
                 })
                 .collect();
             let outcomes = store.distill_batch(inputs)?;
@@ -617,6 +713,52 @@ fn run(cli: Cli) -> Result<()> {
                 }),
                 cli.json,
             )
+        }
+        Command::Learning(args) => {
+            let outcome = match args.command {
+                LearningCommand::Prepare {
+                    run_key,
+                    limit,
+                    max_chars,
+                    lease_ms,
+                    max_attempts,
+                    before_ms,
+                    after_ms,
+                    preview,
+                } => store.learning_prepare(&moon::learning::PrepareRequest {
+                    run_key,
+                    limit,
+                    max_chars,
+                    lease_ms,
+                    max_attempts,
+                    before_ms,
+                    after_ms,
+                    preview,
+                })?,
+                LearningCommand::Apply {
+                    run_id,
+                    input,
+                    dry_run,
+                } => {
+                    let content = if input == Path::new("-") {
+                        read_bounded_stdin("learning actions")?
+                    } else {
+                        read_explicit_content(None, Some(&input))?
+                    };
+                    let payload = serde_json::from_str(&content)
+                        .context("learning input must be valid JSON")?;
+                    store.learning_apply(&run_id, payload, dry_run)?
+                }
+                LearningCommand::Fail { run_id } => store.learning_fail(&run_id)?,
+                LearningCommand::Related {
+                    query,
+                    scope,
+                    limit,
+                    max_chars,
+                } => store.learning_related(&scope, &query, limit, max_chars)?,
+                LearningCommand::Status => store.learning_status()?,
+            };
+            emit(&outcome, cli.json)
         }
         Command::Context(args) => {
             let provider = if args.mode == SearchMode::Lexical {
@@ -921,6 +1063,7 @@ fn run(cli: Cli) -> Result<()> {
             moon::server::serve_stdio(&mut store, provider.as_ref(), stdin.lock(), stdout.lock())
         }
         Command::Update(_) => unreachable!("update is handled without opening storage for writes"),
+        Command::Config(_) => unreachable!("config is handled without opening storage"),
     }
 }
 
@@ -1097,6 +1240,8 @@ struct DistillBatchProposal {
     pinned: bool,
     #[serde(default)]
     supersedes_document_id: Option<i64>,
+    #[serde(default)]
+    valid_until_ms: Option<i64>,
 }
 
 fn default_memory_kind() -> String {

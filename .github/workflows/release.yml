@@ -83,7 +83,7 @@ jobs:
           --binary target/release/moon
           --minimum-os-version "${{ matrix.minimum_os_version }}"
           --database-schema-min 6
-          --database-schema-max 7
+          --database-schema-max 8
           --output-dir "target/release-input/${{ matrix.target }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
