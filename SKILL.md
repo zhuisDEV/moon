@@ -3,7 +3,7 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.6.1 -->
+<!-- moon-version: 2.6.2 -->
 
 # Moon
 
@@ -164,11 +164,15 @@ packets contain private evidence; they are not content-free metrics.
 
 Plain `prepare` acquires a durable lease. `apply --dry-run` needs that active
 lease and rolls back its transaction; plain `apply` commits actions and marks
-selected evidence processed. `fail` releases a prepared run without processing
-evidence. None of these CLI commands invokes a model. Follow the complete
-fixture in [docs/learning.md](docs/learning.md) rather than inventing a live
-repair. Inspect `context_limited`, omitted memories, original citations, and
-review reasons before treating a reconciliation result as complete.
+selected evidence processed, except selected IDs in the optional
+`deferred_evidence` input array (2.6.2+). Deferred sources remain pending; a
+partial daily commit stops that occurrence even across restarts. The adapter
+keeps only independently valid candidates and does not weaken grounding checks.
+`fail` releases a prepared run without processing evidence. None of these CLI
+commands invokes a model. Follow the complete fixture in
+[docs/learning.md](docs/learning.md) rather than inventing a live repair.
+Inspect `context_limited`, omitted memories, original citations, and review
+reasons before treating a reconciliation result as complete.
 
 OpenClaw owns Codex authentication and binary selection. In the verified native
 setup it uses the app binary and current user `CODEX_HOME` OAuth through the

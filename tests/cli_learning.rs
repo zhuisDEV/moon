@@ -77,6 +77,10 @@ fn input(actions: Vec<Value>) -> ApplyInput {
     serde_json::from_value(json!({"actions":actions})).unwrap()
 }
 
+fn input_with_deferred(actions: Vec<Value>, deferred: Vec<String>) -> ApplyInput {
+    serde_json::from_value(json!({"actions":actions,"deferred_evidence":deferred})).unwrap()
+}
+
 #[test]
 fn preview_is_read_only_and_scope_cutoff_is_frozen() {
     let temp = tempfile::tempdir().unwrap();
@@ -182,6 +186,213 @@ fn dry_run_and_invalid_batch_leave_no_mutation_then_commit_once() {
         .unwrap();
     assert!(!persisted.contains("Atlas uses SQLite"));
     assert!(store.health().unwrap().ok);
+}
+
+#[test]
+fn partial_apply_keeps_deferred_sources_pending_and_replays_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(&mut store, "one", "global", "Atlas uses SQLite.", 100);
+    record(
+        &mut store,
+        "two",
+        "global",
+        "Atlas supports local search.",
+        200,
+    );
+    let prepared = store.learning_prepare(&request("day:partial")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap().to_owned();
+    // The deferred turn also supports an accepted fact; another rejected
+    // candidate from that turn must still be reconsidered on a later day.
+    let batch = input_with_deferred(
+        vec![
+            action("create", "atlas:database", "one", "Atlas uses SQLite."),
+            action(
+                "create",
+                "atlas:search",
+                "two",
+                "Atlas supports local search.",
+            ),
+        ],
+        vec!["two".into()],
+    );
+    let committed = store.learning_apply(&run, batch.clone(), false).unwrap();
+    assert_eq!(committed["action_count"], 2);
+    assert_eq!(committed["selected_evidence"], 2);
+    assert_eq!(committed["processed_evidence"], 1);
+    assert_eq!(committed["deferred_evidence"], 1);
+    assert_eq!(committed["deferred_session_ids"], json!(["two"]));
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 1);
+    assert_eq!(store.health().unwrap().citations, 2);
+    drop(store);
+
+    let mut reopened = Store::open(temp.path().join("state/moon.sqlite"), 64).unwrap();
+    assert_eq!(
+        reopened.learning_apply(&run, batch, false).unwrap(),
+        committed
+    );
+    assert_eq!(reopened.health().unwrap().active_memories, 2);
+    assert_eq!(reopened.health().unwrap().citations, 2);
+    let replay = reopened.learning_prepare(&request("day:partial")).unwrap();
+    assert_eq!(replay["status"], "committed");
+    assert_eq!(replay["deferred_evidence"], 1);
+    let status = reopened.learning_status().unwrap();
+    assert_eq!(status["processed_evidence"], 1);
+    assert_eq!(status["runs"][0]["deferred_evidence"], 1);
+    assert!(status["runs"][0].get("deferred_session_ids").is_none());
+
+    let next = reopened.learning_prepare(&request("next-day")).unwrap();
+    let selected = next["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["selected"] == true)
+        .map(|item| item["session_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(selected, vec!["two"]);
+    assert!(reopened.health().unwrap().ok);
+}
+
+#[test]
+fn invalid_deferred_sources_are_rejected_before_any_action_or_ledger_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(&mut store, "support", "global", "Atlas uses SQLite.", 100);
+    store
+        .distill_memory(proposal("atlas:database", "support", "Atlas uses SQLite."))
+        .unwrap();
+    let old = store.learning_prepare(&request("old-day")).unwrap();
+    store
+        .learning_apply(old["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+    record(
+        &mut store,
+        "selected",
+        "global",
+        "Atlas uses SQLite. Atlas supports local search.",
+        200,
+    );
+    let prepared = store.learning_prepare(&request("new-day")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    assert!(
+        prepared["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| { e["session_id"] == "support" && e["selected"] == false })
+    );
+    let before = store.health().unwrap();
+    for deferred in [
+        vec!["unknown".into()],
+        vec!["support".into()],
+        vec!["selected".into(), "selected".into()],
+        (0..129).map(|i| format!("session-{i}")).collect(),
+    ] {
+        assert!(
+            store
+                .learning_apply(
+                    run,
+                    input_with_deferred(
+                        vec![action(
+                            "create",
+                            "atlas:search",
+                            "selected",
+                            "Atlas supports local search."
+                        )],
+                        deferred,
+                    ),
+                    false,
+                )
+                .is_err()
+        );
+        let after = store.health().unwrap();
+        assert!(after.ok);
+        assert_eq!(after.documents, before.documents);
+        assert_eq!(after.active_memories, before.active_memories);
+        assert_eq!(after.citations, before.citations);
+        let status = store.learning_status().unwrap();
+        assert_eq!(status["pending_evidence"], 1);
+        assert_eq!(status["processed_evidence"], 1);
+        assert_eq!(status["runs"][0]["status"], "prepared");
+        assert_eq!(status["runs"][0]["deferred_evidence"], 0);
+    }
+    assert!(
+        serde_json::from_value::<ApplyInput>(json!({
+            "actions":[],"deferred_evidence":[],"diagnostics":"must not be accepted"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn partial_apply_dry_run_and_invalid_actions_preserve_the_entire_transaction() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(&mut store, "one", "global", "Atlas uses SQLite.", 100);
+    record(&mut store, "two", "global", "Atlas supports 20 tools.", 200);
+    let prepared = store.learning_prepare(&request("day:dry-partial")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    let good = action("create", "atlas:database", "one", "Atlas uses SQLite.");
+    let batch = input_with_deferred(vec![good.clone()], vec!["two".into()]);
+    let dry = store.learning_apply(run, batch.clone(), true).unwrap();
+    assert_eq!(dry["status"], "dry_run");
+    assert_eq!(dry["action_count"], 1);
+    assert_eq!(dry["selected_evidence"], 2);
+    assert_eq!(dry["processed_evidence"], 0);
+    assert_eq!(dry["deferred_evidence"], 1);
+    assert_eq!(dry["deferred_session_ids"], json!(["two"]));
+    let mut invalid = action("create", "atlas:tools", "two", "Atlas supports 200 tools.");
+    invalid["evidence"][0]["quote"] = "Atlas supports 20 tools.".into();
+    assert!(
+        store
+            .learning_apply(
+                run,
+                input_with_deferred(vec![good, invalid], vec!["two".into()]),
+                false,
+            )
+            .is_err()
+    );
+    let health = store.health().unwrap();
+    assert!(health.ok);
+    assert_eq!(health.active_memories, 0);
+    assert_eq!(health.citations, 0);
+    assert_eq!(health.pending_embeddings, 0);
+    let status = store.learning_status().unwrap();
+    assert_eq!(status["pending_evidence"], 2);
+    assert_eq!(status["processed_evidence"], 0);
+    assert_eq!(status["runs"][0]["status"], "prepared");
+    assert_eq!(status["runs"][0]["deferred_evidence"], 0);
+    let committed = store.learning_apply(run, batch, false).unwrap();
+    assert_eq!(committed["processed_evidence"], 1);
+    assert_eq!(committed["deferred_evidence"], 1);
+    assert!(store.health().unwrap().ok);
+}
+
+#[test]
+fn older_committed_outcomes_default_to_zero_deferred_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(&mut store, "one", "global", "Atlas uses SQLite.", 100);
+    let prepared = store.learning_prepare(&request("legacy-day")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    let outcome = store.learning_apply(run, input(vec![]), false).unwrap();
+    assert_eq!(outcome["deferred_evidence"], 0);
+    assert_eq!(outcome["deferred_session_ids"], json!([]));
+    let connection = rusqlite::Connection::open(store.path()).unwrap();
+    connection.execute(
+        "UPDATE learning_runs SET outcome_json=json_remove(outcome_json,'$.deferred_evidence','$.deferred_session_ids') WHERE run_id=?1",
+        [run],
+    ).unwrap();
+    drop(connection);
+    drop(store);
+    let mut reopened = Store::open(temp.path().join("state/moon.sqlite"), 64).unwrap();
+    let replay = reopened.learning_prepare(&request("legacy-day")).unwrap();
+    assert_eq!(replay["status"], "committed");
+    assert_eq!(replay["deferred_evidence"], 0);
+    let status = reopened.learning_status().unwrap();
+    assert_eq!(status["runs"][0]["deferred_evidence"], 0);
+    assert_eq!(status["pending_evidence"], 0);
+    assert!(reopened.health().unwrap().ok);
 }
 
 #[test]

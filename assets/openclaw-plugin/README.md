@@ -34,6 +34,10 @@ The adapter keeps strict ownership boundaries:
   evidence batches daily, using durable leases, date keys, and three attempts
   per batch key. It retains review items for uncertain conflicts, preserves
   evidence, and never merges differently worded claims automatically.
+  Independent candidates that pass validation can commit while sources behind
+  rejected candidates remain pending. A partial commit stops the daily
+  occurrence, also after a restart. Fixed failure phases and codes never include
+  generated claims or provider error bodies.
 - Greetings and irrelevant queries inject no context packet.
 - Non-trivial context requests update a local, content-free metric row with
   injection state. Logs expose only its opaque request ID and numeric summary

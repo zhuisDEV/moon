@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 2.6.2 - 2026-09-14
+
+- Report fixed L2 failure phases and codes without logging provider bodies,
+  generated claims, conversation text or arbitrary exception messages.
+- Make the L2 prompt state the validator's numeric and field bounds, require
+  narrow claims grounded in the newest citation, and preserve explicit
+  uncertainty, negation and retirement markers.
+- Reject L1 and L2 claims that drop the source qualifiers “assuming” or
+  “已退役”, and check L2 proposals against SQLite's lexical and qualifier rules
+  before application.
+- Apply independently valid L2 candidates atomically while keeping evidence
+  behind rejected candidates pending. Stop that day's synthesis after a partial
+  commit, including after gateway restarts, so rejection cannot silently lose a
+  correction or repeatedly consume the daily batch allowance. Keep strict
+  grounding checks and fail conflicting or wholly rejected batches.
+
 ## 2.6.1 - 2026-09-14
 
 The unpublished `v2.6.0` candidate was superseded before signing because its

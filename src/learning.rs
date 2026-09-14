@@ -64,6 +64,8 @@ pub struct LearningMemory {
 pub struct ApplyInput {
     pub actions: Vec<LearningAction>,
     #[serde(default)]
+    pub deferred_evidence: Vec<String>,
+    #[serde(default)]
     pub metadata: Option<LearningMetadata>,
 }
 
@@ -129,11 +131,12 @@ impl Store {
                 TransactionBehavior::Immediate
             })?;
         if !request.preview {
-            if let Some(run_id) = transaction.query_row(
-                "SELECT run_id FROM learning_runs WHERE run_key = ?1 AND status = 'committed' ORDER BY created_at_ms DESC LIMIT 1",
-                [&request.run_key], |row| row.get::<_, String>(0),
+            if let Some((run_id, deferred_evidence)) = transaction.query_row(
+                "SELECT run_id,coalesce(json_extract(outcome_json,'$.deferred_evidence'),0)
+                 FROM learning_runs WHERE run_key = ?1 AND status = 'committed' ORDER BY created_at_ms DESC LIMIT 1",
+                [&request.run_key], |row| Ok((row.get::<_, String>(0)?,row.get::<_, i64>(1)?)),
             ).optional()? {
-                return Ok(json!({"status":"committed", "run_key": request.run_key, "run_id":run_id}));
+                return Ok(json!({"status":"committed", "run_key": request.run_key, "run_id":run_id,"deferred_evidence":deferred_evidence}));
             }
             if transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM learning_runs WHERE status = 'prepared' AND lease_until_ms > ?1)",
@@ -328,6 +331,9 @@ impl Store {
         if input.actions.len() > 32 {
             anyhow::bail!("learning apply accepts at most 32 actions");
         }
+        if input.deferred_evidence.len() > 128 {
+            anyhow::bail!("learning apply accepts at most 128 deferred evidence sessions");
+        }
         if let Some(metadata) = &input.metadata {
             validate_metadata(metadata)?;
         }
@@ -348,6 +354,15 @@ impl Store {
             anyhow::bail!("learning run lease is no longer active; prepare a fresh run");
         }
         let snapshot: Snapshot = serde_json::from_str(&snapshot_json)?;
+        let mut deferred = BTreeSet::new();
+        for session in &input.deferred_evidence {
+            if !deferred.insert(session) {
+                anyhow::bail!("deferred evidence sessions must be unique");
+            }
+            if !snapshot.selected_sessions.contains(session) {
+                anyhow::bail!("deferred evidence must belong to the selected prepared sessions");
+            }
+        }
         if snapshot.scope_hash != scope_hash(&transaction, &scope)? {
             anyhow::bail!(
                 "memory changed after learning prepare; fail this run and prepare a fresh snapshot"
@@ -363,13 +378,19 @@ impl Store {
             outcomes.push(apply_action(&transaction, run_id, &scope, action)?);
         }
         let outcome = json!({"status":if dry_run {"dry_run"} else {"committed"},"run_id":run_id,
-            "action_count":outcomes.len(), "processed_evidence":if dry_run {0} else {snapshot.selected_sessions.len()},
+            "action_count":outcomes.len(), "processed_evidence":if dry_run {0} else {snapshot.selected_sessions.len()-deferred.len()},
             "selected_evidence":snapshot.selected_sessions.len(), "outcomes":outcomes,
+            "deferred_evidence":deferred.len(),"deferred_session_ids":input.deferred_evidence,
             "metadata":input.metadata});
         if dry_run {
             transaction.rollback()?;
         } else {
             for session in &snapshot.selected_sessions {
+                // A selected turn can support an accepted action and still
+                // contain a rejected candidate. Keep that whole turn pending.
+                if deferred.contains(session) {
+                    continue;
+                }
                 transaction.execute(
                     "INSERT INTO learning_processed_evidence(evidence_session_id,run_id,processed_at_ms)
                      SELECT id,?2,?3 FROM evidence_sessions WHERE session_id = ?1",
@@ -406,11 +427,14 @@ impl Store {
 
     pub fn learning_status(&self) -> Result<Value> {
         let mut statement = self.connection.prepare(
-            "SELECT run_id,run_key,scope,status,created_at_ms,completed_at_ms,lease_until_ms FROM learning_runs ORDER BY created_at_ms DESC,rowid DESC LIMIT 20",
+            "SELECT run_id,run_key,scope,status,created_at_ms,completed_at_ms,lease_until_ms,
+                    coalesce(json_extract(outcome_json,'$.deferred_evidence'),0)
+             FROM learning_runs ORDER BY created_at_ms DESC,rowid DESC LIMIT 20",
         )?;
         let runs = statement.query_map([], |row| Ok(json!({
             "run_id":row.get::<_,String>(0)?,"run_key":row.get::<_,String>(1)?,"scope":row.get::<_,String>(2)?,
-            "status":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?,"completed_at_ms":row.get::<_,Option<i64>>(5)?,"lease_until_ms":row.get::<_,Option<i64>>(6)?
+            "status":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?,"completed_at_ms":row.get::<_,Option<i64>>(5)?,"lease_until_ms":row.get::<_,Option<i64>>(6)?,
+            "deferred_evidence":row.get::<_,i64>(7)?
         })))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL", [], |row| row.get(0))?;
         let processed: i64 = self.connection.query_row(

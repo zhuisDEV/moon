@@ -27,6 +27,92 @@ const REASONING_LEVELS = [
   "ultra",
 ];
 
+const MOON_FAILURE_CODES = {
+  internal: ["unknown"],
+  config: [
+    "invalid_response",
+    "command_failed",
+    "command_timeout",
+    "command_cancelled",
+  ],
+  prompt: ["unreadable"],
+  prepare: [
+    "invalid_response",
+    "command_failed",
+    "command_timeout",
+    "command_cancelled",
+  ],
+  model: [
+    "runtime_unavailable",
+    "backend_error",
+    "timeout",
+    "cancelled",
+    "empty_response",
+    "error_payload",
+  ],
+  normalise: [
+    "invalid_json",
+    "invalid_batch",
+    "conflicting_actions",
+    "unsupported_action",
+    "invalid_claim_or_target",
+    "content_changed",
+    "invalid_citation",
+    "question_only",
+    "missing_selected_evidence",
+    "unsupported_number",
+    "lost_qualifier",
+    "insufficient_overlap",
+    "invalid_correction_target",
+    "missing_user_correction",
+    "assistant_recall",
+  ],
+  apply: [
+    "invalid_response",
+    "not_committed",
+    "command_failed",
+    "command_timeout",
+    "command_cancelled",
+  ],
+  embedding: ["failed"],
+};
+// Only locally created errors receive diagnostics. Provider error properties,
+// messages and response bodies must never become log fields, even if they
+// pretend to contain a Moon phase/code.
+const moonFailures = new WeakMap();
+// Rejection metadata stays local; only accepted actions and deferred source
+// IDs belong in the Rust apply payload.
+const synthesisRejections = new WeakMap();
+
+function failureDiagnostic(error, phase = "internal", code = "unknown") {
+  const known = moonFailures.get(error);
+  if (known) return { ...known };
+  return Object.hasOwn(MOON_FAILURE_CODES, phase) &&
+      MOON_FAILURE_CODES[phase].includes(code)
+    ? { phase, code }
+    : { phase: "internal", code: "unknown" };
+}
+
+function moonFailure(phase, code, message) {
+  const diagnostic = failureDiagnostic(undefined, phase, code);
+  const error = new Error(
+    message ??
+      `Moon synthesis failed: phase=${diagnostic.phase} code=${diagnostic.code}`,
+  );
+  moonFailures.set(error, diagnostic);
+  return error;
+}
+
+function parseLearningResponse(output, phase) {
+  try {
+    const parsed = JSON.parse(output);
+    if (!isObject(parsed)) throw new Error("invalid response");
+    return parsed;
+  } catch {
+    throw moonFailure(phase, "invalid_response");
+  }
+}
+
 function clampInteger(value, fallback, minimum, maximum) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -464,7 +550,11 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
   const selected = parseModelReference(modelRef);
   const runner = api?.runtime?.agent?.runEmbeddedAgent;
   if (typeof runner !== "function") {
-    throw new Error("OpenClaw model runtime unavailable");
+    throw moonFailure(
+      "model",
+      "runtime_unavailable",
+      "OpenClaw model runtime unavailable",
+    );
   }
   if (params.signal?.aborted) {
     throw modelCancellationError();
@@ -507,17 +597,21 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
     throw modelCancellationError();
   }
   if (result?.meta?.timeoutPhase) {
-    throw new Error("OpenClaw model request timed out");
+    throw moonFailure("model", "timeout", "OpenClaw model request timed out");
   }
   if (result?.meta?.aborted === true) {
     throw modelCancellationError();
   }
   if (result?.meta?.error) {
-    throw new Error("OpenClaw model run failed");
+    throw moonFailure("model", "backend_error", "OpenClaw model run failed");
   }
   const payloads = result?.payloads ?? [];
   if (payloads.some((payload) => payload?.isError === true)) {
-    throw new Error("OpenClaw model returned an error payload");
+    throw moonFailure(
+      "model",
+      "error_payload",
+      "OpenClaw model returned an error payload",
+    );
   }
   const output = payloads
     .filter((payload) => !payload?.isReasoning && !payload?.isCommentary)
@@ -529,7 +623,11 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
     !nonEmptyString(output) ||
     output.startsWith("⚠️ Agent couldn't generate a response")
   ) {
-    throw new Error("OpenClaw model returned an empty response");
+    throw moonFailure(
+      "model",
+      "empty_response",
+      "OpenClaw model returned an empty response",
+    );
   }
   return {
     modelRoute: route,
@@ -541,7 +639,11 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
 }
 
 function modelCancellationError() {
-  const error = new Error("OpenClaw model request cancelled");
+  const error = moonFailure(
+    "model",
+    "cancelled",
+    "OpenClaw model request cancelled",
+  );
   error.name = "AbortError";
   return error;
 }
@@ -613,6 +715,7 @@ async function summarizeCompaction(api, params) {
 }
 
 async function runModelWithFallback(api, settings, prompt, params = {}) {
+  let diagnostic = { phase: "model", code: "backend_error" };
   const routes = [{
     route: "primary",
     modelRef: settings.primaryModel,
@@ -643,9 +746,16 @@ async function runModelWithFallback(api, settings, prompt, params = {}) {
         throw modelCancellationError();
       }
       // Provider diagnostics can contain credentials or remote response bodies.
+      diagnostic = failureDiagnostic(
+        error,
+        "model",
+        error?.name === "TimeoutError" ? "timeout" : "backend_error",
+      );
     }
   }
-  throw new Error(
+  throw moonFailure(
+    diagnostic.phase,
+    diagnostic.code,
     settings.fallbackModel
       ? "OpenClaw primary and fallback model requests failed"
       : "OpenClaw primary model request failed",
@@ -862,14 +972,20 @@ function normalizeNumericEvidence(value) {
 }
 
 function evidenceSupportsContent(content, evidenceQuote) {
-  if (isQuestionOnly(evidenceQuote)) return false;
+  return evidenceSupportFailure(content, evidenceQuote) === null;
+}
+
+function evidenceSupportFailure(content, evidenceQuote) {
+  if (isQuestionOnly(evidenceQuote)) return "question_only";
   const claim = normalizeNumericEvidence(content);
   const evidence = normalizeNumericEvidence(evidenceQuote);
   const normalizedQuote = evidence.text;
   if ([...claim.numbers].some((number) => !evidence.numbers.has(number))) {
-    return false;
+    return "unsupported_number";
   }
-  if (!preservesEvidenceMeaning(content, evidenceQuote)) return false;
+  if (!preservesEvidenceMeaning(content, evidenceQuote)) {
+    return "lost_qualifier";
+  }
   const stopWords = new Set([
     "about",
     "after",
@@ -894,20 +1010,118 @@ function evidenceSupportsContent(content, evidenceQuote) {
     .filter((term) => term.length >= 4 && !stopWords.has(term));
   const uniqueTerms = [...new Set(terms)];
   if (uniqueTerms.length === 0) {
-    return true;
+    return null;
   }
   const matched =
     uniqueTerms.filter((term) => normalizedQuote.includes(term)).length;
-  return matched / uniqueTerms.length >= 0.5;
+  return matched / uniqueTerms.length >= 0.5 ? null : "insufficient_overlap";
+}
+
+function synthesisEvidenceSupportFailure(content, evidenceQuote) {
+  const failure = evidenceSupportFailure(content, evidenceQuote);
+  if (failure) return failure;
+  // L2 also meets SQLite's exact-token lexical gate before any action reaches
+  // apply. Keep the existing extraction gate above and leave L1 unchanged.
+  const claim = normalizeNumericEvidence(content).text;
+  const quote = normalizeNumericEvidence(evidenceQuote).text;
+  // Mirror src/learning.rs validate_grounding's word and substring boundaries
+  // in addition to the shared extractor's conservative marker patterns.
+  const qualifiers = [
+    [
+      "not",
+      "never",
+      "no",
+      "without",
+      "isn't",
+      "aren't",
+      "doesn't",
+      "don't",
+      "wasn't",
+      "weren't",
+      "cannot",
+      "can't",
+      "没有",
+      "沒有",
+      "并非",
+      "並非",
+      "不是",
+      "不再",
+      "未能",
+      "无法",
+      "無法",
+    ],
+    [
+      "if",
+      "unless",
+      "hypothetical",
+      "hypothetically",
+      "suppose",
+      "supposing",
+      "assuming",
+      "imagine",
+      "might",
+      "perhaps",
+      "possibly",
+      "如果",
+      "假设",
+      "假設",
+      "假如",
+      "可能",
+      "也许",
+      "也許",
+    ],
+    [
+      "previously",
+      "formerly",
+      "retired",
+      "deprecated",
+      "discontinued",
+      "replaced",
+      "no longer",
+      "used to",
+      "以前",
+      "已退役",
+      "曾经",
+      "曾經",
+      "已停用",
+      "已退休",
+      "已废弃",
+      "已廢棄",
+    ],
+  ];
+  const words = (text) => new Set(text.split(/[^\p{L}\p{N}']+/u));
+  const claimWords = words(claim);
+  const quoteWords = words(quote);
+  const hasMarker = (text, tokens, marker) =>
+    /[^\p{ASCII}]/u.test(marker) || marker.includes(" ")
+      ? text.includes(marker)
+      : tokens.has(marker);
+  for (const markers of qualifiers) {
+    if (
+      markers.some((marker) => hasMarker(quote, quoteWords, marker)) &&
+      !markers.some((marker) => hasMarker(claim, claimWords, marker))
+    ) return "lost_qualifier";
+  }
+  if (quote.includes(claim)) return null;
+  const terms = (text) =>
+    new Set(
+      text.split(/[^\p{L}\p{N}]+/u).filter((term) => unicodeLength(term) >= 3),
+    );
+  const claimTerms = terms(claim);
+  const quoteTerms = terms(quote);
+  const matched = [...claimTerms].filter((term) => quoteTerms.has(term)).length;
+  return claimTerms.size > 0 && matched * 2 >= claimTerms.size
+    ? null
+    : "insufficient_overlap";
 }
 
 function preservesEvidenceMeaning(content, quote) {
   // These are conservative rejection rules, not a general entailment proof.
   // A model should choose a narrower supporting quote when it mixes claims.
   const qualifiers = [
-    /\b(if|unless|hypothetical|hypothetically|suppos(?:e|ing)|imagine|might|perhaps|possibly)\b|假设|假設|如果|假如|可能|也许|也許/i,
+    /\b(if|unless|hypothetical|hypothetically|suppos(?:e|ing)|assuming|imagine|might|perhaps|possibly)\b|假设|假設|如果|假如|可能|也许|也許/i,
     /\b(no|not|never|without|cannot|can't|isn't|aren't|doesn't|don't|wasn't|weren't)\b|没有|沒有|并非|並非|不是|不再|未能|无法|無法/i,
-    /\b(previously|formerly|used to|retired|deprecated|discontinued|replaced|no longer)\b|以前|曾经|曾經|已停用|已退休|已废弃|已廢棄|不再/i,
+    /\b(previously|formerly|used to|retired|deprecated|discontinued|replaced|no longer)\b|以前|曾经|曾經|已停用|已退休|已退役|已废弃|已廢棄|不再/i,
   ];
   return qualifiers.every((pattern) =>
     !pattern.test(quote) || pattern.test(content)
@@ -1099,13 +1313,18 @@ async function loadLearningConfig(api, settings, signal) {
     settings.timeoutMs,
     undefined,
     signal,
+    "config",
   );
-  const config = JSON.parse(output);
+  const config = parseLearningResponse(output, "config");
   if (!isObject(config?.learning?.l1) || !isObject(config?.learning?.l2)) {
-    throw new Error("Moon learning configuration is invalid");
+    throw moonFailure("config", "invalid_response");
   }
   // Validate the actual IANA name using the host's timezone database.
-  new Intl.DateTimeFormat("en", { timeZone: config.learning.l2.timezone });
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: config.learning.l2.timezone });
+  } catch {
+    throw moonFailure("config", "invalid_response");
+  }
   return config;
 }
 
@@ -1193,11 +1412,16 @@ function synthesisPrompt(prepared, settings, maxActions) {
     "Maintain accurate, current, useful memory. Preserve negation, uncertainty, conditions and observation dates. An assistant recalling a claim is not independent confirmation. Hypothetical exploration is not a biographical fact.",
     "Compare entity and property across canonical keys. Prefer explicit, later user corrections over obsolete claims. Do not resolve an ambiguous conflict by guessing or by choosing the newest assistant assertion.",
     "Every action, including a review or merge, must cite at least one selected=true evidence session. Every factual change must cite exact, contiguous quotes from original evidence included below; never cite a generated memory as proof. Every number/name/detail in content must be supported by the newest cited evidence. Choose narrow claims and quotations.",
+    "Keep each claim narrow and close to the source wording while summarising usefully. Ground every detail and number in the NEWEST cited quote or quotes, not merely in an older citation. Explicitly retain any uncertainty, negation or retirement/historical status in those quotes. Use a narrow supporting quote; do not turn questions into confirmation or discard qualifiers from a mixed quote. Return no action for a claim that cannot satisfy these gates.",
     "Actions: create a new claim; confirm an unchanged claim using independent evidence; supersede an explicitly corrected active claim; merge exact duplicates; review an unresolved conflict. Supersession needs the user's own correction as evidence and the current target's canonical_key. Merge only identical content and kind in this scope; send semantic overlaps with different wording to review.",
     "Use target_document_id for confirm, supersede, merge or review; merge_document_ids names the other duplicate memories. Preserve the existing target's kind. A review flags a conflict without changing the claim. Never delete evidence. Do not repeat existing claims under new keys.",
+    "Validation bounds: canonical_key must be 2..256 ASCII characters matching ^[A-Za-z0-9._:/-]{2,256}$, with only one action per canonical_key in this batch. Content must be nonempty and at most 2000 UTF-16 code units; title is optional or null and at most 160 UTF-16 code units. Do not add fields outside the schema.",
+    `For create, confirm, supersede and merge, confidence must be a finite number from ${settings.learningMinConfidence} through 1 and importance from ${settings.learningMinImportance} through 1, inclusive. Review permits both scores from 0 through 1. Do not inflate scores to meet these bounds; omit an unsupported or low-value claim.`,
+    "Each action needs 1..16 evidence entries. Every quote must contain at least 8 Unicode characters and at most 8192 UTF-8 bytes, copied exactly and contiguously from the cited session. At least one citation per action must come from selected=true evidence, including review and merge. Confirm must copy the target's exact content; merge must copy exact content shared by every target. Do not paraphrase unchanged claims.",
+    "For create, target_document_id must be absent or null and merge_document_ids absent or empty. Every other action requires a target_document_id from the supplied memories and that target's exact canonical_key. Only merge may have merge_document_ids: provide 1..32 distinct integer IDs from supplied memories, excluding target_document_id. All other actions must omit merge_document_ids or use an empty array.",
     "New temporary operational claims (service health, TLS/errors, credential storage) must be kind observation with durability temporary. For an existing claim, preserve its kind and use durability temporary when it records changing operational status, even if its legacy kind is workflow. Moon assigns expiry from evidence time. Facts about stable preferences or established reference data can remain durable.",
     `Return exactly one JSON object, no Markdown, with at most ${maxActions} actions. Use an empty actions array when nothing deserves retention.`,
-    'Schema: {"actions":[{"action":"create|confirm|supersede|merge|review","canonical_key":string,"kind":"fact|preference|decision|workflow|relationship|summary|observation","durability":"durable|temporary","title":string,"content":string,"importance":number,"confidence":number,"target_document_id":number|null,"merge_document_ids":number[],"evidence":[{"session_id":string,"quote":string}]}]}',
+    'Schema: {"actions":[{"action":"create|confirm|supersede|merge|review","canonical_key":string,"kind":"fact|preference|decision|workflow|relationship|summary|observation","durability":"durable|temporary","title":string|null,"content":string,"importance":number,"confidence":number,"target_document_id":number|null,"merge_document_ids":number[],"evidence":[{"session_id":string,"quote":string}]}]}',
     prepared.context_limited
       ? `Context is partial: ${prepared.omitted_memory_count} related memories were omitted by the input budget. Absence from this packet does not prove a claim is new. Only act on a clearly identified entity/property; use review for an uncertain target that is included.`
       : "",
@@ -1209,14 +1433,18 @@ function synthesisPrompt(prepared, settings, maxActions) {
   ].join("\n\n");
 }
 
-function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
+function validateSynthesisBatchShape(raw, maxActions) {
   if (
     !isObject(raw) || Object.keys(raw).some((key) => key !== "actions") ||
     !Array.isArray(raw.actions) ||
     raw.actions.length > maxActions
   ) {
-    throw new Error("Moon synthesis returned an invalid action batch");
+    throw moonFailure("normalise", "invalid_batch");
   }
+}
+
+function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
+  validateSynthesisBatchShape(raw, maxActions);
   const memories = new Map(
     prepared.memories.map((memory) => [memory.document_id, memory]),
   );
@@ -1246,7 +1474,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
       ) || !Array.isArray(action.evidence) || action.evidence.length === 0 ||
       action.evidence.length > 16
     ) {
-      throw new Error("Moon synthesis returned an unsupported action");
+      throw moonFailure("normalise", "unsupported_action");
     }
     const target = memories.get(action.target_document_id);
     const mergeIds = action.merge_document_ids ?? [];
@@ -1290,7 +1518,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
         !Number.isSafeInteger(id) || id === action.target_document_id ||
         !memories.has(id)
       )
-    ) throw new Error("Moon synthesis returned an invalid claim or target");
+    ) throw moonFailure("normalise", "invalid_claim_or_target");
     keys.add(action.canonical_key);
     const kind = target?.kind ?? action.kind;
     if (
@@ -1301,9 +1529,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
         })
       )
     ) {
-      throw new Error(
-        "Moon synthesis confirmation and merge must preserve exact content and kind",
-      );
+      throw moonFailure("normalise", "content_changed");
     }
     const citations = action.evidence.map((citation) => {
       const original = evidence.get(citation?.session_id);
@@ -1313,9 +1539,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
         Buffer.byteLength(citation.quote, "utf8") > 8192 ||
         !original.content.includes(citation.quote)
       ) {
-        throw new Error(
-          "Moon synthesis citation does not match original evidence",
-        );
+        throw moonFailure("normalise", "invalid_citation");
       }
       const userText =
         original.content.match(/^User:\n([\s\S]*?)\n\nAssistant:\n/)?.[1] ?? "";
@@ -1323,16 +1547,14 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
         userText.includes(citation.quote) && isQuestionOnly(userText) &&
         action.action !== "review"
       ) {
-        throw new Error(
-          "Moon synthesis cannot treat a question as confirmation",
-        );
+        throw moonFailure("normalise", "question_only");
       }
       return { session_id: citation.session_id, quote: citation.quote };
     });
     if (
       !citations.some((citation) => evidence.get(citation.session_id).selected)
     ) {
-      throw new Error("Moon synthesis action must cite selected evidence");
+      throw moonFailure("normalise", "missing_selected_evidence");
     }
     // Durability belongs to the model contract; SQLite receives Moon's
     // evidence-derived expiry, never a model-selected timestamp.
@@ -1348,17 +1570,17 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
     const newestQuotes = citations.filter((citation) =>
       evidence.get(citation.session_id).completed_at_ms === newestAt
     ).map((citation) => citation.quote).join("\n");
-    if (!evidenceSupportsContent(action.content, newestQuotes)) {
-      throw new Error(
-        "Moon synthesis claim is not supported by its latest evidence",
-      );
+    const supportFailure = synthesisEvidenceSupportFailure(
+      action.content,
+      newestQuotes,
+    );
+    if (supportFailure) {
+      throw moonFailure("normalise", supportFailure);
     }
     if (action.action === "supersede") {
       const target = memories.get(action.target_document_id);
       if (!target || target.canonical_key !== action.canonical_key) {
-        throw new Error(
-          "Moon synthesis correction must address the current canonical claim",
-        );
+        throw moonFailure("normalise", "invalid_correction_target");
       }
       const correctedByUser = citations.some((citation) => {
         const original = evidence.get(citation.session_id);
@@ -1371,9 +1593,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
             (target.last_confirmed_at_ms ?? target.observed_at_ms ?? 0);
       });
       if (!correctedByUser) {
-        throw new Error(
-          "Moon synthesis correction lacks explicit user evidence",
-        );
+        throw moonFailure("normalise", "missing_user_correction");
       }
     }
     // A changed key does not make an assistant echo independent evidence.
@@ -1389,7 +1609,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
         )?.[1] ?? "";
         return userText.includes(citation.quote);
       })
-    ) throw new Error("Moon synthesis cannot confirm assistant recall");
+    ) throw moonFailure("normalise", "assistant_recall");
     const observation = durability === "temporary" ||
       action.kind === "observation" ||
       (["fact", "summary"].includes(action.kind) &&
@@ -1405,6 +1625,106 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
     };
   });
   return { actions };
+}
+
+function normalizeSynthesisBatch(raw, prepared, settings, maxActions) {
+  validateSynthesisBatchShape(raw, maxActions);
+  const keys = new Set();
+  const touched = new Set();
+  for (const candidate of raw.actions) {
+    if (!isObject(candidate)) continue;
+    if (typeof candidate.canonical_key === "string") {
+      if (keys.has(candidate.canonical_key)) {
+        throw moonFailure("normalise", "conflicting_actions");
+      }
+      keys.add(candidate.canonical_key);
+    }
+    const ids = new Set(
+      [
+        candidate.target_document_id,
+        ...(Array.isArray(candidate.merge_document_ids)
+          ? candidate.merge_document_ids
+          : candidate.merge_document_ids == null
+          ? []
+          : [candidate.merge_document_ids]),
+      ].filter((id) => id != null).map((id) =>
+        // A mistyped integer still refers to the same intended target for
+        // conflict detection; it never passes the strict candidate validator.
+        typeof id === "string" && id.trim() && Number.isSafeInteger(Number(id))
+          ? Number(id)
+          : id
+      ),
+    );
+    for (const id of ids) {
+      if (touched.has(id)) {
+        throw moonFailure("normalise", "conflicting_actions");
+      }
+      touched.add(id);
+    }
+  }
+
+  const evidence = new Map(
+    prepared.evidence.map((item) => [item.session_id, item]),
+  );
+  const selected = prepared.evidence.filter((item) => item.selected).map((
+    item,
+  ) => item.session_id);
+  const deferred = new Set();
+  const rejections = [];
+  const actions = [];
+  for (const candidate of raw.actions) {
+    try {
+      actions.push(
+        ...normalizeSynthesisResult(
+          { actions: [candidate] },
+          prepared,
+          settings,
+          1,
+        ).actions,
+      );
+    } catch (error) {
+      rejections.push(failureDiagnostic(error, "normalise", "invalid_batch"));
+      // A rejected correction's source must remain eligible for another day.
+      // If any citation cannot be mapped exactly, the model may have intended
+      // any selected source; defer all of them instead of silently losing it.
+      let mapped = isObject(candidate) && Array.isArray(candidate.evidence) &&
+        candidate.evidence.length > 0 && candidate.evidence.length <= 16;
+      const cited = new Set();
+      if (mapped) {
+        for (const citation of candidate.evidence) {
+          const original = evidence.get(citation?.session_id);
+          if (
+            !original || !nonEmptyString(citation?.quote) ||
+            unicodeLength(citation.quote) < 8 ||
+            Buffer.byteLength(citation.quote, "utf8") > 8192 ||
+            !original.content.includes(citation.quote)
+          ) {
+            mapped = false;
+            break;
+          }
+          if (original.selected) cited.add(original.session_id);
+        }
+      }
+      for (const session of mapped && cited.size > 0 ? cited : selected) {
+        deferred.add(session);
+      }
+    }
+  }
+  if (raw.actions.length > 0 && actions.length === 0) {
+    const first = rejections[0];
+    throw moonFailure(first.phase, first.code);
+  }
+  const result = {
+    actions,
+    deferred_evidence: selected.filter((session) => deferred.has(session)),
+  };
+  if (rejections.length > 0) {
+    synthesisRejections.set(result, {
+      count: rejections.length,
+      codes: [...new Set(rejections.map((diagnostic) => diagnostic.code))],
+    });
+  }
+  return result;
 }
 
 function dailySynthesisWindow(nowMs, dailyAt, timezone) {
@@ -1471,12 +1791,21 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
   if (!settings.stageEnabled || !base.learningEnabled) {
     return { status: "disabled", batches: 0 };
   }
-  settings.promptText = await readLearningPrompt(settings.promptFile);
-  const window = dailySynthesisWindow(nowMs, l2.daily_at, l2.timezone);
+  try {
+    settings.promptText = await readLearningPrompt(settings.promptFile);
+  } catch {
+    throw moonFailure("prompt", "unreadable");
+  }
+  let window;
+  try {
+    window = dailySynthesisWindow(nowMs, l2.daily_at, l2.timezone);
+  } catch {
+    throw moonFailure("config", "invalid_response");
+  }
   let batches = 0;
   for (let batch = 0; batch < (l2.max_batches_per_day ?? 8); batch += 1) {
     if (signal?.aborted) throw modelCancellationError();
-    const prepared = JSON.parse(
+    const prepared = parseLearningResponse(
       await runMoonCommand(
         api,
         [
@@ -1500,31 +1829,58 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
         settings.timeoutMs,
         undefined,
         signal,
+        "prepare",
       ),
+      "prepare",
     );
     if (["empty", "busy", "exhausted"].includes(prepared.status)) {
       return { status: prepared.status, batches };
     }
-    if (prepared.status === "committed") continue;
+    if (prepared.status === "committed") {
+      const deferred = prepared.deferred_evidence ?? 0;
+      if (!Number.isSafeInteger(deferred) || deferred < 0) {
+        throw moonFailure("prepare", "invalid_response");
+      }
+      if (deferred > 0) return { status: "partial", batches };
+      continue;
+    }
     if (
       prepared.status !== "prepared" || !nonEmptyString(prepared.run_id) ||
       !Array.isArray(prepared.memories) || !Array.isArray(prepared.evidence)
-    ) throw new Error("Moon synthesis preparation is invalid");
+    ) throw moonFailure("prepare", "invalid_response");
+    let phase = "model";
     try {
       const prompt = synthesisPrompt(prepared, settings, l2.max_actions ?? 16);
       const result = await runModelWithFallback(api, settings, prompt, {
         timeoutMs: settings.modelTimeoutMs,
         maxTokens: settings.maxOutputTokens,
         signal,
-        validateOutput: (output) =>
-          normalizeSynthesisResult(
-            parseJsonObject(output),
-            prepared,
-            settings,
-            l2.max_actions ?? 16,
-          ),
+        validateOutput: (output) => {
+          let parsed;
+          try {
+            parsed = parseJsonObject(output);
+          } catch {
+            throw moonFailure("normalise", "invalid_json");
+          }
+          try {
+            return normalizeSynthesisBatch(
+              parsed,
+              prepared,
+              settings,
+              l2.max_actions ?? 16,
+            );
+          } catch (error) {
+            const diagnostic = failureDiagnostic(
+              error,
+              "normalise",
+              "invalid_batch",
+            );
+            throw moonFailure(diagnostic.phase, diagnostic.code);
+          }
+        },
       });
       if (signal?.aborted) throw modelCancellationError();
+      phase = "apply";
       const payload = {
         ...result.validatedOutput,
         metadata: {
@@ -1533,7 +1889,7 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
           prompt_hash: createHash("sha256").update(prompt).digest("hex"),
         },
       };
-      const applied = JSON.parse(
+      const applied = parseLearningResponse(
         await runMoonCommand(
           api,
           [
@@ -1548,18 +1904,50 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
           settings.timeoutMs,
           JSON.stringify(payload),
           signal,
+          "apply",
         ),
+        "apply",
       );
       if (applied.status !== "committed") {
-        throw new Error("Moon synthesis was not committed");
+        throw moonFailure("apply", "not_committed");
       }
+      const deferred = applied.deferred_evidence ??
+        result.validatedOutput.deferred_evidence.length;
+      if (
+        !Number.isSafeInteger(deferred) || deferred < 0 ||
+        !Number.isSafeInteger(applied.action_count) ||
+        applied.action_count < 0 ||
+        !Number.isSafeInteger(applied.processed_evidence) ||
+        applied.processed_evidence < 0
+      ) throw moonFailure("apply", "invalid_response");
+      const partial = deferred > 0 ||
+        result.validatedOutput.deferred_evidence.length > 0;
+      const rejected = synthesisRejections.get(result.validatedOutput);
       batches += 1;
       logInfo(
         api,
-        `moon synthesis status=committed actions=${applied.action_count} evidence=${applied.processed_evidence} model_route=${result.modelRoute}`,
+        `moon synthesis status=committed actions=${applied.action_count} evidence=${applied.processed_evidence} model_route=${result.modelRoute}` +
+          (partial
+            ? ` deferred_evidence=${deferred} rejected_actions=${
+              rejected?.count ?? 0
+            } rejection_codes=${rejected?.codes.join(",") ?? "none"}`
+            : ""),
       );
+      phase = "embedding";
       await onApplied?.(signal);
-    } catch {
+      // Leave rejected source evidence for another day. The committed
+      // deferred count persists this boundary across service restarts.
+      if (partial) return { status: "partial", batches };
+    } catch (error) {
+      const diagnostic = failureDiagnostic(
+        error,
+        phase,
+        phase === "model"
+          ? "backend_error"
+          : phase === "apply"
+          ? "invalid_response"
+          : "failed",
+      );
       try {
         // Cancellation still gets a short best-effort lease release. Do not
         // let cleanup consume OpenClaw's five-second service-stop deadline.
@@ -1579,9 +1967,7 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
       } catch {
         /* The durable lease permits recovery after a process failure. */
       }
-      throw new Error(
-        "Moon synthesis failed; evidence remains available for retry",
-      );
+      throw moonFailure(diagnostic.phase, diagnostic.code);
     }
   }
   return { status: "daily_limit", batches };
@@ -1608,10 +1994,15 @@ function createLearningScheduler(api, onApplied) {
           signal,
           onApplied,
         );
-      } catch {
+      } catch (error) {
+        const diagnostic = failureDiagnostic(
+          error,
+          "config",
+          "invalid_response",
+        );
         logError(
           api,
-          "moon synthesis degraded; inspect moon config validate and moon learning status",
+          `moon synthesis degraded phase=${diagnostic.phase} code=${diagnostic.code}; inspect moon config validate and moon learning status`,
         );
       }
     })().finally(() => {
@@ -1655,19 +2046,52 @@ function logInfo(api, message) {
   }
 }
 
-async function runMoonCommand(api, argv, timeoutMs, input, signal) {
-  if (signal?.aborted) throw modelCancellationError();
-  const result = await api.runtime.system.runCommandWithTimeout(argv, {
-    timeoutMs,
-    ...(input === undefined ? {} : { input }),
-    ...(signal ? { signal } : {}),
-  });
-  if (result.code !== 0) {
-    throw new Error(
-      result.stderr?.trim() || `moon exited with ${result.code}`,
-    );
+async function runMoonCommand(
+  api,
+  argv,
+  timeoutMs,
+  input,
+  signal,
+  failurePhase,
+) {
+  if (signal?.aborted) {
+    throw failurePhase
+      ? moonFailure(failurePhase, "command_cancelled")
+      : modelCancellationError();
   }
-  return result.stdout?.trim() ?? "";
+  try {
+    const result = await api.runtime.system.runCommandWithTimeout(argv, {
+      timeoutMs,
+      ...(input === undefined ? {} : { input }),
+      ...(signal ? { signal } : {}),
+    });
+    if (result.code !== 0) {
+      if (failurePhase) {
+        const code = signal?.aborted
+          ? "command_cancelled"
+          : ["timeout", "no-output-timeout"].includes(result.termination)
+          ? "command_timeout"
+          : "command_failed";
+        throw moonFailure(failurePhase, code);
+      }
+      throw new Error(
+        result.stderr?.trim() || `moon exited with ${result.code}`,
+      );
+    }
+    return result.stdout?.trim() ?? "";
+  } catch (error) {
+    if (!failurePhase) throw error;
+    const diagnostic = failureDiagnostic(
+      error,
+      failurePhase,
+      signal?.aborted || error?.name === "AbortError"
+        ? "command_cancelled"
+        : error?.name === "TimeoutError"
+        ? "command_timeout"
+        : "command_failed",
+    );
+    throw moonFailure(diagnostic.phase, diagnostic.code);
+  }
 }
 
 class MoonStdioClient {
@@ -2186,7 +2610,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.6.1",
+      version: "2.6.2",
       ownsCompaction: false,
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
@@ -2386,6 +2810,7 @@ export default {
 };
 
 export const __moonTest = {
+  failureDiagnostic,
   createLearningScheduler,
   dailySynthesisWindow,
   loadLearningConfig,
@@ -2393,6 +2818,7 @@ export const __moonTest = {
   readLearningPrompt,
   synthesisPrompt,
   normalizeSynthesisResult,
+  normalizeSynthesisBatch,
   runDailySynthesis,
   learningPrompt,
   correctionRequested,
@@ -2407,6 +2833,8 @@ export const __moonTest = {
   delegateCompaction,
   distillBatchArguments,
   evidenceSupportsContent,
+  evidenceSupportFailure,
+  synthesisEvidenceSupportFailure,
   injectPacket,
   isLearningCandidate,
   isTrivialQuery,

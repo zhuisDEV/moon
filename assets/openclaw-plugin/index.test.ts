@@ -858,12 +858,16 @@ Deno.test("scheduler shutdown aborts pending config, prepare and apply commands"
     >();
     let cancelled = false;
     let cleanupTimeout: number | undefined;
+    const logs: string[] = [];
     const api = createApi(
       { code: 0, stdout: "", stderr: "" },
       [],
       {},
       () => ({ payloads: [{ text: '{"actions":[]}' }] }),
     );
+    api.logger.error = (...messages: unknown[]) => {
+      logs.push(messages.map(String).join(" "));
+    };
     api.runtime.system.runCommandWithTimeout = (argv, options) => {
       if (argv.includes(phase)) {
         assert(options.signal instanceof AbortSignal);
@@ -897,6 +901,9 @@ Deno.test("scheduler shutdown aborts pending config, prepare and apply commands"
       await beforeServiceStopDeadline(entered.promise);
       await beforeServiceStopDeadline(scheduler.stop());
       assert(cancelled);
+      assertEquals(logs, [
+        `moon synthesis degraded phase=${phase} code=command_cancelled; inspect moon config validate and moon learning status`,
+      ]);
       if (phase === "apply") assertEquals(cleanupTimeout, 1000);
     } finally {
       blocked.reject(new Error("fixture cleanup"));
@@ -2473,13 +2480,682 @@ function synthesisFixture() {
       canonical_key: "user:preference:style",
       kind: "preference",
       title: "Response style",
-      content: "The user prefers concise answers.",
+      content: quote,
       importance: 0.9,
       confidence: 0.99,
       evidence: [{ session_id: "source:new", quote }],
     },
   };
 }
+
+function synthesisBatchFixture() {
+  const { prepared, action } = synthesisFixture();
+  const quotes = [
+    "Moon stores notes locally.",
+    "I prefer concise answers.",
+    "Project Atlas uses violet.",
+    "Weekly reviews happen on Friday.",
+    "Documentation lives in the repository.",
+    "Database snapshots stay on the computer.",
+  ];
+  const evidence = quotes.map((quote, index) => ({
+    session_id: `source:${index}`,
+    completed_at_ms: 1000 + index,
+    selected: true,
+    content: `User:\n${quote}\n\nAssistant:\nUnderstood.`,
+  }));
+  return {
+    prepared: { ...prepared, evidence },
+    actions: quotes.map((quote, index) => ({
+      ...action,
+      canonical_key: `fixture:claim:${index}`,
+      kind: "fact",
+      content: quote,
+      evidence: [{ session_id: `source:${index}`, quote }],
+    })),
+    settings: __moonTest.stageSettings(
+      __moonTest.resolveSettings(
+        createApi({ code: 0, stdout: "", stderr: "" }, []),
+      ),
+      learningConfig(),
+      "l2",
+    ),
+  };
+}
+
+Deno.test("L2 prechecks Rust lexical gates and L1 preserves uncertainty and retirement", () => {
+  const settings = __moonTest.resolveSettings(
+    createApi({ code: 0, stdout: "", stderr: "" }, []),
+  );
+  for (
+    const example of [
+      {
+        quote: "I prefer concise answers.",
+        content: "The user prefers concise answers.",
+        code: "insufficient_overlap",
+      },
+      {
+        quote: "Assuming the release colour is violet.",
+        content: "The release colour is violet.",
+        code: "lost_qualifier",
+      },
+      {
+        quote: "Moon 已退役。",
+        content: "Moon",
+        code: "lost_qualifier",
+      },
+    ]
+  ) {
+    assertEquals(
+      __moonTest.evidenceSupportsContent(example.content, example.quote),
+      example.code === "insufficient_overlap",
+    );
+    assertEquals(
+      __moonTest.synthesisEvidenceSupportFailure(
+        example.content,
+        example.quote,
+      ),
+      example.code,
+    );
+    if (example.code === "lost_qualifier") {
+      assertEquals(
+        __moonTest.normalizeProposal(
+          {
+            canonical_key: "fixture:claim",
+            kind: "fact",
+            content: example.content,
+            evidence_quote: example.quote,
+            importance: 0.9,
+            confidence: 0.99,
+          },
+          {
+            userText: example.quote,
+            transcript: `User:\n${example.quote}`,
+            completedAtMs: 1000,
+          },
+          settings,
+          new Set(),
+        ),
+        null,
+      );
+    }
+  }
+  for (
+    const quote of [
+      "Assuming the release colour is violet.",
+      "Moon 已退役。",
+      "The total is 2,500.00.",
+      "我喜欢简洁的回答。",
+    ]
+  ) {
+    assertEquals(
+      __moonTest.synthesisEvidenceSupportFailure(quote, quote),
+      null,
+    );
+  }
+});
+
+Deno.test("L2 partial batches retain five valid claims and defer rejected correction evidence", () => {
+  const { prepared, actions, settings } = synthesisBatchFixture();
+  const secret = "rejected-private-content-do-not-print";
+  const raw = {
+    actions: actions.map((action, index) =>
+      index === 5 ? { ...action, content: secret } : action
+    ),
+  };
+  const result = __moonTest.normalizeSynthesisBatch(
+    raw,
+    prepared,
+    settings,
+    16,
+  );
+  assertEquals(result.actions.length, 5);
+  assertEquals(result.deferred_evidence, ["source:5"]);
+  assertEquals(Object.keys(result), ["actions", "deferred_evidence"]);
+  assert(!JSON.stringify(result).includes(secret));
+
+  const correction = {
+    ...actions[5],
+    action: "supersede",
+    target_document_id: 42,
+  };
+  const snapshot = {
+    ...prepared,
+    memories: [{
+      document_id: 42,
+      canonical_key: correction.canonical_key,
+      kind: correction.kind,
+      content: "Database snapshots stay elsewhere.",
+      last_confirmed_at_ms: 500,
+    }],
+  };
+  const rejectedCorrection = __moonTest.normalizeSynthesisBatch(
+    { actions: [actions[0], correction] },
+    snapshot,
+    settings,
+    16,
+  );
+  assertEquals(rejectedCorrection.actions.length, 1);
+  assertEquals(rejectedCorrection.deferred_evidence, ["source:5"]);
+
+  const sharedSource = __moonTest.normalizeSynthesisBatch(
+    {
+      actions: [actions[0], {
+        ...actions[1],
+        content: secret,
+        evidence: actions[0].evidence,
+      }],
+    },
+    prepared,
+    settings,
+    16,
+  );
+  assertEquals(sharedSource.actions.length, 1);
+  assertEquals(sharedSource.deferred_evidence, ["source:0"]);
+});
+
+Deno.test("L2 defers every selected source when any rejected citation cannot map safely", () => {
+  const { prepared, actions, settings } = synthesisBatchFixture();
+  const snapshot = {
+    ...prepared,
+    evidence: [...prepared.evidence, {
+      ...prepared.evidence[1],
+      session_id: "support:old",
+      selected: false,
+    }],
+  };
+  for (
+    const evidence of [
+      undefined,
+      [],
+      [null],
+      [{ session_id: "unknown", quote: actions[1].content }],
+      [{ session_id: "source:1", quote: "invented quote" }],
+      [{ session_id: "source:1", quote: "short" }],
+      [actions[1].evidence[0], {
+        session_id: "unknown",
+        quote: "unknown source",
+      }],
+      [{ session_id: "support:old", quote: actions[1].content }],
+    ]
+  ) {
+    const result = __moonTest.normalizeSynthesisBatch(
+      { actions: [actions[0], { ...actions[1], evidence, confidence: 0.1 }] },
+      snapshot,
+      settings,
+      16,
+    );
+    assertEquals(result.actions.length, 1);
+    assertEquals(
+      result.deferred_evidence,
+      prepared.evidence.map((item) => item.session_id),
+    );
+  }
+});
+
+Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rejected batches", () => {
+  const { prepared, actions, settings } = synthesisBatchFixture();
+  const first = { ...actions[0], action: "review", target_document_id: 10 };
+  const target = {
+    document_id: 10,
+    canonical_key: first.canonical_key,
+    kind: first.kind,
+    content: first.content,
+  };
+  const snapshot = { ...prepared, memories: [target] };
+  const cases = [
+    { raw: { actions, extra: true }, maximum: 16, code: "invalid_batch" },
+    { raw: { actions }, maximum: 5, code: "invalid_batch" },
+    {
+      raw: { actions: [actions[0], { ...actions[0], content: "rejected" }] },
+      maximum: 16,
+      code: "conflicting_actions",
+    },
+    ...[
+      { ...actions[1], target_document_id: 10 },
+      { ...actions[1], target_document_id: "10" },
+      { ...actions[1], target_document_id: 20, merge_document_ids: [10] },
+      { ...actions[1], target_document_id: 20, merge_document_ids: 10 },
+    ].map((second) => ({
+      raw: { actions: [first, second] },
+      maximum: 16,
+      code: "conflicting_actions",
+    })),
+    {
+      raw: {
+        actions: [{ ...actions[0], content: "Entirely invented claim." }],
+      },
+      maximum: 16,
+      code: "insufficient_overlap",
+    },
+  ];
+  for (const example of cases) {
+    let failure;
+    try {
+      __moonTest.normalizeSynthesisBatch(
+        example.raw,
+        snapshot,
+        settings,
+        example.maximum,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    assertEquals(__moonTest.failureDiagnostic(failure), {
+      phase: "normalise",
+      code: example.code,
+    });
+  }
+  assertEquals(
+    __moonTest.normalizeSynthesisBatch({ actions: [] }, snapshot, settings, 16),
+    { actions: [], deferred_evidence: [] },
+  );
+});
+
+Deno.test("daily L2 commits the accepted subset and stops partial days across restarts", async () => {
+  const { prepared, actions } = synthesisBatchFixture();
+  const secret = "rejected-private-content-do-not-print";
+  const logs: string[] = [];
+  const commands: string[][] = [];
+  let appliedPayload: Record<string, unknown> | undefined;
+  let modelCalls = 0;
+  let embedded = 0;
+  let committed = false;
+  const api = {
+    ...createApi(
+      { code: 0, stdout: "", stderr: "" },
+      [],
+      {},
+      () => {
+        modelCalls += 1;
+        return {
+          payloads: [{
+            text: JSON.stringify({
+              actions: actions.map((action, index) =>
+                index === 5 ? { ...action, content: secret } : action
+              ),
+            }),
+          }],
+        };
+      },
+    ),
+    logger: {
+      info(message: string) {
+        logs.push(message);
+      },
+      error(message: string) {
+        logs.push(message);
+      },
+    },
+  };
+  api.runtime.system.runCommandWithTimeout = (argv, options) => {
+    commands.push(argv);
+    let output;
+    if (argv.includes("config")) {
+      output = learningConfig({}, { enabled: true, fallback_enabled: false });
+    } else if (argv.includes("prepare")) {
+      assert(argv[argv.indexOf("--run-key") + 1].endsWith(":0"));
+      output = committed
+        ? { status: "committed", deferred_evidence: 1 }
+        : prepared;
+    } else if (argv.includes("apply")) {
+      appliedPayload = JSON.parse(options.input ?? "{}");
+      committed = true;
+      output = {
+        status: "committed",
+        action_count: 5,
+        processed_evidence: 5,
+        deferred_evidence: 1,
+      };
+    } else throw new Error("unexpected command");
+    return { code: 0, stdout: JSON.stringify(output), stderr: secret };
+  };
+  const onApplied = () => {
+    embedded += 1;
+  };
+  const firstScheduler = __moonTest.createLearningScheduler(api, onApplied);
+  const restartedScheduler = __moonTest.createLearningScheduler(api, onApplied);
+  try {
+    assertEquals(await firstScheduler.tick(), {
+      status: "partial",
+      batches: 1,
+    });
+    await firstScheduler.stop();
+    assertEquals(await restartedScheduler.tick(), {
+      status: "partial",
+      batches: 0,
+    });
+    assertEquals(await restartedScheduler.tick(), {
+      status: "partial",
+      batches: 0,
+    });
+    assertEquals(modelCalls, 1);
+    assertEquals(embedded, 1);
+    assertEquals(commands.filter((argv) => argv.includes("apply")).length, 1);
+    assertEquals(appliedPayload?.deferred_evidence, ["source:5"]);
+    assertEquals(Object.keys(appliedPayload ?? {}), [
+      "actions",
+      "deferred_evidence",
+      "metadata",
+    ]);
+    assert(!JSON.stringify(appliedPayload).includes(secret));
+    assertEquals(logs, [
+      "moon synthesis status=committed actions=5 evidence=5 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+    ]);
+  } finally {
+    await firstScheduler.stop();
+    await restartedScheduler.stop();
+  }
+});
+
+Deno.test("L2 prompt states the configured score and existing validation bounds", () => {
+  const { prepared } = synthesisFixture();
+  const settings = {
+    ...__moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    learningMinConfidence: 0.93,
+    learningMinImportance: 0.67,
+  };
+  const prompt = __moonTest.synthesisPrompt(prepared, settings, 7);
+  for (
+    const bound of [
+      "at most 7 actions",
+      "confidence must be a finite number from 0.93 through 1",
+      "importance from 0.67 through 1",
+      "Review permits both scores from 0 through 1",
+      "Do not inflate scores",
+      "^[A-Za-z0-9._:/-]{2,256}$",
+      "one action per canonical_key",
+      "at most 2000 UTF-16 code units",
+      "at most 160 UTF-16 code units",
+      "1..16 evidence entries",
+      "at least 8 Unicode characters",
+      "at most 8192 UTF-8 bytes",
+      "selected=true evidence, including review and merge",
+      "Confirm must copy the target's exact content",
+      "1..32 distinct integer IDs",
+      "NEWEST cited quote or quotes",
+      "Explicitly retain any uncertainty, negation or retirement/historical status",
+      "Return no action for a claim that cannot satisfy these gates",
+    ]
+  ) assert(prompt.includes(bound), bound);
+});
+
+Deno.test("L2 diagnostic codes survive model and normalisation failure without leaking output", async () => {
+  const secret = "private-output-and-credential-must-not-print";
+  const { prepared, action } = synthesisFixture();
+  const forgedError = Object.assign(new Error(secret), {
+    phase: "normalise",
+    code: "missing_selected_evidence",
+    diagnostic: { phase: secret, code: secret },
+  });
+  assertEquals(__moonTest.failureDiagnostic(forgedError), {
+    phase: "internal",
+    code: "unknown",
+  });
+  const cases: Array<{
+    phase: string;
+    code: string;
+    result?: unknown;
+    error?: Error;
+  }> = [
+    { phase: "model", code: "backend_error", error: forgedError },
+    {
+      phase: "model",
+      code: "timeout",
+      result: {
+        meta: { timeoutPhase: secret, aborted: true },
+        payloads: [{ text: secret }],
+      },
+    },
+    {
+      phase: "model",
+      code: "cancelled",
+      result: { meta: { aborted: true }, payloads: [{ text: secret }] },
+    },
+    {
+      phase: "model",
+      code: "backend_error",
+      result: {
+        meta: { error: { kind: secret, message: secret } },
+        payloads: [{ text: secret }],
+      },
+    },
+    {
+      phase: "model",
+      code: "error_payload",
+      result: { payloads: [{ isError: true, text: secret }] },
+    },
+    {
+      phase: "model",
+      code: "empty_response",
+      result: { payloads: [{ isReasoning: true, text: secret }] },
+    },
+    {
+      phase: "normalise",
+      code: "invalid_json",
+      result: { payloads: [{ text: `{"actions":[${secret}]}` }] },
+    },
+    {
+      phase: "normalise",
+      code: "unsupported_action",
+      result: {
+        payloads: [{
+          text: JSON.stringify({ actions: [{ ...action, action: secret }] }),
+        }],
+      },
+    },
+    {
+      phase: "normalise",
+      code: "insufficient_overlap",
+      result: {
+        payloads: [{
+          text: JSON.stringify({ actions: [{ ...action, content: secret }] }),
+        }],
+      },
+    },
+    {
+      phase: "normalise",
+      code: "invalid_claim_or_target",
+      result: {
+        payloads: [{
+          text: JSON.stringify({ actions: [{ ...action, confidence: 0.1 }] }),
+        }],
+      },
+    },
+  ];
+  for (const example of cases) {
+    const logs: string[] = [];
+    const commands: string[] = [];
+    let modelCalls = 0;
+    const api = {
+      ...createApi(
+        { code: 0, stdout: "", stderr: "" },
+        [],
+        {},
+        () => {
+          modelCalls += 1;
+          if (example.error) throw example.error;
+          return example.result;
+        },
+      ),
+      logger: {
+        error(message: string) {
+          logs.push(message);
+        },
+      },
+    };
+    api.runtime.system.runCommandWithTimeout = (argv) => {
+      const command = argv.includes("config")
+        ? "config"
+        : argv.includes("prepare")
+        ? "prepare"
+        : argv.includes("fail")
+        ? "fail"
+        : "unexpected";
+      commands.push(command);
+      const output = command === "config"
+        ? learningConfig({}, { enabled: true, fallback_enabled: false })
+        : command === "prepare"
+        ? prepared
+        : { status: "failed" };
+      return { code: 0, stdout: JSON.stringify(output), stderr: secret };
+    };
+    const scheduler = __moonTest.createLearningScheduler(api);
+    try {
+      await scheduler.tick();
+      assertEquals(logs, [
+        `moon synthesis degraded phase=${example.phase} code=${example.code}; inspect moon config validate and moon learning status`,
+      ]);
+      assert(!JSON.stringify(logs).includes(secret));
+      assertEquals(commands, ["config", "prepare", "fail"]);
+      assertEquals(modelCalls, 1);
+    } finally {
+      await scheduler.stop();
+    }
+  }
+});
+
+Deno.test("L2 grounding diagnostics preserve number qualifier question and overlap gates", () => {
+  const settings = __moonTest.stageSettings(
+    __moonTest.resolveSettings(
+      createApi({ code: 0, stdout: "", stderr: "" }, []),
+    ),
+    learningConfig(),
+    "l2",
+  );
+  for (
+    const example of [
+      {
+        content: "The gateway port is 18790.",
+        quote: "The gateway port is 18789.",
+        code: "unsupported_number",
+      },
+      {
+        content: "The gateway is running.",
+        quote: "The gateway is not running.",
+        code: "lost_qualifier",
+      },
+      {
+        content: "Moon is running locally.",
+        quote: "Should Moon run locally?",
+        code: "question_only",
+      },
+      {
+        content: "Venus prefers elaborate paragraphs.",
+        quote: "I prefer concise answers.",
+        code: "insufficient_overlap",
+      },
+    ]
+  ) {
+    const { prepared, action } = synthesisFixture();
+    prepared.evidence[0].content =
+      `User:\n${example.quote}\n\nAssistant:\nUnderstood.`;
+    assertEquals(
+      __moonTest.evidenceSupportFailure(example.content, example.quote),
+      example.code,
+    );
+    assert(!__moonTest.evidenceSupportsContent(example.content, example.quote));
+    let failure;
+    try {
+      __moonTest.normalizeSynthesisResult(
+        {
+          actions: [{
+            ...action,
+            content: example.content,
+            evidence: [{ session_id: "source:new", quote: example.quote }],
+          }],
+        },
+        prepared,
+        settings,
+        16,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    assertEquals(__moonTest.failureDiagnostic(failure), {
+      phase: "normalise",
+      code: example.code,
+    });
+  }
+  assertEquals(
+    __moonTest.evidenceSupportFailure(
+      "Moon supports local memory.",
+      "Moon supports local memory.",
+    ),
+    null,
+  );
+});
+
+Deno.test("L2 command diagnostics identify phases and discard CLI response bodies", async () => {
+  const secret = "private-command-body-must-not-print";
+  const { prepared } = synthesisFixture();
+  for (
+    const example of [
+      { phase: "config", code: "command_failed", exit: 1, output: secret },
+      { phase: "config", code: "invalid_response", exit: 0, output: secret },
+      { phase: "prepare", code: "command_failed", exit: 1, output: secret },
+      { phase: "prepare", code: "invalid_response", exit: 0, output: "null" },
+      {
+        phase: "prepare",
+        code: "command_timeout",
+        exit: 124,
+        output: secret,
+        termination: "no-output-timeout",
+      },
+      { phase: "apply", code: "command_failed", exit: 1, output: secret },
+      { phase: "apply", code: "invalid_response", exit: 0, output: secret },
+      {
+        phase: "apply",
+        code: "not_committed",
+        exit: 0,
+        output: JSON.stringify({ status: secret }),
+      },
+    ]
+  ) {
+    const logs: string[] = [];
+    const api = {
+      ...createApi(
+        { code: 0, stdout: "", stderr: "" },
+        [],
+        {},
+        () => ({ payloads: [{ text: '{"actions":[]}' }] }),
+      ),
+      logger: {
+        error(message: string) {
+          logs.push(message);
+        },
+      },
+    };
+    api.runtime.system.runCommandWithTimeout = (argv) => {
+      if (argv.includes(example.phase)) {
+        return {
+          code: example.exit,
+          stdout: example.output,
+          stderr: secret,
+          termination: example.termination,
+        };
+      }
+      const output = argv.includes("config")
+        ? learningConfig({}, { enabled: true, fallback_enabled: false })
+        : argv.includes("prepare")
+        ? prepared
+        : { status: "failed" };
+      return { code: 0, stdout: JSON.stringify(output), stderr: "" };
+    };
+    const scheduler = __moonTest.createLearningScheduler(api);
+    try {
+      await scheduler.tick();
+      assertEquals(logs, [
+        `moon synthesis degraded phase=${example.phase} code=${example.code}; inspect moon config validate and moon learning status`,
+      ]);
+      assert(!JSON.stringify(logs).includes(secret));
+    } finally {
+      await scheduler.stop();
+    }
+  }
+});
 
 Deno.test("L2 validates original citations and rejects unsupported changes even with custom guidance", () => {
   const { prepared, action } = synthesisFixture();

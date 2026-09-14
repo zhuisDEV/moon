@@ -328,6 +328,11 @@ and records uncertain conflicts for review. Temporary operational observations
 expire from recall using their evidence date. Evidence, revisions, and citations
 remain available for audit.
 
+From 2.6.2, independently valid L2 candidates can commit while sources behind
+rejected candidates stay pending. A partial commit stops that day's synthesis,
+including after restart, and leaves those sources for a later occurrence.
+Grounding checks remain strict and accepted changes commit atomically.
+
 The new [learning guide](docs/learning.md) covers `config init`, `config show`,
 `config validate`, independent `[learning.l1]` and `[learning.l2]` settings, and
 isolated preview/apply commands. The starter uses `openai/gpt-6-astra` with

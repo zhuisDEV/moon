@@ -220,12 +220,45 @@ exhaust that key and stop work for that occurrence. Each attempt can call the
 configured primary and, if enabled, one fallback. Failed input remains available
 for the next due date; exhaustion does not delete or mark it processed.
 
-SQLite validates the prepared snapshot again before applying. A changed memory
-scope, stale target, expired lease, invalid citation, or invalid action rejects
-the whole batch. Successful application commits memories, citations, indexes,
-embedding work, and the evidence-processing ledger together. A valid empty
-action list still marks the selected evidence processed. Cancellation stops
-routing without starting another fallback.
+From Moon 2.6.2, the adapter checks independent model candidates separately. It
+can keep valid candidates while rejecting others; evidence cited by a rejected
+candidate stays pending. If a rejected candidate's sources cannot be identified
+safely, all selected evidence stays pending. Conflicting keys or overlapping
+targets reject the entire proposal. A proposal whose candidates all fail still
+uses the ordinary bounded failure policy.
+
+SQLite validates the prepared snapshot and accepted actions again before
+applying. A changed memory scope, stale target, expired lease, invalid citation,
+or invalid accepted action rejects the transaction. Successful application
+commits accepted memories, citations, indexes, embedding work, and the
+non-deferred evidence ledger together. Any deferred evidence stops synthesis for
+that due date, including after a restart; it can be revisited at the next daily
+occurrence. This preserves rejected corrections without repeatedly processing
+the same partial batch that day. A genuinely empty model action list still marks
+all selected evidence processed. Cancellation stops routing without starting
+another fallback.
+
+From Moon 2.6.2, gateway diagnostics distinguish fixed failure phases and codes,
+for example `phase=normalise code=lost_qualifier` or `phase=model code=timeout`.
+These fields never contain generated claims, original conversations or arbitrary
+provider errors. A normalisation failure means the proposed JSON or evidence did
+not pass Moon's checks; it does not imply that the model timed out. An apply
+failure means the SQLite transaction was rejected, which can also happen when L1
+changed the memory scope while a longer L2 request was running.
+
+Grounding codes include `question_only`, `unsupported_number`, `lost_qualifier`
+and `insufficient_overlap`. These are conservative checks, not proof that a
+rejected sentence is false. For example, a useful paraphrase can fail wording
+overlap; review the meaning before choosing a closer quotation.
+
+For grounding failures, inspect a proposal against an isolated copy first.
+Prefer narrow claims and short supporting quotations from the newest cited
+evidence; preserve its conditions, uncertainty and negative wording. Omit a
+candidate that cannot pass those checks. Do not weaken the validator or rotate
+run keys to hide repeated failures. After a deliberate correction, an operator
+can use the manual preparation/apply workflow below with the same run key and an
+explicit bounded attempt allowance; ordinary daily retries remain limited to
+three.
 
 ## Inspect and rehearse with the CLI
 
@@ -313,9 +346,16 @@ moon --home "$learning_home" --database "$learning_home/state/moon.sqlite" \
 `apply --dry-run` requires a real active lease, validates and executes the
 transaction, then rolls it back; it is not a substitute for read-only preview.
 It leaves the lease available for a subsequent apply. Plain `apply` writes the
-result and processes selected evidence. Reapplying a committed run returns its
-stored result. `--input -` accepts the same JSON through stdin. These commands
-do not ask a model to generate proposals.
+result and processes selected evidence. From 2.6.2, an optional top-level
+`"deferred_evidence": ["selected-session-id"]` leaves those selected sources
+pending; IDs must be unique and belong to that prepared selection. This field is
+set by the adapter or reviewing operator, never accepted from model output. The
+outcome reports `action_count`, `processed_evidence`, `selected_evidence`, the
+deferred count as `deferred_evidence`, and `deferred_session_ids`. Committed
+`prepare` replies and `status` run records include the deferred count.
+Reapplying a committed run returns its stored result. `--input -` accepts the
+same JSON through stdin. These commands do not ask a model to generate
+proposals.
 
 To abandon an uncommitted prepared run, use the same temporary home:
 
