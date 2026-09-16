@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.6.3 - 2026-09-17
+
 - Update the locked Rustls dependency to 0.23.45 for RUSTSEC-2026-0285.
 - Remove stored reasoning and provider bookkeeping from Moon's compaction prompt
   while preserving conversation text, complete tool exchanges and previous
