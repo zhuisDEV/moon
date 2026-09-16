@@ -286,8 +286,9 @@ conversation text and complete tool exchanges. For proactive oldest-history
 compaction, the opt-in [compaction profile](docs/compaction.md) enables
 OpenClaw's size-based preflight check at 240,000 active transcript bytes. The
 host keeps a recent tail and checks before the next request; Moon adds no timer
-or competing transcript writer. The byte threshold requires local-model tuning
-and is not an exact token limit.
+or competing transcript writer. The profile gives both host and model compaction
+deadlines five minutes for existing backlogs. The byte threshold requires
+local-model tuning and is not an exact token limit.
 
 Embedding workers claim bounded, expiring leases before local inference.
 Memories run before references; failures back off and keep a redacted

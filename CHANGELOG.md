@@ -9,7 +9,9 @@
 - Add an opt-in stock-OpenClaw proactive compaction profile using the native
   active-transcript byte threshold, oldest-prefix selection and recent-tail
   retention. Document the durable-turn maintenance limitation and separate
-  host/model deadlines; no live configuration is changed by a Moon update.
+  host/model deadlines, both set to five minutes by the opt-in profile so
+  existing backlogs have more time; no live configuration is changed by a Moon
+  update.
 
 ## 2.6.2 - 2026-09-14
 

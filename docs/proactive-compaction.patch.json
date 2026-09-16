@@ -14,5 +14,13 @@
   {
     "path": "agents.defaults.compaction.recentTurnsPreserve",
     "value": 3
+  },
+  {
+    "path": "agents.defaults.compaction.timeoutSeconds",
+    "value": 300
+  },
+  {
+    "path": "plugins.entries.moon.config.compactionTimeoutMs",
+    "value": 300000
   }
 ]

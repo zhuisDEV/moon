@@ -22,6 +22,14 @@ large turns remain verbatim. Existing summaries are carried into subsequent
 summary requests. Unfinished work, constraints and relevant exact identifiers
 must survive regardless of age.
 
+The profile also sets both OpenClaw's outer compaction deadline and Moon's model
+deadline to **300 seconds**. Early triggering reduces future input growth; it
+does not make an already oversized backlog small. A copied incident transcript
+still required 68,591 input tokens after projection and exceeded the previous
+180-second deadline. Increasing only Moon's timeout would leave the host's
+earlier cancellation in place. A request waiting for compaction can now wait up
+to five minutes; this does not enlarge the model's context window.
+
 There is no wall-clock timer or parallel summarisation of a running response. An
 idle session needs no model calls. A new request may wait for preflight
 compaction. The existing token/overflow checks remain enabled. The host avoids
@@ -55,8 +63,8 @@ before enabling the profile for important ongoing work.
 First install the candidate Moon adapter through the normal approved update
 workflow. Keep `agents.defaults.compaction.mode=safeguard` and
 `agents.defaults.compaction.provider=moon-local`. The patch leaves the chosen
-model, credentials, reasoning, summary output limit, timeout and other
-compaction settings unchanged.
+model, credentials, reasoning, summary output limit and other compaction
+settings unchanged, except for the two coordinated deadlines described above.
 
 From the repository root, validate the proposed settings without changing them:
 
@@ -73,7 +81,7 @@ openclaw config validate
 openclaw gateway restart --safe
 ```
 
-Read back the four changed settings and the loaded plugin path. Verify an
+Read back the six changed settings and the loaded plugin path. Verify an
 isolated session compacts an older prefix, retains complete recent tool pairs,
 and resumes the next request. A failed preflight preserves the transcript but
 can still prevent that request from proceeding. Removing unnecessary input does
