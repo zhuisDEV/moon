@@ -648,6 +648,97 @@ function modelCancellationError() {
   return error;
 }
 
+// Retain semantic transcript data, not provider bookkeeping or stored reasoning.
+// Tool arguments are intentionally opaque: even unusual keys can be meaningful.
+function compactionMessages(messages) {
+  function content(value) {
+    if (typeof value === "string") {
+      return value.startsWith("data:") && value.includes(";base64,")
+        ? "[Binary attachment omitted]"
+        : value;
+    }
+    if (value === null || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      return value.map(content).filter((item) => item !== undefined);
+    }
+    if (["thinking", "reasoning", "redacted_thinking"].includes(value.type)) {
+      return undefined;
+    }
+    if (value.type === "text" && typeof value.text === "string") {
+      return { type: "text", text: value.text };
+    }
+    if (["toolCall", "tool_use", "function_call"].includes(value.type)) {
+      const call = { type: value.type };
+      for (const key of ["id", "call_id", "name", "arguments", "input"]) {
+        if (value[key] !== undefined) call[key] = value[key];
+      }
+      return call;
+    }
+    if (
+      [
+        "image",
+        "image_url",
+        "input_image",
+        "audio",
+        "input_audio",
+        "output_audio",
+        "video",
+        "file",
+        "document",
+      ].includes(value.type)
+    ) {
+      return { type: "text", text: `[${value.type} attachment omitted]` };
+    }
+    if (value.type === "base64" || value.encoding === "base64") {
+      return "[Binary payload omitted]";
+    }
+    if (value.type === "tool_result") {
+      return { ...value, content: content(value.content) };
+    }
+    // Unknown structured tool output is business data, not a block tree.
+    // In particular, fields called bytes, metadata or type may be meaningful.
+    return value;
+  }
+  return (Array.isArray(messages) ? messages : []).flatMap((message) => {
+    if (!message || typeof message !== "object") return [];
+    if (message.excludeFromContext === true) return [];
+    const result = { role: message.role };
+    for (
+      const key of [
+        "toolCallId",
+        "toolName",
+        "isError",
+        "tool_use_id",
+        "is_error",
+      ]
+    ) {
+      if (message[key] !== undefined) result[key] = message[key];
+    }
+    const cleaned = content(message.content);
+    if (cleaned !== undefined) result.content = cleaned;
+    if (message.role === "bashExecution") {
+      for (
+        const key of [
+          "command",
+          "output",
+          "exitCode",
+          "cancelled",
+          "truncated",
+          "fullOutputPath",
+        ]
+      ) {
+        if (message[key] !== undefined) result[key] = message[key];
+      }
+    }
+    if (message.role === "custom" && typeof message.customType === "string") {
+      result.customType = message.customType;
+    }
+    // Host-inserted compaction and branch summaries can use a summary field.
+    if (typeof message.summary === "string") result.summary = message.summary;
+    return [result];
+  });
+}
+
 function compactionPrompt(params) {
   const messages = Array.isArray(params?.messages) ? params.messages : [];
   const sections = [
@@ -684,7 +775,11 @@ function compactionPrompt(params) {
       }`,
     );
   }
-  sections.push(`Transcript messages (JSON):\n${JSON.stringify(messages)}`);
+  sections.push(
+    `Transcript messages (JSON):\n${
+      JSON.stringify(compactionMessages(messages))
+    }`,
+  );
   return sections.join("\n\n");
 }
 
@@ -2827,6 +2922,7 @@ export const __moonTest = {
   acceptedTurnFromParams,
   contextArguments,
   compactionPrompt,
+  compactionMessages,
   contextWorkerRequest,
   completedTurnFromParams,
   createMoonContextEngine,

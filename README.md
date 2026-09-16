@@ -281,6 +281,14 @@ disables hidden model fallbacks for its isolated call; configure OpenClaw's
 explicit compaction model to the same local route so its provider-failure
 fallback also stays local.
 
+Summary prompts exclude stored reasoning and message bookkeeping while keeping
+conversation text and complete tool exchanges. For proactive oldest-history
+compaction, the opt-in [compaction profile](docs/compaction.md) enables
+OpenClaw's size-based preflight check at 240,000 active transcript bytes. The
+host keeps a recent tail and checks before the next request; Moon adds no timer
+or competing transcript writer. The byte threshold requires local-model tuning
+and is not an exact token limit.
+
 Embedding workers claim bounded, expiring leases before local inference.
 Memories run before references; failures back off and keep a redacted
 diagnostic. `requeue-embeddings` refuses to clear vectors while another worker

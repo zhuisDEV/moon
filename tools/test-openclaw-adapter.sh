@@ -32,7 +32,8 @@ deno test --node-modules-dir=none \
   --allow-read="$repo_root/assets/openclaw-plugin,$fixture_root" \
   --allow-env=MOON_TEST_BINARY,MOON_TEST_HOME,MOON_TEST_MODE,MOON_TEST_QUERY,MOON_TEST_EXPECTED,MOON_REQUIRE_REAL_BINARY \
   --allow-run="$moon_binary" \
-  "$repo_root/assets/openclaw-plugin/index.test.ts"
+  "$repo_root/assets/openclaw-plugin/index.test.ts" \
+  "$repo_root/assets/openclaw-plugin/compaction-input.test.ts"
 
 if [ -e "$fixture_root/ambient.sqlite" ] || [ -e "$fixture_root/unintended-home" ]; then
   echo 'Adapter test escaped its explicit Moon runtime.' >&2

@@ -1,0 +1,18 @@
+[
+  {
+    "path": "agents.defaults.compaction.enabled",
+    "value": true
+  },
+  {
+    "path": "agents.defaults.compaction.maxActiveTranscriptBytes",
+    "value": 240000
+  },
+  {
+    "path": "agents.defaults.compaction.keepRecentTokens",
+    "value": 20000
+  },
+  {
+    "path": "agents.defaults.compaction.recentTurnsPreserve",
+    "value": 3
+  }
+]
