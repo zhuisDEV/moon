@@ -23,6 +23,17 @@ preservation, transcript mutation, quality checks, checkpoints, and rollback;
 Moon remains a non-owning context engine. Keep the provider model exact and
 local when privacy requires that no fallback can leave the machine.
 
+Moon's summary input excludes stored reasoning and message bookkeeping, while
+preserving text and complete tool exchanges. For proactive compaction on the
+stock OpenClaw harness, see [docs/compaction.md](docs/compaction.md) and its
+opt-in configuration patch. It triggers before the next request at 240,000
+active transcript bytes and delegates oldest-prefix selection and recent-tail
+retention to the host. It sets both host and Moon compaction deadlines to five
+minutes for existing backlogs. This is not a timer or an exact token threshold.
+Do not apply that byte-cap profile to a native Codex harness. Do not claim the
+durable `commitTurn` path runs `afterTurn` maintenance without verifying the
+host.
+
 Before operating or migrating a runtime, verify that the shell command and the
 OpenClaw `moonPath` resolve to the same v2 binary:
 

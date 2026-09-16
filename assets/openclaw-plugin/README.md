@@ -103,6 +103,20 @@ advertises `ownsCompaction=false`. Moon owns retrieval and bounded packet
 assembly, not transcript replacement. Selecting `moon-local` changes the summary
 generator, not that ownership boundary.
 
+The summary input contains semantic messages rather than raw provider objects:
+stored thinking and message bookkeeping are excluded, visible text and complete
+tool exchanges remain, and recognised media bodies receive omission markers.
+This only changes the model input, not the stored source transcript.
+
+The opt-in [proactive compaction profile](../../docs/compaction.md) uses the
+host's supported preflight check at 240,000 active transcript bytes, with a
+20,000-token recent-tail setting and three recent turns of safeguard context.
+Older eligible history is summarised before the next request. Both host and
+model compaction deadlines are five minutes to allow existing backlogs more
+time. The byte limit is a starting point for local-model testing, not an exact
+token count or a completion guarantee. Native Codex harnesses keep their own
+compaction policy. Moon installs no wall-clock compaction timer.
+
 Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
 [`docs/learning.md`](../../docs/learning.md) for configuration, daily
 scheduling, freshness, review limits, schema-8 migration, and isolated CLI

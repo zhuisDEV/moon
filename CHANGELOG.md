@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Update the locked Rustls dependency to 0.23.45 for RUSTSEC-2026-0285.
+- Remove stored reasoning and provider bookkeeping from Moon's compaction prompt
+  while preserving conversation text, complete tool exchanges and previous
+  summaries. Mark recognised media omissions explicitly.
+- Add an opt-in stock-OpenClaw proactive compaction profile using the native
+  active-transcript byte threshold, oldest-prefix selection and recent-tail
+  retention. Document the durable-turn maintenance limitation and separate
+  host/model deadlines, both set to five minutes by the opt-in profile so
+  existing backlogs have more time; no live configuration is changed by a Moon
+  update.
+
 ## 2.6.2 - 2026-09-14
 
 - Report fixed L2 failure phases and codes without logging provider bodies,
