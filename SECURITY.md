@@ -11,6 +11,11 @@ Moon stores local memory that may contain sensitive information.
   which retains ownership of every provider credential store.
 - Moon never parses or copies provider access tokens, and provider failures are
   reduced to bounded diagnostics without arbitrary remote response bodies.
+- Native recall uses OpenClaw's prompt-build hook only when Moon owns the
+  context-engine slot and has an explicit conversation-access grant, with prompt
+  injection allowed. Updating Moon does not grant those permissions. Hook
+  contributions contain fenced, untrusted context and do not replace system
+  instructions or native transcript ownership.
 - Prompts and model outputs remain inside the OpenClaw runtime. Turn evidence
   and distillation proposals passed to the Moon binary use stdin rather than
   process arguments and are bounded.

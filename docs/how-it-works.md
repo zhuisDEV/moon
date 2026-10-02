@@ -228,7 +228,13 @@ Custom UTF-8 prompts up to 64 KiB supplement fixed guards rather than replacing
 them. Input, timeout, action, and attempt limits are enforced separately. The
 native Codex backend inspected with OpenClaw 2026.9.4 ignores the requested
 `max_output_tokens`; it must not be presented as an enforced token-usage cap.
-See [learning.md](learning.md) for the complete configuration and limits.
+OpenClaw 2026.9.7 also treats that hint in `streamParams` as a transport
+override, excluding native Codex during route selection. Moon omits it for
+native runtimes and implicitly routed OpenAI helpers, while preserving it for
+explicit stock OpenClaw routes and ordinary local providers. The host still
+chooses the configured runtime and authentication; Moon does not force a native
+route or copy credentials. See [learning.md](learning.md) for the complete
+configuration and limits.
 
 ### Daily reconciliation alongside turn-time learning
 
@@ -263,6 +269,15 @@ do not run a model. The full isolated workflow and review limits are in
 [learning.md](learning.md#inspect-and-rehearse-with-the-cli).
 
 ### 6. Before an agent turn: assemble a context packet
+
+On hosts with Moon's conversation-hook permission enabled, automatic recall uses
+`before_prompt_build` and returns a defensive `prependContext` packet. The
+adapter prefers the current admitted user request over reconstructed history,
+skips internal learning and heartbeat turns, and avoids a second injection
+through `assemble`. Without that permission or hook API, the legacy assembly
+path remains. OpenClaw 2026.9.7 native-owned routes skip assembly, so they
+require the hook; see the
+[canary settings](openclaw-canary.md#native-recall-compatibility).
 
 The agent asks Moon for context relevant to its current task:
 

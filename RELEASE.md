@@ -10,8 +10,10 @@ Use this process for tagged public releases (for example `v2.2.0`).
 
 1. Ensure version is updated:
    - `Cargo.toml`
+   - `Cargo.lock` root package entry
    - `assets/openclaw-plugin/package.json`
    - `assets/openclaw-plugin/index.js` plugin runtime info
+   - `SKILL.md` version marker
 2. Update `CHANGELOG.md` with release date and highlights.
 3. Verify docs are aligned:
    - `README.md`
@@ -29,7 +31,7 @@ Use this process for tagged public releases (for example `v2.2.0`).
    - `deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md`
    - `deno lint assets/openclaw-plugin tools`
    - `sh tools/test-openclaw-adapter.sh "$PWD/target/release/moon"` (requires
-     all three real-binary integration tests in a temporary synthetic runtime)
+     all four real-binary integration tests in a temporary synthetic runtime)
    - an isolated migration and real-binary adapter canary
    - a consistent live backup plus `moon --json health`
 

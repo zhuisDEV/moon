@@ -143,6 +143,17 @@ not reuse the conversation transcript, and their tool route is disabled.
 Conflicting or ambiguous agent ownership fails instead of selecting a different
 agent silently. Primary and fallback attempts use separate identities.
 
+In OpenClaw 2026.9.7, a non-empty `streamParams` object counts as a transport
+override and makes native Codex ineligible. Sending the advisory
+`max_output_tokens` hint this way can redirect a working native helper onto a
+host route with no compatible authentication. Moon consults the host's runtime
+policy when available and omits that hint for explicit native runtimes or
+implicit OpenAI routing. Explicit stock OpenClaw and ordinary non-OpenAI routes
+retain it. The selected model, reasoning, timeout, tool restrictions, and
+incognito identity remain unchanged; native output tokens are not capped by this
+setting. A working chat or direct Codex probe does not validate a fresh OpenClaw
+learning-helper route.
+
 OpenClaw 2026.9.4 retains completed native incognito subscriptions until its
 Codex client shuts down. Moon does not close that shared client after each
 helper because it can also own unrelated user threads. Ephemeral persistence
@@ -240,11 +251,14 @@ another fallback.
 
 From Moon 2.6.2, gateway diagnostics distinguish fixed failure phases and codes,
 for example `phase=normalise code=lost_qualifier` or `phase=model code=timeout`.
-These fields never contain generated claims, original conversations or arbitrary
-provider errors. A normalisation failure means the proposed JSON or evidence did
-not pass Moon's checks; it does not imply that the model timed out. An apply
-failure means the SQLite transaction was rejected, which can also happen when L1
-changed the memory scope while a longer L2 request was running.
+L1 learning failures now report the same safe phase/code pair as L2 synthesis.
+`phase=model code=backend_error` alone does not identify authentication as the
+cause; correlate it with content-free host route diagnostics. These fields never
+contain generated claims, original conversations or arbitrary provider errors. A
+normalisation failure means the proposed JSON or evidence did not pass Moon's
+checks; it does not imply that the model timed out. An apply failure means the
+SQLite transaction was rejected, which can also happen when L1 changed the
+memory scope while a longer L2 request was running.
 
 Grounding codes include `question_only`, `unsupported_number`, `lost_qualifier`
 and `insufficient_overlap`. These are conservative checks, not proof that a

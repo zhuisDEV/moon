@@ -37,6 +37,13 @@ excerpts with source and byte citations. These references remain separate from
 reviewed canonical memories. Memory, evidence, and references are rendered as
 untrusted data rather than agent instructions.
 
+The adapter delivers this packet through an explicitly permitted
+`before_prompt_build` hook on current OpenClaw hosts, so native-owned model
+routes can recall even when the host skips context-engine assembly. That mode
+makes `assemble` a pass-through to avoid duplicate injection. Hosts without hook
+support or permission retain the legacy assembly path; this fallback cannot
+restore recall for a host that never calls `assemble`.
+
 The OpenClaw adapter records one immutable evidence document per completed turn,
 using a stable parent-session and content fingerprint. It keeps the user request
 and final answer and omits intermediate tool traffic. The configured curator

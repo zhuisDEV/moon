@@ -7,6 +7,28 @@ database schema as one compatibility-set transaction. It never compiles remote
 source, evaluates manifest fields as shell, downloads trust roots, deletes prior
 releases, or copies credentials.
 
+## Moon 2.6.4 native recall upgrade
+
+Moon 2.6.4 fixes OpenClaw 2026.9.7 learning helpers losing their native route
+because of an advisory output-token hint. It also adds prompt-build recall for
+native model routes that bypass context-engine assembly. Database schema stays
+at 8.
+
+Updating the adapter alone does not enable the new recall hook. Keep
+`plugins.slots.contextEngine="moon"` and explicitly grant
+`plugins.entries.moon.hooks.allowConversationAccess=true`, with
+`allowPromptInjection` allowed. These are OpenClaw plugin permissions, outside
+Moon's `config` object, and require operator approval for a live profile. Moon
+does not change them automatically. Without the grant, legacy assembly recall
+continues only on runtimes that invoke it.
+
+Back up the database and OpenClaw configuration before deploying. Follow the
+[native recall canary](openclaw-canary.md#native-recall-compatibility) for the
+exact permission patch and isolated checks. After an authorised deployment,
+verify a new native turn recalls a unique synthetic fact and that the exact
+configured L1 and L2 model/effort routes succeed. A direct Codex probe, healthy
+database, or old injection metric does not complete those acceptance checks.
+
 ## Read-only inspection
 
 Moon 2.5.3 fixes the live-turn fallback seen with 2.5.2 on OpenClaw 2026.9.2.

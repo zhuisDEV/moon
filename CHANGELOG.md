@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 2.6.4 - 2026-10-03
+
+- Restore automatic recall on OpenClaw 2026.9.7 native routes through an
+  explicitly permitted prompt-build hook, with legacy assembly fallback,
+  admission-aware retrieval reuse, helper/heartbeat exclusion, and bounded
+  content-free delivery metrics.
+- Prevent advisory output-token hints from making native learning routes
+  ineligible. Preserve explicit stock-runtime hints, configured models and
+  reasoning, and detached helper sessions. Report safe L1 failure phases and
+  codes alongside L2 diagnostics.
+- Cover native recall and helper-route compatibility in the offline adapter
+  suite and document the separate live deployment permission and canary checks.
+
 ## 2.6.3 - 2026-09-17
 
 - Update the locked Rustls dependency to 0.23.45 for RUSTSEC-2026-0285.

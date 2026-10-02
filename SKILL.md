@@ -3,7 +3,7 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.6.3 -->
+<!-- moon-version: 2.6.4 -->
 
 # Moon
 
@@ -15,6 +15,14 @@ default; its independent model and reasoning settings live beside L1's in the
 selected runtime's `moon.toml`.
 
 Moon 2.5.1 requires OpenClaw 2026.9.2 or newer for detached model sessions.
+
+On OpenClaw 2026.9.7, native model routes skip context-engine assembly.
+Automatic recall needs Moon's `before_prompt_build` hook and the operator's
+explicit `plugins.entries.moon.hooks.allowConversationAccess=true` grant, with
+`allowPromptInjection` not disabled. Without that grant, legacy assembly recall
+remains available only where the host calls it. Follow the
+[native recall canary](docs/openclaw-canary.md#native-recall-compatibility); do
+not infer current recall from a loaded plugin or healthy storage.
 
 When `agents.defaults.compaction.provider` is `moon-local`, the adapter also
 generates compaction summaries with its configured provider-qualified model and
@@ -132,6 +140,12 @@ and decision gates.
 
 ## Interpret health
 
+- Report storage, current recall delivery, and L1/L2 learning separately. A
+  successful search or old injection metric does not prove recall reaches the
+  current chat; a working chat does not prove a fresh learning helper can
+  authenticate.
+- `packet_truncated` can mean an item-count limit, shortened citations, or a
+  character limit. Review a representative miss before raising `maxChars`.
 - `pending_embeddings=0` and no failed, retrying, or dead jobs mean automatic
   embedding is current.
 - `evidence_vectors=0` is expected. Raw completed-turn evidence is retained for
@@ -190,10 +204,13 @@ setup it uses the app binary and current user `CODEX_HOME` OAuth through the
 `openai` provider. Never copy credentials or add an API-key fallback to make the
 check pass. Helpers use owner-preserving incognito keys, detached persistence,
 and disabled tools. Native Codex currently ignores `max_output_tokens`; timeout
-and bounded attempts are not an exact token-usage cap. The optional native
-two-turn smoke probe uses subscription inference and must remain a separately
-authorised check, as described in
-[docs/openclaw-canary.md](docs/openclaw-canary.md).
+and bounded attempts are not an exact token-usage cap. Moon omits the optional
+output-token transport hint for native runtimes and implicitly routed OpenAI
+helpers because OpenClaw 2026.9.7 otherwise excludes Codex from route selection.
+Keep the configured model and reasoning exact; do not change authentication to
+work around a transport-hint regression. The optional native two-turn smoke
+probe uses subscription inference and must remain a separately authorised check,
+as described in [docs/openclaw-canary.md](docs/openclaw-canary.md).
 
 ## Make changes deliberately
 

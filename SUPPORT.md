@@ -19,6 +19,16 @@
 4. Exact error output.
 5. Minimal reproducible steps.
 
+For learning or automatic recall problems, also include the OpenClaw version,
+selected context-engine slot, Moon hook permission flags, exact L1/L2 model and
+reasoning settings, and content-free `moon metrics summary --since 7d` output.
+Use Moon's fixed failure phase/code instead of arbitrary provider response
+bodies. A working chat does not establish that a new learning helper can
+authenticate, and an old injection metric does not prove current native recall.
+Do not post credentials, private memory, evidence transcripts, or unredacted
+configuration. See the
+[native recall canary](docs/openclaw-canary.md#native-recall-compatibility).
+
 ## Response expectations
 
 This project is maintained on a best-effort basis. Critical security issues are

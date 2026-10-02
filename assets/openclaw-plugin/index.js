@@ -543,6 +543,34 @@ function modelRunSessionIdentity(api, params, runId) {
   };
 }
 
+function modelStreamParams(api, selected, identity, maxTokens) {
+  if (!Number.isSafeInteger(maxTokens)) return undefined;
+  let runtime;
+  try {
+    const configured = api?.runtime?.modelConfig?.resolveModelRuntimePolicy?.({
+      config: isObject(api?.config) ? api.config : {},
+      provider: selected.provider,
+      modelId: selected.model,
+      agentId: identity.agentId,
+      sessionKey: identity.sessionKey,
+    });
+    runtime = configured?.policy?.id?.trim().toLowerCase();
+  } catch {
+    // This is only an output hint. Uncertain policy must not change the route.
+    return undefined;
+  }
+  if (runtime === "openclaw") return { maxTokens };
+  if (runtime && !["auto", "default"].includes(runtime)) return undefined;
+  // OpenClaw 2026.9.7 treats every nonempty streamParams object as a provider
+  // transport override, which excludes Codex and its native authentication.
+  // Leave implicit OpenAI routing to the host; native Codex cannot enforce
+  // this advisory output limit anyway. Explicit embedded policies above and
+  // ordinary local/provider routes retain their supported token hint.
+  return selected.provider.trim().toLowerCase() === "openai"
+    ? undefined
+    : { maxTokens };
+}
+
 async function runOpenClawModel(api, settings, prompt, params = {}) {
   const modelRef = params.modelRef;
   const reasoning = params.reasoning;
@@ -587,9 +615,7 @@ async function runOpenClawModel(api, settings, prompt, params = {}) {
     verboseLevel: "off",
     thinkLevel: reasoning,
     reasoningLevel: "off",
-    streamParams: Number.isSafeInteger(params.maxTokens)
-      ? { maxTokens: params.maxTokens }
-      : undefined,
+    streamParams: modelStreamParams(api, selected, identity, params.maxTokens),
     abortSignal: params.signal,
     silentExpected: true,
   });
@@ -2684,17 +2710,175 @@ async function drainEmbeddingQueue(api, settings, worker) {
   }
 }
 
-function createMoonContextEngine(api, sharedWorkerState = null) {
+function sharedWorkerFor(settings, state) {
+  if (state.stopping) {
+    throw new Error("Moon service is stopping");
+  }
+  state.client ??= new MoonStdioClient(settings);
+  return state.client;
+}
+
+function logContextObservation(api, observation, injected) {
+  logInfo(
+    api,
+    `moon context request=${
+      observation.requestId ?? "unrecorded"
+    } injected=${injected} memories=${observation.memoryCount} references=${observation.referenceCount} chars=${observation.packetChars} truncated=${observation.truncated}`,
+  );
+}
+
+function isPromptRecallExcluded(api, ctx) {
+  const selected = api?.config?.plugins?.slots?.contextEngine;
+  return (!nonEmptyString(selected) || selected.trim() !== "moon") ||
+    ctx?.trigger === "heartbeat" ||
+    String(ctx?.runId ?? "").startsWith("moon-model-") ||
+    String(ctx?.sessionId ?? "").startsWith("internal-session-effects-") ||
+    /(?:^|:)internal-session-effects(?::|$)/.test(
+      String(ctx?.sessionKey ?? ""),
+    );
+}
+
+function createMoonPromptRecall(api, sharedWorkerState) {
+  const requests = new Map();
+  let generation = 0;
+  return {
+    clear(runId) {
+      if (!runId) {
+        generation += 1;
+        requests.clear();
+        return;
+      }
+      for (const [key, entry] of requests) {
+        if (entry.runIds.has(runId)) requests.delete(key);
+      }
+    },
+    async prepare(event, ctx = {}) {
+      if (isPromptRecallExcluded(api, ctx)) return;
+      // An explicit empty current request is an image-only input or internal
+      // continuation. Projected history must not become its retrieval query.
+      const explicitRequest = Object.hasOwn(event ?? {}, "currentUserMessage");
+      if (explicitRequest && !nonEmptyString(event.currentUserMessage)) return;
+      const query = queryFromParams(
+        explicitRequest
+          ? { ...event, prompt: event.currentUserMessage }
+          : event,
+      );
+      if (!query || isTrivialQuery(query)) return;
+      const settings = resolveSettings(api);
+      const requestGeneration = generation;
+      const assertActive = () => {
+        if (sharedWorkerState.stopping || requestGeneration !== generation) {
+          throw new Error("Moon service is stopping");
+        }
+        ctx.hookInvocation?.assertActive();
+      };
+      try {
+        assertActive();
+        const worker = settings.mode === "lexical"
+          ? null
+          : sharedWorkerFor(settings, sharedWorkerState);
+        const session = ctx.sessionKey || ctx.sessionId;
+        // A run ID and equal text alone do not identify a native admission.
+        // Reuse only host-issued admission IDs, scoped to their conversation.
+        const key = nonEmptyString(event?.currentUserMessageId) &&
+            nonEmptyString(session)
+          ? JSON.stringify([
+            ctx.agentId ?? "",
+            session,
+            event.currentUserMessageId,
+            stableHash(query),
+            settings.moonHome,
+            settings.scope,
+            settings.mode,
+            settings.limit,
+            settings.maxChars,
+            settings.evidencePerMemory,
+          ])
+          : null;
+        let entry = key ? requests.get(key) : null;
+        if (!entry) {
+          entry = {
+            observation: retrievePacket(api, settings, query, worker),
+            metricTail: Promise.resolve(),
+            marked: false,
+            runIds: new Set(),
+          };
+          if (key) {
+            requests.set(key, entry);
+            // Completed runs are released by agent_end; bound retention when
+            // an older host fails to emit that cleanup hook.
+            while (requests.size > 128) {
+              requests.delete(requests.keys().next().value);
+            }
+          }
+        }
+        if (ctx.runId) entry.runIds.add(ctx.runId);
+        let observation;
+        try {
+          observation = await entry.observation;
+        } catch (error) {
+          if (key && requests.get(key) === entry) requests.delete(key);
+          throw error;
+        }
+        assertActive();
+        // Serialize metric delivery for concurrent rebuilds of one admission.
+        // A stale invocation must finish undoing its mark before a live one
+        // can offer the same packet to the host.
+        const delivery = entry.metricTail.then(async () => {
+          assertActive();
+          if (!entry.marked) {
+            const injected = Boolean(observation.packet);
+            await markContextInjection(
+              api,
+              settings,
+              worker,
+              observation.requestId,
+              injected,
+            );
+            try {
+              assertActive();
+            } catch (error) {
+              if (injected) {
+                await markContextInjection(
+                  api,
+                  settings,
+                  worker,
+                  observation.requestId,
+                  false,
+                );
+              }
+              throw error;
+            }
+            entry.marked = true;
+            logContextObservation(api, observation, injected);
+          }
+          // Nothing asynchronous follows this lifetime check before returning
+          // the contribution. This records adapter delivery, not final model
+          // consumption (which the native harness does not expose).
+          assertActive();
+          return observation.packet
+            ? { prependContext: observation.packet }
+            : undefined;
+        });
+        entry.metricTail = delivery.then(() => undefined, () => undefined);
+        return await delivery;
+      } catch (error) {
+        logError(api, "context recall hook degraded: packet was not delivered");
+        if (!settings.failOpen) throw error;
+      }
+    },
+  };
+}
+
+function createMoonContextEngine(
+  api,
+  sharedWorkerState = null,
+  promptRecallEnabled = false,
+) {
   let stdioClient = null;
   function workerFor(settings) {
     if (sharedWorkerState) {
-      if (sharedWorkerState.stopping) {
-        throw new Error("Moon service is stopping");
-      }
-      if (!sharedWorkerState.client) {
-        sharedWorkerState.client = new MoonStdioClient(settings);
-      }
-      return sharedWorkerState.client;
+      return sharedWorkerFor(settings, sharedWorkerState);
     }
     if (!stdioClient) {
       stdioClient = new MoonStdioClient(settings);
@@ -2705,7 +2889,7 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.6.3",
+      version: "2.6.4",
       ownsCompaction: false,
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
@@ -2723,6 +2907,11 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
     },
     async assemble(params) {
       const messages = Array.isArray(params?.messages) ? params.messages : [];
+      // Native-owned OpenClaw routes do not call assemble. Where authorised,
+      // use the shared prompt hook for every harness to avoid double recall.
+      if (promptRecallEnabled) {
+        return { messages, estimatedTokens: estimateTokens(messages) };
+      }
       const query = queryFromParams(params);
       if (!query || isTrivialQuery(query)) {
         return { messages, estimatedTokens: estimateTokens(messages) };
@@ -2831,7 +3020,11 @@ function createMoonContextEngine(api, sharedWorkerState = null) {
         // The durable evidence is already committed. Learning is best effort;
         // replaying this turn must not generate another proposal or confirmation.
         learningMetric.status = "error";
-        logError(api, `learning degraded: ${String(error)}`);
+        const diagnostic = failureDiagnostic(error);
+        logError(
+          api,
+          `moon learning degraded phase=${diagnostic.phase} code=${diagnostic.code}; inspect moon config validate and moon learning status`,
+        );
       }
       learningMetric.duration_us = elapsedMicroseconds(learningStarted);
       await recordRuntimeMetric(
@@ -2867,6 +3060,33 @@ export default {
   id: "moon",
   register(api) {
     const sharedWorkerState = { client: null, stopping: false };
+    const promptRecall = createMoonPromptRecall(api, sharedWorkerState);
+    const hookPolicy = api?.config?.plugins?.entries?.moon?.hooks;
+    let promptRecallEnabled = false;
+    if (
+      typeof api.on === "function" &&
+      hookPolicy?.allowConversationAccess === true &&
+      hookPolicy?.allowPromptInjection !== false
+    ) {
+      try {
+        api.on("before_prompt_build", (event, ctx) => {
+          return promptRecall.prepare(event, ctx);
+        });
+        promptRecallEnabled = true;
+        api.on("agent_end", (event, ctx) => {
+          const runId = ctx?.runId ?? event?.runId;
+          if (runId) promptRecall.clear(runId);
+        });
+      } catch {
+        logError(api, "context recall hook registration failed");
+      }
+    }
+    if (!promptRecallEnabled) {
+      logError(
+        api,
+        "Moon native recall unavailable: enable plugins.entries.moon.hooks.allowConversationAccess and allow prompt injection on a host with before_prompt_build support; legacy assemble recall retained",
+      );
+    }
     const scheduler = createLearningScheduler(api, async (signal) => {
       if (sharedWorkerState.stopping || signal?.aborted) return;
       const settings = resolveSettings(api);
@@ -2882,6 +3102,7 @@ export default {
       },
       async stop() {
         sharedWorkerState.stopping = true;
+        promptRecall.clear();
         const stopped = scheduler.stop();
         // Disposing rejects an in-flight embedding request so the scheduler
         // can settle promptly, without waiting for the embedding timeout.
@@ -2892,7 +3113,8 @@ export default {
     });
     api.registerContextEngine(
       "moon",
-      () => createMoonContextEngine(api, sharedWorkerState),
+      () =>
+        createMoonContextEngine(api, sharedWorkerState, promptRecallEnabled),
     );
     api.registerCompactionProvider({
       id: MOON_COMPACTION_PROVIDER_ID,

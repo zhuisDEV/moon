@@ -17,8 +17,10 @@ For each agent turn:
 3. Moon selects reviewed canonical memories first.
 4. Remaining slots may contain unreviewed indexed references with source and
    byte citations.
-5. The adapter injects the defensive packet immediately before the current user
-   message.
+5. With conversation-hook access granted, the adapter returns the defensive
+   packet through `before_prompt_build` as `prependContext`, and returns
+   messages unchanged from context-engine assembly. Otherwise it uses the legacy
+   assembly injection immediately before the current user message.
 6. If retrieval fails, the adapter preserves the original message list by
    default.
 7. OpenClaw owns the compaction lifecycle. If `moon-local` is selected, Moon
@@ -58,7 +60,7 @@ The helper creates and removes a temporary synthetic corpus, requires the real
 binary retrieval and SQLite retry tests, and checks that ambient Moon
 environment overrides cannot redirect storage. CI runs the same helper against
 its Linux release artifact. It makes no provider or OpenClaw gateway calls.
-Without an explicit test binary and home, direct Deno runs mark those three
+Without an explicit test binary and home, direct Deno runs mark those four
 integration tests as ignored; `MOON_REQUIRE_REAL_BINARY=1` makes missing
 configuration a failure.
 
@@ -142,6 +144,58 @@ The runtime inspection must report:
 - activation from the selected context-engine slot;
 - no plugin diagnostics;
 - no dependencies.
+
+## Native recall compatibility
+
+OpenClaw 2026.9.7 deliberately omits context-engine assembly for native-owned
+models. Moon's completed-turn recording still runs, so healthy storage and
+growing evidence can coexist with absent recall. Moon uses the supported
+`before_prompt_build` hook when the host exposes it and conversation access is
+explicitly granted. The same path handles stock runtimes, with `assemble`
+passing messages through to avoid injecting twice.
+
+For the isolated profile above, merge these keys into the existing config:
+
+```json
+{
+  "plugins": {
+    "slots": { "contextEngine": "moon" },
+    "entries": {
+      "moon": {
+        "hooks": {
+          "allowConversationAccess": true,
+          "allowPromptInjection": true
+        }
+      }
+    }
+  }
+}
+```
+
+OpenClaw treats these as plugin permissions, outside Moon's `config` object.
+Deploying this grant to a live profile requires operator approval; Moon does not
+write it automatically. Without permission or hook support, the adapter warns
+and retains legacy assembly recall only where the host invokes it. A loaded
+plugin is not proof of working native recall.
+
+Use synthetic evidence in the temporary Moon home. Require exactly one retrieval
+for a stable native admission, a non-empty packet returned to the prompt hook,
+no duplicate assembly injection, and no retrieval on heartbeat or Moon helper
+turns. An explicit empty `currentUserMessage` must not retrieve from
+reconstructed history. Check cancellation and hook-lifetime expiry before
+accepting delivery metrics. The adapter tests exercise these boundaries without
+provider calls; deployment acceptance also needs a permitted real native turn
+that recalls a unique synthetic fact. An adapter injection metric records its
+handoff, not proof that the final model consumed or used the packet.
+
+Learning needs a separate helper-route canary. OpenClaw 2026.9.7 treats any
+non-empty `streamParams` as a provider transport override and excludes native
+Codex. Moon therefore omits the advisory output-token hint for native runtimes
+and implicit OpenAI routing. Explicit stock runtimes and ordinary local routes
+retain the hint. Verify the exact L1 and L2 model/effort routes with isolated
+synthetic evidence when inference is authorised; a direct Codex probe alone does
+not exercise the OpenClaw helper boundary. Do not add credentials or change
+model IDs to make a failed route pass.
 
 ## Acceptance before persistent shadow use
 

@@ -1,8 +1,18 @@
 # Moon OpenClaw adapter
 
-This adapter registers the `moon` context engine, injects one bounded SQLite
-context packet immediately before the current user message, and records
-completed turns for selective durable-memory learning.
+This adapter registers the `moon` context engine, supplies one bounded SQLite
+context packet for the current user message, and records completed turns for
+selective durable-memory learning.
+
+With an explicit `plugins.entries.moon.hooks.allowConversationAccess=true` grant
+and prompt injection allowed, recall uses `before_prompt_build` for both native
+and stock runtimes. The hook returns a defensive `prependContext` packet;
+`assemble` then passes messages through to prevent duplicate injection. This
+fixes OpenClaw 2026.9.7 native-owned routes, which omit context-engine assembly.
+Without the hook API or permission, Moon retains its legacy assembly path and
+logs a compatibility warning. That fallback does not repair native recall. See
+[native recall compatibility](../../docs/openclaw-canary.md#native-recall-compatibility)
+for the concrete deployment settings and synthetic acceptance check.
 
 The adapter keeps strict ownership boundaries:
 
@@ -78,10 +88,18 @@ session targets are not accepted by this runtime. Cancellation stops routing
 without starting a fallback, and only final answer payloads are accepted.
 
 The native Codex backend inspected with OpenClaw 2026.9.4 ignores
-`max_output_tokens`; Moon passes it as a provider request, not an enforced token
-cap. Input size, timeout, actions, daily batches, and attempts have separate
-limits. A successful model-route probe does not establish synthesis quality or
-an exact subscription-usage budget.
+`max_output_tokens`; Moon cannot enforce that limit on native routes. Supported
+stock routes receive an advisory provider request. Input size, timeout, actions,
+daily batches, and attempts have separate limits. A successful model-route probe
+does not establish synthesis quality or an exact subscription-usage budget.
+
+OpenClaw 2026.9.7 treats a non-empty `streamParams` object as a transport
+override that excludes native Codex. Moon consults the supported runtime-policy
+helper and omits the advisory output-token hint for native runtimes and
+implicitly routed OpenAI models. Explicit stock runtimes and ordinary local
+providers retain the hint. Moon leaves route and authentication selection to
+OpenClaw instead of forcing a runtime or changing credentials. L1 and L2
+failures report fixed phase/code diagnostics without provider error bodies.
 
 Moon retains its existing configured model routing through this API. Switching
 to OpenClaw's session-bound `llm.complete` API requires a separate operator

@@ -24,7 +24,7 @@ active under `~/.moon`; the retired v1 runtime remains read-only at
 5. Import v1 memory from the dated copy with `import-legacy`; never point a
    migration at the only copy of the source.
 6. Embed eligible memory and references with the local provider.
-7. Require `health` to report schema v6, complete vector coverage, zero evidence
+7. Require `health` to report schema v8, complete vector coverage, zero evidence
    vectors, no failed/dead work, and zero integrity or logical violations.
 8. Install the `moon` OpenClaw plugin, select its context-engine slot, disable
    OpenClaw memory search, and retain native automatic compaction.
@@ -42,14 +42,17 @@ not change the preserved v1 rollback runtime.
 
 ## SQLite migrations
 
-Moon applies numbered migrations transactionally. The current schema is v6.
+Moon applies numbered migrations transactionally. The current schema is v8.
 Opening a normal command migrates older Moon v2 databases forward; `health`
 never creates or migrates storage.
 
 Schema v5 adds canonical-head, immutable-revision, citation, and embedding-lease
 invariants. Schema v6 adds priority, retry scheduling, and dead-letter state for
-automatic embedding. If existing data violates a new invariant, migration stops
-and rolls back instead of guessing which record to keep.
+automatic embedding. Schema v7 adds content-free metrics, and schema v8 adds
+learning lifecycle state. The signed 2.6.4 release accepts schemas 6 through 8
+and migrates older supported databases to schema 8. If existing data violates a
+new invariant, migration stops and rolls back instead of guessing which record
+to keep.
 
 ## Embedding model changes
 

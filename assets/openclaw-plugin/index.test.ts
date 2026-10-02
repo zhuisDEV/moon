@@ -2221,9 +2221,7 @@ Deno.test("L1 and L2 settings are independent and preserve the native Codex host
   }
   assertEquals(runs.map((run) => run.thinkLevel), ["low", "xhigh"]);
   assertEquals(runs.map((run) => run.timeoutMs), [120_000, 600_000]);
-  assertEquals(runs.map((run) => run.streamParams), [{ maxTokens: 8192 }, {
-    maxTokens: 32768,
-  }]);
+  assertEquals(runs.map((run) => run.streamParams), [undefined, undefined]);
   for (const run of runs) {
     assert(
       run.config === api.config,

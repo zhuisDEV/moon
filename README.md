@@ -322,13 +322,22 @@ There is deliberately no legacy-delete command.
 ## OpenClaw integration
 
 The adapter in [`assets/openclaw-plugin`](assets/openclaw-plugin) registers the
-`moon` context engine. It retrieves a defensive Markdown packet, injects it
-immediately before the current user message, records completed turns as
-immutable evidence, and selectively distills durable memories with exact
-citations. Greetings and irrelevant queries inject no packet. Retrieval and
-learning fail open, and OpenClaw retains transcript compaction. For non-trivial
-queries, the adapter also marks the matching content-free metric row as injected
-or not injected and logs only its opaque request ID and numeric result summary.
+`moon` context engine. It retrieves a defensive Markdown packet, supplies it as
+context for the current user message, records completed turns as immutable
+evidence, and selectively distills durable memories with exact citations.
+Greetings and irrelevant queries inject no packet. Retrieval and learning fail
+open, and OpenClaw retains transcript compaction. For non-trivial queries, the
+adapter also marks the matching content-free metric row as injected or not
+injected and logs only its opaque request ID and numeric result summary.
+
+OpenClaw 2026.9.7 bypasses context-engine `assemble` on native-owned model
+routes. Moon therefore uses `before_prompt_build` for recall when the operator
+has enabled `plugins.entries.moon.hooks.allowConversationAccess=true` and has
+not disabled `allowPromptInjection`. This path serves both native and stock
+harnesses without a second assembly injection. Older hosts or installations
+without that permission retain assembly-based recall, which cannot establish
+native recall. See the
+[isolated canary and deployment settings](docs/openclaw-canary.md#native-recall-compatibility).
 
 Normal context is capped at 3,500 characters. L1 distills eligible completed
 turns. Optional daily L2 compares unprocessed evidence with related memories and
@@ -355,7 +364,11 @@ existing user's OAuth authentication. Moon does not copy credentials or need an
 API key. Helpers use fresh incognito identities and detached persistence with
 tools disabled. The current native Codex backend ignores the requested
 `max_output_tokens`; input, timeout, batch, and attempt caps are enforced
-separately. A routing smoke test does not establish memory quality.
+separately. Moon omits the optional output-token transport hint for native
+runtimes and implicitly routed OpenAI helpers: in OpenClaw 2026.9.7 that hint
+can otherwise force a working native route onto an incompatible host-auth route.
+Explicit stock OpenClaw routes retain the hint. A routing smoke test does not
+establish memory quality.
 
 Moon 2.6.1 introduces these learning changes and migrates storage to schema 8.
 Back up the database and configuration before deploying, and retain a matching
