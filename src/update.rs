@@ -782,8 +782,14 @@ impl SystemOpenClaw {
     }
 
     fn run(&self, args: &[&str]) -> Result<Output> {
-        let output =
-            run_output_bounded(&self.executable, args, 512 * 1024, Duration::from_secs(30))?;
+        // OpenClaw waits for gateway readiness during start (up to 45 seconds
+        // on macOS), and a full plugin doctor can also exceed 30 seconds.
+        // Keep these checks bounded without killing a healthy update/rollback.
+        let timeout = match args {
+            ["gateway", "start", "--json"] | ["plugins", "doctor"] => Duration::from_secs(120),
+            _ => Duration::from_secs(30),
+        };
+        let output = run_output_bounded(&self.executable, args, 512 * 1024, timeout)?;
         if !output.status.success() {
             let message = bounded_command_error(&output);
             return fail(
@@ -3017,6 +3023,36 @@ mod tests {
         first.released = true;
         let mut reclaimed = UpdateLock::acquire(&home).expect("stale lock reclaimed");
         reclaimed.release().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn slow_gateway_start_and_plugin_doctor_finish_without_hiding_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("openclaw");
+        write_new_file(
+            &executable,
+            br##"#!/bin/sh
+sleep 31
+if [ "$*" = "gateway start --json" ]; then
+    printf '%s\n' '{"ok":true}'
+    exit 0
+fi
+printf '%s\n' 'synthetic plugin load failure' >&2
+exit 1
+"##,
+            0o700,
+        )
+        .unwrap();
+        let openclaw = SystemOpenClaw { executable };
+        std::thread::scope(|scope| {
+            let start = scope.spawn(|| openclaw.start());
+            let doctor = scope.spawn(|| openclaw.run(&["plugins", "doctor"]));
+            start.join().unwrap().unwrap();
+            let error = doctor.join().unwrap().unwrap_err();
+            assert_eq!(error_code(&error), Some("plugin_validation_failed"));
+            assert!(error.to_string().contains("synthetic plugin load failure"));
+        });
     }
 
     #[test]

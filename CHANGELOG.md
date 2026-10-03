@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.6.6 - 2026-10-03
+
+- Allow up to two minutes for OpenClaw gateway startup and the full plugin
+  doctor during signed updates and rollback. OpenClaw 2026.9.7 can legitimately
+  exceed the previous 30-second cap; readiness and plugin validation still run
+  and failures still trigger rollback.
+- Add a regression test exercising successful startup and a failed plugin check
+  after the previous deadline. TLS trust support from 2.6.5 is retained.
+
 ## 2.6.5 - 2026-10-03
 
 - Honour the host-provided `SSL_CERT_FILE` CA bundle for release metadata,

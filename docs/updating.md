@@ -58,6 +58,11 @@ checks free space, database health and leases, minimum OS/OpenClaw versions, the
 Moon-owned OpenClaw configuration fields, and prints the mutation plan. It does
 not stage files or stop the gateway.
 
+Starting with Moon 2.6.6, gateway startup and the full OpenClaw plugin doctor
+each have a two-minute execution limit. These commands can exceed 30 seconds on
+OpenClaw 2026.9.7 even when healthy. Other command limits, independent readiness
+checks, plugin validation, and rollback safeguards remain in place.
+
 ## HTTPS proxies and CA trust
 
 Moon 2.6.5 adds support for the host-provided CA bundle. Earlier versions can
