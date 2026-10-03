@@ -58,6 +58,35 @@ checks free space, database health and leases, minimum OS/OpenClaw versions, the
 Moon-owned OpenClaw configuration fields, and prints the mutation plan. It does
 not stage files or stop the gateway.
 
+## HTTPS proxies and CA trust
+
+Moon 2.6.5 adds support for the host-provided CA bundle. Earlier versions can
+report `UnknownIssuer` behind OpenClaw's proxy even when curl succeeds. Upgrade
+through a trusted direct shell using the normal signed updater, then recheck
+from the affected OpenClaw environment. Do not disable TLS verification to
+bootstrap the fix.
+
+The release HTTP client uses rustls with bundled Mozilla public roots. When
+`SSL_CERT_FILE` is set, it also loads every PEM certificate in that file as an
+additional trust root. OpenClaw sets this variable to its managed CA bundle for
+the local HTTPS egress proxy; Moon reads the current bundle when constructing
+the release client. It does not modify the system trust store or persist the CA.
+
+This policy applies to manifests, detached signatures, allowed redirects, and
+archives through the same client. TLS chain, hostname, and date validation
+remain enabled, as do signed-release, checksum, host-allowlist, and rollback
+checks. An unset variable preserves the default public roots. An empty value,
+unreadable file, malformed PEM/X.509 certificate, certificate-free bundle, or
+bundle larger than 16 MiB fails clearly before downloading a release. Other PEM
+item types are ignored; they do not count as CA certificates.
+
+Use the host-managed CA file reference rather than copying a temporary proxy
+leaf certificate into a permanent trust store. `CURL_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS` do not configure Moon's updater.
+Validate a repair with `moon update --check` from the affected proxy
+environment; success from an ordinary shell does not verify the OpenClaw egress
+path.
+
 ## Provider-neutral routing transition
 
 The first release containing provider-neutral model routing intentionally drops

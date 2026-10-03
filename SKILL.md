@@ -3,7 +3,7 @@ name: moon
 description: Inspect and operate the Moon v2 SQLite-native memory engine and its OpenClaw adapter. Use when an AI agent needs to check Moon health, search or assemble memory context, diagnose recall, inspect embedding coverage, create a backup or export, or work with evidence and durable-memory lifecycle operations.
 ---
 
-<!-- moon-version: 2.6.4 -->
+<!-- moon-version: 2.6.5 -->
 
 # Moon
 
@@ -64,6 +64,12 @@ Inspect the stable release channel without writing anything:
 moon update --check
 moon update --dry-run
 ```
+
+The updater reads `SSL_CERT_FILE` as an additional PEM CA bundle, preserving
+public roots and TLS verification across all release downloads. Use OpenClaw's
+managed bundle when supplied; do not copy a proxy leaf certificate or disable
+TLS checks. An unreadable, malformed, or empty bundle is an error. See
+[TLS trust](docs/updating.md#https-proxies-and-ca-trust).
 
 `--check` does not create storage, download an archive, change configuration, or
 restart OpenClaw. `--dry-run` verifies the signed archive and complete plan but

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { __moonTest } from "../assets/openclaw-plugin/index.js";
 

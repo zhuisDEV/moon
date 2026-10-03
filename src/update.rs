@@ -20,6 +20,8 @@ use tar::Archive;
 use url::Url;
 use wait_timeout::ChildExt;
 
+mod tls;
+
 pub const DEFAULT_RELEASE_BASE_URL: &str = "https://github.com/zhuisDEV/moon/releases";
 pub const UPDATE_SCHEMA: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
@@ -172,6 +174,7 @@ impl ReleaseClient {
         validate_release_url(&base_url, false)?;
         let config = ureq::Agent::config_builder()
             .https_only(true)
+            .tls_config(tls::config_from_env()?)
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(0)
             .user_agent(concat!("moon/", env!("CARGO_PKG_VERSION")))

@@ -46,6 +46,11 @@ and OpenClaw compatibility, then prints the exact plan without changing local
 state. Applying requires one interactive confirmation, or `--yes` for an
 explicit non-interactive invocation. Moon never updates in the background.
 
+For HTTPS proxies with a private CA, the updater honours `SSL_CERT_FILE` as a
+PEM CA bundle in addition to its bundled public roots. OpenClaw supplies this
+setting for its managed egress proxy. Certificate and signed-release validation
+remain enabled; see [TLS trust](docs/updating.md#https-proxies-and-ca-trust).
+
 Interrupted transactions are recovered before release checks or runtime
 preflight. `--check` and `--dry-run` report `recovery_required: true` without
 writing; an approved `moon update` performs recovery and returns

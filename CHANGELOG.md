@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.6.5 - 2026-10-03
+
+- Honour the host-provided `SSL_CERT_FILE` CA bundle for release metadata,
+  signatures, redirects, and archives, fixing `UnknownIssuer` behind OpenClaw's
+  HTTPS egress proxy while retaining bundled Mozilla roots and TLS validation.
+- Reject unreadable, empty, oversized, and malformed CA bundles before release
+  downloads without exposing bundle contents or private paths in diagnostics.
+- Add isolated TLS regression tests for CA acceptance, unknown issuers,
+  certificate expiry, hostname verification, and bundle validation. Signed
+  release verification, rollback protection, and database schema are unchanged.
+
 ## 2.6.4 - 2026-10-03
 
 - Restore automatic recall on OpenClaw 2026.9.7 native routes through an
