@@ -1,0 +1,906 @@
+{
+  "schema_version": 1,
+  "id": "moon-topic-baseline-v1",
+  "baseline_database_schema": 10,
+  "created_on": "2026-11-16",
+  "review_status": "Agent-prepared; independently reviewed by parent engineering and security-review agents on 2026-11-16. No human usefulness rating.",
+  "binary_sha256": "3f2ef1225d6d09ae3c4c186170e94d077571facbe00aac528b3d91e943990108",
+  "measurement": {
+    "mode": "lexical",
+    "normal_max_chars": 3500,
+    "diagnostic_max_chars": 14000,
+    "limit": 8,
+    "search_limit": 50
+  },
+  "sources": [
+    {
+      "key": "docs:source-storage.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/source-storage.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/source-storage.md",
+        "sha256": "83588f953a8cc46d809833d39251e7f4f63eb9edbd29a5dde49461d1445c5057",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "`source import` is different from `ingest`: it preserves immutable revisions\ninstead of updating an indexed document. A captured body does not enter current\nsearch, context packets, embeddings, completed-session evidence or L1/L2.\nEligible captures create durable source jobs. Explicit preparation, submission\nand operator acceptance are required before supported source-derived claims can\njoin recall. The CLI commands make no model calls and start no automatic worker.\nGeneral synthesis and compiled topics remain later milestones.\n\nNothing in the body's text or its `origin` causes a filesystem\nread, network request, renderer invocation or command execution.\n\nManual acceptance authorises recall of a source's\nstatement; it does not establish that statement as true.\n\n- Scope is logical separation within Moon's APIs. It is not an ACL against an\n  actor who can read the local database or invoke commands with another scope.\n\n- Pattern-based sanitisation cannot recognise every secret. Do not import\n  credentials, authentication files or unrelated private data. Capture only the\n  material needed for the task.\n\nWithdrawal\nretains evidence but immediately blocks processing and normal recall support.\nReimporting a withdrawn source is not restoration. To restore deliberately,\nread its new state and use `source restore` with the same flags and current\nexpectations. Restoration can reactivate previously accepted full quotes only\nwhen their revision and eligibility are still current; it queues a new\nprocessing generation and never approves new proposals automatically.\n\n`state` also returns the latest 100 lifecycle events and `history_truncated`.\nWithdrawal and restoration reasons are retained in append-only generation\nhistory, so restoration does not erase an earlier withdrawal reason.\n\nDeletion means logical removal, not guaranteed secure erasure of database,\n   journal or filesystem-snapshot bytes.\n   Existing backup copies remain governed by their own explicitly chosen\n   retention; deleting from the working database does not erase those copies.\n\nWritable Moon connections now use SQLite WAL with `synchronous=FULL`, applied on\nevery open. Backup destination connections also set `FULL`. This requests WAL\nsynchronisation at commit before success is returned.",
+      "claims": [
+        {
+          "id": "capture-separate",
+          "quote": "`source import` is different from `ingest`: it preserves immutable revisions\ninstead of updating an indexed document. A captured body does not enter current\nsearch, context packets, embeddings, completed-session evidence or L1/L2.\nEligible captures create durable source jobs. Explicit preparation, submission\nand operator acceptance are required before supported source-derived claims can\njoin recall. The CLI commands make no model calls and start no automatic worker.\nGeneral synthesis and compiled topics remain later milestones.",
+          "original_start_byte": 410,
+          "original_end_byte": 943
+        },
+        {
+          "id": "capture-inert",
+          "quote": "Nothing in the body's text or its `origin` causes a filesystem\nread, network request, renderer invocation or command execution.",
+          "original_start_byte": 1633,
+          "original_end_byte": 1760
+        },
+        {
+          "id": "review-truth",
+          "quote": "Manual acceptance authorises recall of a source's\nstatement; it does not establish that statement as true.",
+          "original_start_byte": 6710,
+          "original_end_byte": 6816
+        },
+        {
+          "id": "scope-boundary",
+          "quote": "- Scope is logical separation within Moon's APIs. It is not an ACL against an\n  actor who can read the local database or invoke commands with another scope.",
+          "original_start_byte": 15103,
+          "original_end_byte": 15259
+        },
+        {
+          "id": "redaction-limit",
+          "quote": "- Pattern-based sanitisation cannot recognise every secret. Do not import\n  credentials, authentication files or unrelated private data. Capture only the\n  material needed for the task.",
+          "original_start_byte": 14917,
+          "original_end_byte": 15102
+        },
+        {
+          "id": "withdraw-history",
+          "quote": "Withdrawal\nretains evidence but immediately blocks processing and normal recall support.\nReimporting a withdrawn source is not restoration. To restore deliberately,\nread its new state and use `source restore` with the same flags and current\nexpectations. Restoration can reactivate previously accepted full quotes only\nwhen their revision and eligibility are still current; it queues a new\nprocessing generation and never approves new proposals automatically.",
+          "original_start_byte": 18746,
+          "original_end_byte": 19205
+        },
+        {
+          "id": "history-reasons",
+          "quote": "`state` also returns the latest 100 lifecycle events and `history_truncated`.\nWithdrawal and restoration reasons are retained in append-only generation\nhistory, so restoration does not erase an earlier withdrawal reason.",
+          "original_start_byte": 19206,
+          "original_end_byte": 19426
+        },
+        {
+          "id": "delete-limit",
+          "quote": "Deletion means logical removal, not guaranteed secure erasure of database,\n   journal or filesystem-snapshot bytes.\n   Existing backup copies remain governed by their own explicitly chosen\n   retention; deleting from the working database does not erase those copies.",
+          "original_start_byte": 17360,
+          "original_end_byte": 17626
+        },
+        {
+          "id": "durable-writer",
+          "quote": "Writable Moon connections now use SQLite WAL with `synchronous=FULL`, applied on\nevery open. Backup destination connections also set `FULL`. This requests WAL\nsynchronisation at commit before success is returned.",
+          "original_start_byte": 20457,
+          "original_end_byte": 20669
+        }
+      ]
+    },
+    {
+      "key": "docs:architecture.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/architecture.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/architecture.md",
+        "sha256": "95083969524463950eb52bc843b1e97607b412a85f656ed33051be7059a79d43",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "Accepted statements use the reserved `source_claim` document kind for indexes\nand remain attributed references, separate from personal canonical memories.\n\nRepeated claims confirm the existing memory;\nchanged claims require explicit supersession. The old claim remains auditable\nbut is excluded from normal retrieval.\n\nContext assembly selects pinned summaries and relevant active memories, dedupes\nchunk hits by memory, attaches bounded citations, and fits the result to an\nexplicit character budget. A bounded pinned-summary quota reserves capacity for\nquery-relevant recall. Remaining capacity can contain deduplicated document\nexcerpts with source and byte citations. These references remain separate from\nreviewed canonical memories. Memory, evidence, and references are rendered as\nuntrusted data rather than agent instructions.\n\nThe adapter delivers this packet through an explicitly permitted\n`before_prompt_build` hook on current OpenClaw hosts, so native-owned model\nroutes can recall even when the host skips context-engine assembly. That mode\nmakes `assemble` a pass-through to avoid duplicate injection. Hosts without hook\nsupport or permission retain the legacy assembly path; this fallback cannot\nrestore recall for a host that never calls `assemble`.\n\nEach user-facing context assembly records an opaque local metric row with mode,\nlatency, result counts, packet size/truncation, and optional injection/review\nstate. The schema intentionally has no query, prompt, response, recalled\ncontent, source, scope, channel, session, credential, or arbitrary-error field.\nInternal curator lookups are excluded so observation counts represent actual\ncontext requests.\n\nWithdrawal invalidates source support immediately. Claims without remaining\nsupport leave recall and embedding work in the same transaction; authoritative\nsupport and expiry views also gate reads and embedding callbacks.\n\nIndependently supported statements survive,\nincluding expired historical statements.",
+      "claims": [
+        {
+          "id": "attributed-index",
+          "quote": "Accepted statements use the reserved `source_claim` document kind for indexes\nand remain attributed references, separate from personal canonical memories.",
+          "original_start_byte": 1192,
+          "original_end_byte": 1346
+        },
+        {
+          "id": "memory-correction",
+          "quote": "Repeated claims confirm the existing memory;\nchanged claims require explicit supersession. The old claim remains auditable\nbut is excluded from normal retrieval.",
+          "original_start_byte": 1623,
+          "original_end_byte": 1784
+        },
+        {
+          "id": "packet-budget",
+          "quote": "Context assembly selects pinned summaries and relevant active memories, dedupes\nchunk hits by memory, attaches bounded citations, and fits the result to an\nexplicit character budget. A bounded pinned-summary quota reserves capacity for\nquery-relevant recall. Remaining capacity can contain deduplicated document\nexcerpts with source and byte citations. These references remain separate from\nreviewed canonical memories. Memory, evidence, and references are rendered as\nuntrusted data rather than agent instructions.",
+          "original_start_byte": 2009,
+          "original_end_byte": 2524
+        },
+        {
+          "id": "recall-hook",
+          "quote": "The adapter delivers this packet through an explicitly permitted\n`before_prompt_build` hook on current OpenClaw hosts, so native-owned model\nroutes can recall even when the host skips context-engine assembly. That mode\nmakes `assemble` a pass-through to avoid duplicate injection. Hosts without hook\nsupport or permission retain the legacy assembly path; this fallback cannot\nrestore recall for a host that never calls `assemble`.",
+          "original_start_byte": 2526,
+          "original_end_byte": 2956
+        },
+        {
+          "id": "metrics-fields",
+          "quote": "Each user-facing context assembly records an opaque local metric row with mode,\nlatency, result counts, packet size/truncation, and optional injection/review\nstate. The schema intentionally has no query, prompt, response, recalled\ncontent, source, scope, channel, session, credential, or arbitrary-error field.\nInternal curator lookups are excluded so observation counts represent actual\ncontext requests.",
+          "original_start_byte": 3439,
+          "original_end_byte": 3844
+        },
+        {
+          "id": "support-invalidation",
+          "quote": "Withdrawal invalidates source support immediately. Claims without remaining\nsupport leave recall and embedding work in the same transaction; authoritative\nsupport and expiry views also gate reads and embedding callbacks.",
+          "original_start_byte": 5566,
+          "original_end_byte": 5786
+        },
+        {
+          "id": "independent-support",
+          "quote": "Independently supported statements survive,\nincluding expired historical statements.",
+          "original_start_byte": 6078,
+          "original_end_byte": 6162
+        }
+      ]
+    },
+    {
+      "key": "docs:learning.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/learning.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/learning.md",
+        "sha256": "a98aafad1d7906644694b8ab26766cb4633fc45579cd617106fac8ce2f9ec639",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "Completed-session evidence and external sources carry different authority. An\narticle is not a user instruction, and a captured author's statement is not a\nverified fact merely because a model extracted it. Source learning therefore\nuses its own durable job and approval contract; it does not submit external text\nto the conservative session-L2 action validator.\n\nThe optional OpenClaw `moon_source_learn` tool provides this explicit step using\nthe enabled L1 route, reasoning, fallback and timeout. It requires trusted owner\nauthority and an explicit configured Moon home, caps the body at 64 KiB, and\nsubmits review proposals only. No source timer is registered. Moon's CLI performs\nno inference and stores no provider credentials.\n\nIt remains a proposal until a reviewer inspects `source learning status\n--job-id` and approves the exact result hash using `accept --yes`. Model output\ncannot supply this caller-side approval.\n\nDeletion affects the\nworking database; it cannot erase backup copies or retract text previously\nprovided to a model.\n\nDifferent wording alone is not sufficient for an automatic merge.\nUncertain conflicts produce review items instead of rewriting a claim.\n\nExpired memories leave normal recall but remain available with their evidence\nfor audit. This does not retroactively classify every old memory as temporary.\n\nRelated-memory selection is bounded, not a full database review. A prepared\npacket reports `context_limited` and `omitted_memory_count` when related claims\ncannot all fit. The model is told that comparison may be incomplete. If the\noldest pending evidence is too large, or no related claim and its original\nevidence can fit, preparation fails and preserves the backlog. Inspect the\npacket before increasing its budget; do not treat a partial packet as proof that\nno conflict exists.",
+      "claims": [
+        {
+          "id": "source-authority",
+          "quote": "Completed-session evidence and external sources carry different authority. An\narticle is not a user instruction, and a captured author's statement is not a\nverified fact merely because a model extracted it. Source learning therefore\nuses its own durable job and approval contract; it does not submit external text\nto the conservative session-L2 action validator.",
+          "original_start_byte": 20423,
+          "original_end_byte": 20785
+        },
+        {
+          "id": "explicit-model-tool",
+          "quote": "The optional OpenClaw `moon_source_learn` tool provides this explicit step using\nthe enabled L1 route, reasoning, fallback and timeout. It requires trusted owner\nauthority and an explicit configured Moon home, caps the body at 64 KiB, and\nsubmits review proposals only. No source timer is registered. Moon's CLI performs\nno inference and stores no provider credentials.",
+          "original_start_byte": 21102,
+          "original_end_byte": 21471
+        },
+        {
+          "id": "review-hash",
+          "quote": "It remains a proposal until a reviewer inspects `source learning status\n--job-id` and approves the exact result hash using `accept --yes`. Model output\ncannot supply this caller-side approval.",
+          "original_start_byte": 21849,
+          "original_end_byte": 22041
+        },
+        {
+          "id": "source-backups",
+          "quote": "Deletion affects the\nworking database; it cannot erase backup copies or retract text previously\nprovided to a model.",
+          "original_start_byte": 22723,
+          "original_end_byte": 22839
+        },
+        {
+          "id": "conflict-review",
+          "quote": "Different wording alone is not sufficient for an automatic merge.\nUncertain conflicts produce review items instead of rewriting a claim.",
+          "original_start_byte": 10374,
+          "original_end_byte": 10510
+        },
+        {
+          "id": "memory-expiry",
+          "quote": "Expired memories leave normal recall but remain available with their evidence\nfor audit. This does not retroactively classify every old memory as temporary.",
+          "original_start_byte": 10891,
+          "original_end_byte": 11047
+        },
+        {
+          "id": "incomplete-context",
+          "quote": "Related-memory selection is bounded, not a full database review. A prepared\npacket reports `context_limited` and `omitted_memory_count` when related claims\ncannot all fit. The model is told that comparison may be incomplete. If the\noldest pending evidence is too large, or no related claim and its original\nevidence can fit, preparation fails and preserves the backlog. Inspect the\npacket before increasing its budget; do not treat a partial packet as proof that\nno conflict exists.",
+          "original_start_byte": 11049,
+          "original_end_byte": 11531
+        }
+      ]
+    },
+    {
+      "key": "docs:openclaw-canary.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/openclaw-canary.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/openclaw-canary.md",
+        "sha256": "19f711d7771242e5078a78f8dd3f55f8b41f9b1001d7bef88569f5a27e0769cf",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "OpenClaw treats these as plugin permissions, outside Moon's `config` object.\nDeploying this grant to a live profile requires operator approval; Moon does not\nwrite it automatically. Without permission or hook support, the adapter warns\nand retains legacy assembly recall only where the host invokes it. A loaded\nplugin is not proof of working native recall.\n\nAn adapter injection metric records its\nhandoff, not proof that the final model consumed or used the packet.",
+      "claims": [
+        {
+          "id": "native-permission",
+          "quote": "OpenClaw treats these as plugin permissions, outside Moon's `config` object.\nDeploying this grant to a live profile requires operator approval; Moon does not\nwrite it automatically. Without permission or hook support, the adapter warns\nand retains legacy assembly recall only where the host invokes it. A loaded\nplugin is not proof of working native recall.",
+          "original_start_byte": 7344,
+          "original_end_byte": 7701
+        },
+        {
+          "id": "delivery-not-usefulness",
+          "quote": "An adapter injection metric records its\nhandoff, not proof that the final model consumed or used the packet.",
+          "original_start_byte": 8280,
+          "original_end_byte": 8388
+        }
+      ]
+    },
+    {
+      "key": "docs:memory-improvement-plan.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/memory-improvement-plan.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/memory-improvement-plan.md",
+        "sha256": "2de80fa1919988b9e74833a26c76f53e9d3ac4547edeb3a697007add51b5628b",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "Recall\nquality still requires human labels: a low injection rate can be correct, and an\ninjected packet can still be a false positive, stale, or redundant.\n\nObserve normal use for 3–7 days and at least 50 context requests spanning\nmultiple task types. Extend the window when fewer than 20 requests have a known\nrelevant memory. A zero-result request is only an automatic empty-packet\ncandidate; it becomes a **correct empty** only after human review.",
+      "claims": [
+        {
+          "id": "review-labels",
+          "quote": "Recall\nquality still requires human labels: a low injection rate can be correct, and an\ninjected packet can still be a false positive, stale, or redundant.",
+          "original_start_byte": 3798,
+          "original_end_byte": 3953
+        },
+        {
+          "id": "live-window",
+          "quote": "Observe normal use for 3–7 days and at least 50 context requests spanning\nmultiple task types. Extend the window when fewer than 20 requests have a known\nrelevant memory. A zero-result request is only an automatic empty-packet\ncandidate; it becomes a **correct empty** only after human review.",
+          "original_start_byte": 1734,
+          "original_end_byte": 2029
+        }
+      ]
+    },
+    {
+      "key": "docs:migration.md",
+      "scope": "repo:moon",
+      "kind": "external_document",
+      "title": "docs/migration.md",
+      "author": "Moon repository documentation",
+      "provenance": {
+        "path": "docs/migration.md",
+        "sha256": "420638cd4347a4fcd03f967bf3cb4eb8728a068ae6a81b84bb4bf971e6975670",
+        "treatment": "Exact selected excerpts; local/private runtime paths excluded from selected text."
+      },
+      "content": "Opening a normal write command migrates older Moon v2\ndatabases forward; `health` and source inspection (`get`, `list`, `history`,\n`cite`, `state`, deletion preview, learning status/preview, and claim inspection)\nnever create or migrate storage.\n\nBefore deploying the schema-v10 build, rehearse migration, integrity checks and\nbackup restoration with a temporary `--home`. Obtain a consistent online SQLite\nbackup and configuration backup before the authorised live migration. Preserve\nthe previous binary with its matching database backup: an older binary must not\nopen schema v10 as a rollback attempt. Building the checkout does not authorise\nreplacing the installed binary, plugin or live database.",
+      "claims": [
+        {
+          "id": "migration-readonly",
+          "quote": "Opening a normal write command migrates older Moon v2\ndatabases forward; `health` and source inspection (`get`, `list`, `history`,\n`cite`, `state`, deletion preview, learning status/preview, and claim inspection)\nnever create or migrate storage.",
+          "original_start_byte": 2068,
+          "original_end_byte": 2313
+        },
+        {
+          "id": "migration-backup",
+          "quote": "Before deploying the schema-v10 build, rehearse migration, integrity checks and\nbackup restoration with a temporary `--home`. Obtain a consistent online SQLite\nbackup and configuration backup before the authorised live migration. Preserve\nthe previous binary with its matching database backup: an older binary must not\nopen schema v10 as a rollback attempt. Building the checkout does not authorise\nreplacing the installed binary, plugin or live database.",
+          "original_start_byte": 3715,
+          "original_end_byte": 4170
+        }
+      ]
+    },
+    {
+      "key": "reviewer-explicit",
+      "scope": "challenge:debate",
+      "claims": [
+        {
+          "id": "debate-explicit",
+          "quote": "Design reviewer A proposes explicit Moon topic compilation while unresolved source contradictions remain; this is a proposal, not an approved policy."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: reviewer-explicit",
+      "author": "Synthetic baseline reviewer",
+      "content": "Design reviewer A proposes explicit Moon topic compilation while unresolved source contradictions remain; this is a proposal, not an approved policy.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "reviewer-automatic",
+      "scope": "challenge:debate",
+      "claims": [
+        {
+          "id": "debate-automatic",
+          "quote": "Design reviewer B proposes automatic Moon topic compilation only after explicit review resolves source contradictions; this conditional proposal is not an approved policy."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: reviewer-automatic",
+      "author": "Synthetic baseline reviewer",
+      "content": "Design reviewer B proposes automatic Moon topic compilation only after explicit review resolves source contradictions; this conditional proposal is not an approved policy.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "reviewer-conflict-automatic",
+      "scope": "challenge:conflict",
+      "claims": [
+        {
+          "id": "conflict-automatic",
+          "quote": "Design reviewer C proposes automatic Moon topic compilation after all source inputs have been reviewed; this proposal is not approved policy."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: reviewer-conflict-automatic",
+      "author": "Synthetic baseline reviewer",
+      "content": "Design reviewer C proposes automatic Moon topic compilation after all source inputs have been reviewed; this proposal is not approved policy.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "reviewer-conflict-manual",
+      "scope": "challenge:conflict",
+      "claims": [
+        {
+          "id": "conflict-manual",
+          "quote": "Design reviewer D requires manual Moon topic compilation after all source inputs have been reviewed and opposes automatic invocation; this proposal is not approved policy."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: reviewer-conflict-manual",
+      "author": "Synthetic baseline reviewer",
+      "content": "Design reviewer D requires manual Moon topic compilation after all source inputs have been reviewed and opposes automatic invocation; this proposal is not approved policy.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "different-project",
+      "scope": "challenge:other",
+      "claims": [
+        {
+          "id": "debate-other-scope",
+          "quote": "Unrelated project policy: Moon topic compilation always runs automatically and ignores unresolved source contradictions."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: different-project",
+      "author": "Synthetic baseline reviewer",
+      "content": "Unrelated project policy: Moon topic compilation always runs automatically and ignores unresolved source contradictions.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "storage-note",
+      "scope": "challenge:correction",
+      "claims": [
+        {
+          "id": "correction-old",
+          "quote": "Superseded test note: Moon rehearsal uses generated Markdown as its primary database."
+        }
+      ],
+      "revision": {
+        "claims": [
+          {
+            "id": "correction-current",
+            "quote": "Corrected test note: Moon rehearsal uses a temporary SQLite database as its primary store."
+          }
+        ]
+      },
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: storage-note",
+      "author": "Synthetic baseline reviewer",
+      "content": "Superseded test note: Moon rehearsal uses generated Markdown as its primary database.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "rehearsal-boundary",
+      "scope": "challenge:correction",
+      "claims": [
+        {
+          "id": "correction-boundary",
+          "quote": "Moon rehearsal changes must use an explicit temporary home and database; live production storage is outside this test."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: rehearsal-boundary",
+      "author": "Synthetic baseline reviewer",
+      "content": "Moon rehearsal changes must use an explicit temporary home and database; live production storage is outside this test.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "rehearsal-observation",
+      "scope": "challenge:expiry",
+      "expires": true,
+      "claims": [
+        {
+          "id": "expiry-observation",
+          "quote": "Temporary Moon migration rehearsal observation: this test run succeeded; the observation expires before the next deployment check."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: rehearsal-observation",
+      "author": "Synthetic baseline reviewer",
+      "content": "Temporary Moon migration rehearsal observation: this test run succeeded; the observation expires before the next deployment check.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "rehearsal-policy",
+      "scope": "challenge:expiry",
+      "claims": [
+        {
+          "id": "expiry-policy",
+          "quote": "Moon migration deployment safety requires a fresh rehearsal and integrity check; an expired successful observation is not current proof."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: rehearsal-policy",
+      "author": "Synthetic baseline reviewer",
+      "content": "Moon migration deployment safety requires a fresh rehearsal and integrity check; an expired successful observation is not current proof.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "withdraw-zh",
+      "scope": "challenge:multilingual",
+      "claims": [
+        {
+          "id": "zh-withdraw",
+          "quote": "Moon 来源撤回后，不得继续支持普通召回；撤回会保留证据历史，不等于删除。"
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: withdraw-zh",
+      "author": "Synthetic baseline reviewer",
+      "content": "Moon 来源撤回后，不得继续支持普通召回；撤回会保留证据历史，不等于删除。",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "restore-en",
+      "scope": "challenge:multilingual",
+      "claims": [
+        {
+          "id": "en-restore",
+          "quote": "Moon Restore can reactivate previously accepted current support only; it does not automatically approve new proposals."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: restore-en",
+      "author": "Synthetic baseline reviewer",
+      "content": "Moon Restore can reactivate previously accepted current support only; it does not automatically approve new proposals.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "cached-support",
+      "scope": "challenge:fallback",
+      "withdraw": true,
+      "claims": [
+        {
+          "id": "fallback-withdrawn",
+          "quote": "Obsolete test source policy: Moon source withdrawal erases all history and cached topic explanations remain current."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: cached-support",
+      "author": "Synthetic baseline reviewer",
+      "content": "Obsolete test source policy: Moon source withdrawal erases all history and cached topic explanations remain current.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    },
+    {
+      "key": "current-policy",
+      "scope": "challenge:fallback",
+      "claims": [
+        {
+          "id": "fallback-current",
+          "quote": "Current Moon source policy: withdrawal stops ordinary recall support while retaining source history; independently supported current evidence remains available."
+        }
+      ],
+      "kind": "external_document",
+      "title": "Labelled synthetic challenge: current-policy",
+      "author": "Synthetic baseline reviewer",
+      "content": "Current Moon source policy: withdrawal stops ordinary recall support while retaining source history; independently supported current evidence remains available.",
+      "provenance": {
+        "treatment": "Synthetic challenge; not a repository fact or real user preference."
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "capture-to-recall",
+      "labels": [
+        "repository",
+        "cross-source",
+        "qualification"
+      ],
+      "scope": "repo:moon",
+      "question": "How does a captured source become recallable, and what does accepting it actually establish?",
+      "diagnostic_query": "`source import` is different from `ingest`: it preserves Accepted statements use the reserved `source_claim` document kind Manual acceptance authorises recall of a source's statement; It remains a proposal until a reviewer inspects",
+      "expected_claims": [
+        "capture-separate",
+        "attributed-index",
+        "review-truth",
+        "review-hash"
+      ],
+      "reference_answer": {
+        "text": "Capture retains a separate immutable source and queues work only with explicit eligibility. Submission remains outside recall until the exact result hash is accepted. Accepted verbatim statements enter the source_claim reference index, separate from personal memories. Acceptance authorises use of an attributed statement; it does not verify its truth.",
+        "supports": [
+          "capture-separate",
+          "attributed-index",
+          "review-truth",
+          "review-hash"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "source-authority",
+      "labels": [
+        "repository",
+        "cross-source",
+        "security"
+      ],
+      "scope": "repo:moon",
+      "question": "Does importing an article run its instructions or send it through automatic session L2, and who approves source learning?",
+      "diagnostic_query": "Nothing in the body's text or its `origin` Completed-session evidence and external sources carry different authority. The optional OpenClaw `moon_source_learn` tool provides this explicit It remains a proposal until a reviewer inspects",
+      "expected_claims": [
+        "capture-inert",
+        "source-authority",
+        "explicit-model-tool",
+        "review-hash"
+      ],
+      "reference_answer": {
+        "text": "Imported content cannot trigger file reads, network calls or execution. Source learning has a separate authority boundary from completed-session L2. The optional explicit tool uses the enabled L1 route and submits proposals only; it has no timer and the CLI stores no credentials. Acceptance remains a separate caller-side review.",
+        "supports": [
+          "capture-inert",
+          "source-authority",
+          "explicit-model-tool",
+          "review-hash"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "withdraw-and-restore",
+      "labels": [
+        "repository",
+        "cross-source",
+        "lifecycle"
+      ],
+      "scope": "repo:moon",
+      "question": "When I withdraw then restore a source, what happens to recall, prior evidence and the reason for withdrawal?",
+      "diagnostic_query": "Withdrawal retains evidence but immediately blocks processing and `state` also returns the latest 100 lifecycle events Withdrawal invalidates source support immediately. Claims without remaining",
+      "expected_claims": [
+        "withdraw-history",
+        "history-reasons",
+        "support-invalidation"
+      ],
+      "reference_answer": {
+        "text": "Withdrawal retains evidence and reasons while invalidating recall support immediately. Claims with no valid support disappear from recall and embedding work. Explicit restoration may revive already accepted current eligible quotes, never approve new proposals, and does not erase the withdrawal reason.",
+        "supports": [
+          "withdraw-history",
+          "history-reasons",
+          "support-invalidation"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "delete-and-backups",
+      "labels": [
+        "repository",
+        "cross-source",
+        "qualification"
+      ],
+      "scope": "repo:moon",
+      "question": "Does deleting a source erase its backups and all claims that cite it?",
+      "diagnostic_query": "Deletion means logical removal, not guaranteed secure erasure Deletion affects the working database; it cannot erase Independently supported statements survive, including expired historical statements.",
+      "expected_claims": [
+        "delete-limit",
+        "source-backups",
+        "independent-support"
+      ],
+      "reference_answer": {
+        "text": "Deletion is logical removal from the working database. It cannot erase backups, filesystem remnants or material already provided to a model. A statement with independent valid support survives, including as expired historical evidence.",
+        "supports": [
+          "delete-limit",
+          "source-backups",
+          "independent-support"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "correction-and-expiry",
+      "labels": [
+        "repository",
+        "cross-source",
+        "correction",
+        "expiry"
+      ],
+      "scope": "repo:moon",
+      "question": "How should Moon handle corrected, uncertain and expired memory claims without losing their history?",
+      "diagnostic_query": "Repeated claims confirm the existing memory; changed claims Different wording alone is not sufficient for an Expired memories leave normal recall but remain available Related-memory selection is bounded, not a full database",
+      "expected_claims": [
+        "memory-correction",
+        "conflict-review",
+        "memory-expiry",
+        "incomplete-context"
+      ],
+      "reference_answer": {
+        "text": "Changed canonical claims require explicit supersession; old claims remain auditable but leave normal retrieval. Different wording is insufficient for automatic merging, and uncertainty produces review. Expiry removes claims from normal recall while retaining audit evidence. A bounded comparison is not proof that no conflict exists.",
+        "supports": [
+          "memory-correction",
+          "conflict-review",
+          "memory-expiry",
+          "incomplete-context"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "native-delivery",
+      "labels": [
+        "repository",
+        "cross-source",
+        "qualification"
+      ],
+      "scope": "repo:moon",
+      "question": "If Moon records turns and its plugin is loaded, does that prove native Codex recall works?",
+      "diagnostic_query": "The adapter delivers this packet through an explicitly OpenClaw treats these as plugin permissions, outside Moon's An adapter injection metric records its handoff, not",
+      "expected_claims": [
+        "recall-hook",
+        "native-permission",
+        "delivery-not-usefulness"
+      ],
+      "reference_answer": {
+        "text": "No. Native-owned routes may skip assembly, so recall needs the permitted prompt hook. Missing hook support or permission leaves only the assembly fallback, which cannot help when assembly is skipped. Plugin loading is not proof of recall, and even an injection metric proves handoff rather than model use.",
+        "supports": [
+          "recall-hook",
+          "native-permission",
+          "delivery-not-usefulness"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "quality-evidence",
+      "labels": [
+        "repository",
+        "cross-source",
+        "qualification"
+      ],
+      "scope": "repo:moon",
+      "question": "What do Moon context metrics prove about memory usefulness, and what additional review is required?",
+      "diagnostic_query": "Each user-facing context assembly records an opaque local Recall quality still requires human labels: a low Observe normal use for 3–7 days and at An adapter injection metric records its handoff, not",
+      "expected_claims": [
+        "metrics-fields",
+        "review-labels",
+        "live-window",
+        "delivery-not-usefulness"
+      ],
+      "reference_answer": {
+        "text": "Content-free metrics measure delivery, counts and packet characteristics without keeping query or source content. They cannot establish usefulness. The quality protocol calls for reviewed labels and a 3–7 day observation window with at least 50 requests, extending sparse relevant cases. Injection is evidence of handoff, not use.",
+        "supports": [
+          "metrics-fields",
+          "review-labels",
+          "live-window",
+          "delivery-not-usefulness"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "migration-and-durability",
+      "labels": [
+        "repository",
+        "cross-source",
+        "security"
+      ],
+      "scope": "repo:moon",
+      "question": "Can a schema10 health check migrate data, and what preparation makes an authorised migration recoverable?",
+      "diagnostic_query": "Opening a normal write command migrates older Moon Before deploying the schema-v10 build, rehearse migration, integrity Writable Moon connections now use SQLite WAL with",
+      "expected_claims": [
+        "migration-readonly",
+        "migration-backup",
+        "durable-writer"
+      ],
+      "reference_answer": {
+        "text": "Inspection and health never create or migrate storage; ordinary writes can migrate forward. Rehearse with a temporary home, make consistent database and configuration backups, and retain the matching old binary/database pair. WAL synchronous FULL requests commit synchronisation, but this fixture is not a physical power-loss test.",
+        "supports": [
+          "migration-readonly",
+          "migration-backup",
+          "durable-writer"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      }
+    },
+    {
+      "id": "conditional-positions",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "apparent-conflict",
+        "qualification",
+        "scope"
+      ],
+      "scope": "challenge:debate",
+      "question": "Should Moon topic compilation run automatically while unresolved source contradictions remain?",
+      "diagnostic_query": "topic compilation unresolved contradictions explicit automatic review",
+      "expected_claims": [
+        "debate-explicit",
+        "debate-automatic"
+      ],
+      "reference_answer": {
+        "text": "These conditional proposals need not conflict: one favours explicit compilation while contradictions remain; the other favours automatic compilation only after explicit review resolves them. Preserve both conditions and attribution. Neither proposal is approved policy, and the unrelated scope's policy does not apply.",
+        "supports": [
+          "debate-explicit",
+          "debate-automatic"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "debate",
+      "forbidden_claims": [
+        "debate-other-scope"
+      ]
+    },
+    {
+      "id": "genuine-disagreement",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "disagreement",
+        "qualification"
+      ],
+      "scope": "challenge:conflict",
+      "question": "Once all source inputs have been reviewed, should Moon topic compilation be automatic or require manual invocation?",
+      "diagnostic_query": "Moon topic compilation reviewed automatic manual",
+      "expected_claims": [
+        "conflict-automatic",
+        "conflict-manual"
+      ],
+      "reference_answer": {
+        "text": "The synthetic reviewers make incompatible proposals under the same condition: after all source inputs have been reviewed, C proposes automatic compilation while D requires manual invocation. Neither position is approved policy. Preserve the unresolved disagreement without choosing a winner or treating duplicate support as votes.",
+        "supports": [
+          "conflict-automatic",
+          "conflict-manual"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "conflict"
+    },
+    {
+      "id": "corrected-support",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "correction"
+      ],
+      "scope": "challenge:correction",
+      "question": "Which database should Moon use for the rehearsal after the corrected storage note?",
+      "diagnostic_query": "Moon rehearsal database SQLite corrected temporary",
+      "expected_claims": [
+        "correction-current",
+        "correction-boundary"
+      ],
+      "reference_answer": {
+        "text": "Use the corrected temporary SQLite database. The old generated Markdown-primary-store assertion was superseded and must not appear as current; the independent rehearsal boundary remains applicable.",
+        "supports": [
+          "correction-current",
+          "correction-boundary"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "correction",
+      "forbidden_claims": [
+        "correction-old"
+      ]
+    },
+    {
+      "id": "expired-observation",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "expiry",
+        "qualification"
+      ],
+      "scope": "challenge:expiry",
+      "question": "Can Moon treat an earlier successful migration rehearsal as proof that the next deployment is safe?",
+      "diagnostic_query": "Moon migration rehearsal deployment safe successful",
+      "expected_claims": [
+        "expiry-policy"
+      ],
+      "reference_answer": {
+        "text": "The transient success observation has expired. Retain its history for audit, but use the standing requirement to rehearse and inspect each deployment; do not claim a current successful deployment from the expired result.",
+        "supports": [
+          "expiry-policy"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "expiry",
+      "forbidden_claims": [
+        "expiry-observation"
+      ]
+    },
+    {
+      "id": "empty-unrelated-scope",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "correct-empty",
+        "scope"
+      ],
+      "scope": "challenge:empty",
+      "question": "What policy applies to Moon topic compilation?",
+      "diagnostic_query": "Moon topic compilation",
+      "expected_claims": [],
+      "reference_answer": {
+        "text": "No matching evidence exists in this exact scope. Evidence in another scope must not fill the gap.",
+        "supports": [],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "none",
+      "forbidden_claims": [
+        "debate-explicit",
+        "debate-automatic",
+        "debate-other-scope"
+      ]
+    },
+    {
+      "id": "multilingual-negation",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "multilingual",
+        "qualification"
+      ],
+      "scope": "challenge:multilingual",
+      "question": "Moon 来源撤回之后还能用于召回吗？Restore 会自动批准新提案吗？",
+      "diagnostic_query": "Moon 来源 撤回 召回 Restore approve proposals",
+      "expected_claims": [
+        "zh-withdraw",
+        "en-restore"
+      ],
+      "reference_answer": {
+        "text": "来源撤回后立即停止支持普通召回，但保留历史。Restoration can reactivate previously accepted current support only; it does not approve new proposals. Preserve the Chinese negation and English qualification without converting restoration into approval.",
+        "supports": [
+          "zh-withdraw",
+          "en-restore"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "multilingual"
+    },
+    {
+      "id": "stale-topic-source-fallback",
+      "labels": [
+        "challenge",
+        "synthetic",
+        "withdrawal",
+        "stale-topic-fallback"
+      ],
+      "scope": "challenge:fallback",
+      "question": "What is the current Moon source policy after the cached topic's support was withdrawn?",
+      "diagnostic_query": "Moon current source policy withdrawal history recall",
+      "expected_claims": [
+        "fallback-current"
+      ],
+      "reference_answer": {
+        "text": "The cached explanation is no longer supported and must not be presented as current. Fall back to the independently valid current source: withdrawal stops recall support while keeping history. Schema10 has no topics, so this baseline measures source fallback availability only; topic freshness remains a future acceptance requirement.",
+        "supports": [
+          "fallback-current"
+        ],
+        "authorship": "Agent-prepared editorial reference, independently reviewable; no model generation or human usefulness rating."
+      },
+      "setup": "withdrawal",
+      "forbidden_claims": [
+        "fallback-withdrawn"
+      ],
+      "unavailable_feature": "No topic entity exists in schema10; stale-topic exclusion itself is not measured."
+    }
+  ]
+}

@@ -56,6 +56,7 @@ fn pending_recovery_is_reported_before_network_preflight_and_requires_consent() 
         changed: true,
         gateway_stopped: true,
         current_switched: true,
+        candidate_gateway_started: false,
         schema_before: Some(7),
         schema_after: None,
         prior_release: None,

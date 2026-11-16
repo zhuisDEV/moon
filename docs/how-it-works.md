@@ -5,6 +5,30 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
+This guide describes Moon 2.7.0 (database schema 13). For installation, start
+with [getting started](getting-started.md); for an existing runtime, follow
+[updating](updating.md), including its `SKILL.md` refresh guidance.
+
+Normal chat learning is automatic. Captured sources and reviewed topics are
+separate, explicit workflows; enabling daily L2 does not start a source worker
+or topic compiler. All retained knowledge lives in SQLite. Documentation and
+generated Markdown exports are still files, but are not the writable knowledge
+store.
+
+The manual commands below are examples for an isolated runtime. Set it up once
+and keep the variable in the same shell:
+
+```bash
+moon_example_home="$(mktemp -d /tmp/moon-workflow.XXXXXX)"
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" init
+```
+
+They do not modify `~/.moon`. Commands containing sample IDs or file paths need
+the values returned by your own run; use the [learning](learning.md) and
+[source](source-storage.md) guides for complete fixtures. Both `--home` and
+`--database` are explicit so an inherited `MOON_DATABASE` cannot redirect the
+examples to another database.
+
 ## Key workflows
 
 ### 1. After a completed turn: record immutable evidence
@@ -28,7 +52,7 @@ evidence.
 The same operation is available manually:
 
 ```bash
-moon record \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" record \
   --session-id session-2026-07-27-001 \
   --scope moon \
   --title "Memory architecture decision" \
@@ -56,7 +80,7 @@ Evidence is history. A memory is the smaller claim Moon should recall. Distill a
 stable claim with a canonical key and an exact supporting quote:
 
 ```bash
-moon distill \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" distill \
   --key moon:storage-engine \
   --kind decision \
   --scope moon \
@@ -74,10 +98,11 @@ show where it came from instead of presenting an unsupported recollection.
 
 In OpenClaw, local eligibility rules first reject greetings and trivial turns.
 The adapter asks the independently configured L1 model for conservative
-proposals, three by default. The runtime's `moon.toml` can select Astra `low`
-without changing the conversation model or L2's effort. It tries an enabled
-fallback when the primary request or JSON output fails. A proposal is accepted
-only when:
+proposals, three by default. The runtime's `moon.toml` can select a different L1
+model and effort without changing the conversation model or L2's effort. It may
+try an enabled fallback for temporary model or response failures. Known setup,
+authentication and route failures stop instead of silently changing routes. A
+proposal is accepted only when:
 
 - its kind, key, confidence, and importance pass deterministic validation;
 - its evidence quote is one exact substring of the completed turn;
@@ -138,11 +163,12 @@ The production model is `intfloat/multilingual-e5-small`. Moon uses distinct
 boundaries, embedded in subsegments, mean-pooled, and normalized back into one
 vector, preserving the original chunk offsets and citations.
 
-For an initial rebuild or model transition:
+For a deliberately authorised full rebuild or model transition (not routine
+maintenance):
 
 ```bash
-moon requeue-embeddings
-moon --json embed --provider local --limit 64 --drain
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" requeue-embeddings
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" --json embed --provider local --limit 64 --drain
 ```
 
 `health` reports active-memory and reference coverage separately and confirms
@@ -155,28 +181,33 @@ This is the normal high-performance path and requires no model login, network
 service, QMD process, or API key:
 
 ```bash
-moon context \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" context \
   --query "How should Moon store and retrieve long-term memory?" \
   --scope moon \
   --mode lexical \
-  --max-chars 3500
+  --max-chars 8000
 ```
 
 Production hybrid retrieval uses the local multilingual model and does not
 require a model login, API key, network service, QMD process, or remote
-embedding endpoint:
+embedding endpoint after its initial model download:
 
 ```bash
-moon context \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" context \
   --query "How should Moon store and retrieve long-term memory?" \
   --scope moon \
   --mode hybrid \
   --provider local \
-  --max-chars 3500
+  --max-chars 8000
 ```
 
 The optional `hash` provider remains only for deterministic vector-plumbing
 tests and is not presented as semantic-quality recall.
+
+The examples request the recommended 8,000-character cap explicitly. The CLI and
+adapter's compiled defaults remain 3,500; an existing adapter uses its
+configured `maxChars`. A larger cap permits more evidence but does not force
+padding or increase the number of stored references.
 
 One database contains one embedding space. Moon rejects mixed model names or
 dimensions until an explicit re-embedding migration is performed.
@@ -214,7 +245,8 @@ transcript. This requires OpenClaw 2026.9.2 or newer, which the signed release
 manifest enforces. It retains existing model routing without adding
 model-override permissions for the newer `llm.complete` capability.
 
-If the primary request fails, the adapter tries an enabled fallback once.
+For eligible temporary failures, the adapter tries an enabled fallback once.
+Known setup, authentication and route mismatches stop without Moon fallback.
 Cancellation stops routing immediately; partial output from failed or timed-out
 runs is not accepted. If both routes fail, the recorded evidence remains
 available. Moon does not persist or print arbitrary provider diagnostics.
@@ -282,12 +314,12 @@ require the hook; see the
 The agent asks Moon for context relevant to its current task:
 
 ```bash
-moon context \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" context \
   --query "How should Moon store and retrieve long-term memory?" \
   --scope moon \
   --mode hybrid \
   --provider local \
-  --max-chars 3500
+  --max-chars 8000
 ```
 
 The packet is assembled in this order:
@@ -297,16 +329,25 @@ The packet is assembled in this order:
 2. Relevant active memories from lexical and vector retrieval.
 3. Memory metadata such as kind, confidence, and canonical key.
 4. A bounded number of exact evidence citations.
-5. If result slots and character budget remain, deduplicated unreviewed document
-   excerpts with source URI and exact chunk byte ranges.
+5. Deduplicated source evidence: complete accepted source statements and
+   unreviewed document excerpts with exact source ranges.
+6. Fresh reviewed topic explanations that fit the remaining capacity and topic
+   quota, without displacing the selected complete source evidence.
 
 Duplicate chunks collapse back to one memory. Superseded and expired memories
 are excluded. Retrieved references never become canonical memories merely
 because they were imported or ranked highly. If the character budget is tight,
-Moon reduces evidence and truncates content while preserving UTF-8 boundaries.
+Moon can reduce personal-memory citations and raw document excerpts while
+preserving UTF-8 boundaries. Accepted source statements and typed topics are
+kept whole or omitted, so a budget cut cannot drop their final qualification.
 The output explicitly fences all recalled content, evidence, and references as
 untrusted data rather than agent instructions. Pinned context cannot consume
 every result slot when relevant search matches exist.
+
+Reference selection balances meaningful query clauses, discounts common words
+and can follow a strongly matched topic to bounded exact current source
+premises. The [four-budget comparison](packet-selection.md) records the current
+quality trade-offs; increasing a packet cap alone does not fix selection misses.
 
 Context candidates must cover enough meaningful query terms. Named entities and
 dates act as anchors, preventing a generic chart note from satisfying a query
@@ -356,7 +397,7 @@ approves a new policy. The first changed `distill` call reports a conflict and
 names document 42. After review:
 
 ```bash
-moon distill \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" distill \
   --key moon:search-policy \
   --kind decision \
   --scope moon \
@@ -371,17 +412,20 @@ for recall.
 
 ### 9. Back up, export, and verify
 
-Create a consistent SQLite backup before operational experiments:
+Create a consistent SQLite backup before operational experiments. This example
+backs up only the isolated home above; for a live upgrade, use the currently
+installed pre-upgrade executable and the complete database/configuration/skill
+procedure in [updating](updating.md):
 
 ```bash
-moon backup \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" backup \
   --destination /path/to/moon-backup.sqlite
 ```
 
 Exporting memory creates a generated Markdown view. SQLite remains canonical:
 
 ```bash
-moon export \
+moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" export \
   --destination /path/to/MEMORY.export.md
 ```
 
@@ -414,6 +458,15 @@ truth, and the context window is not filled with everything Moon has stored.
 
 ## SQLite ownership
 
+Explicit external source capture is a separate lifecycle. The `source` commands
+retain immutable, sanitised source revisions and generate exact revision-bound
+citations. Eligible capture creates durable source jobs; explicit preparation
+and submission produce bounded verbatim quote proposals. Review and acceptance
+are required before supported source-derived claims can join recall. Source
+bodies and these jobs do not enter completed-session L1/L2. See
+[source storage](source-storage.md) for intake, revision/lifecycle checks,
+review and the trust boundary.
+
 The main lifecycle tables are:
 
 - `documents`, `chunks`, `chunk_fts`, and `chunk_vectors`: canonical content and
@@ -431,11 +484,31 @@ The main lifecycle tables are:
   human review labels.
 - `runtime_metrics`: content-free learning, embedding, and compaction events.
 - `runtime_state`: adapter checkpoints.
+- `sources`, `source_revisions`: scoped source identities and immutable
+  sanitised captures, kept outside direct recall and session learning.
+- `topics`, `topic_aliases`, `topic_inputs`: stable scoped compilation
+  definitions.
+- `topic_jobs`, `topic_dependencies`, `topic_revisions`: recoverable proposals,
+  exact flattened input dependencies and immutable reviewed typed explanations.
 
 Numbered migrations update these tables transactionally. Generated Markdown is
-never a second writable source of truth. The unreleased learning implementation
-uses schema 8; back up the database and configuration before deployment and
-retain a matching database for the previous binary.
+never a second writable source of truth. Moon 2.7.0 adds schemas 9–13 to the
+existing schema-8 session lifecycle: source storage, reviewed source learning,
+topics, retrieval optimisation and bounded job diagnostics. Back up using the
+currently installed pre-upgrade executable, retain configuration and a matching
+database for the previous binary, then use the signed update procedure. Merely
+building this checkout does not change an installed runtime.
+
+Source learning is an explicit CLI/host workflow rather than an eighth automatic
+adapter operation. Its accepted claims retain exact source quotes and
+attribution. Source withdrawal, revision changes, eligibility and expiry are
+checked before application and normal recall, so delayed processing cannot make
+stale support appear current. [Topic compilation](topics.md) adds explicit
+cross-source synthesis over accepted inputs, with transitive read-time freshness
+checks and separate operator acceptance. Optional `moon_source_learn` and
+`moon_topic_compile` tools use L1 and L2 routes respectively; neither is a
+scheduled worker. Topic facts remain exact quotations, while interpretation,
+disagreement and question blocks retain their labels and bounded packet share.
 
 On Unix, runtime directories are owner-only (`0700`) and SQLite databases,
 backups, and exports are owner-only files (`0600`).

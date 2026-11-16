@@ -1,11 +1,164 @@
 # Native signed updates
 
+First installation? Start with [Getting started](getting-started.md). This guide
+is for an existing Moon runtime. For the data changes, see
+[Migration](migration.md).
+
+## Upgrade checklist
+
+Moon **2.7.0** adds source learning, topics and hardening, and advances the
+database to **schema 13**. Its signed compatibility range is **6–13**. L2 and
+source/topic tools are not enabled by upgrading; existing model configuration is
+preserved.
+
+1. Confirm the current binary and runtime before changing anything:
+
+   ```bash
+   command -v moon
+   moon --json --version
+   moon --json health
+   openclaw --version
+   ```
+
+   Use the canonical path reported by Moon. If health reports a newer schema
+   than the invoked binary supports, stop and resolve the executable mismatch.
+2. Take a consistent backup using the **currently installed pre-upgrade
+   binary**. Retain the old executable, Moon configuration and private OpenClaw
+   configuration. The native updater also makes its own quiesced rollback
+   bundle. For a separate precautionary copy, replace these destinations with
+   new private paths:
+
+   ```bash
+   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.7.0.sqlite
+   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.7.0.md
+   ```
+
+   Create the destination directory with mode `0700`. Copy `~/.moon/moon.toml`
+   when present and the file reported by `openclaw config file` with mode
+   `0600`. Do not run a newly built binary's `backup` against an older live
+   database: write commands open and migrate storage first. An export is not a
+   full backup.
+3. Review the signed plan, then apply when ready for a Gateway restart:
+
+   ```bash
+   ~/.moon/bin/moon update --version=2.7.0 --check
+   ~/.moon/bin/moon update --version=2.7.0 --dry-run
+   ~/.moon/bin/moon update --version=2.7.0
+   ```
+
+   Read the plan and confirmation. If active leases are reported, allow work to
+   finish; do not clear leases or kill work to force the update. If recovery is
+   required, follow [Apply](#apply) before retrying.
+4. Check the result:
+
+   ```bash
+   ~/.moon/bin/moon --json --version
+   ~/.moon/bin/moon --json health
+   openclaw config validate
+   openclaw gateway status
+   openclaw plugins info moon --json
+   openclaw plugins doctor
+   ```
+
+   Expect version `2.7.0`, schema `13`, integrity `ok`, zero logical violations
+   and the loaded adapter from the selected release. Verify a fresh conversation
+   and current injection evidence separately from storage health. See
+   [verification](getting-started.md#verify-the-installation).
+5. **Refresh your skill and its guides** as described below. Retain backup,
+   journal and old release until recovery is no longer needed.
+
+### Compatibility bridge in 2.7.0
+
+The published 2.6.6 updater accepts exactly six payload files. Therefore **2.7.0
+ships six signed payloads**, including the new `SKILL.md` and a reader that can
+accept documentation in future releases. The supporting Markdown guides are in
+the tagged source, not this binary archive. This packaging keeps ordinary signed
+upgrades from 2.6.6 working; it does not skip verification. A later release can
+bundle guides after users have crossed the bridge. Local development builds may
+report `2.6.6` while already using schema 13; inspect actual provenance and
+schema rather than assuming the package version describes their data.
+
+## Refresh the agent skill
+
+**`SKILL.md` changed in 2.7.0. Update it wherever you previously copied it.**
+The native updater refreshes its managed OpenClaw skill; it does not find or
+update separate Codex/other-agent copies. Verify the installed
+`moon-version: 2.7.0` marker. The updated skill has pinned online links so it
+works without local guides.
+
+To install the complete guide set, use a reviewed checkout of the **same tag**:
+
+```bash
+git clone --branch v2.7.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.7.0-guides
+cd moon-2.7.0-guides
+```
+
+For an existing skill, first preserve its entire directory in a new private
+backup location and compare local customisations. Then, from that checkout:
+
+```bash
+install -d -m 700 "$HOME/.openclaw/skills/moon" "$HOME/.openclaw/skills/moon/docs"
+install -m 644 SKILL.md "$HOME/.openclaw/skills/moon/SKILL.md"
+install -m 644 docs/*.md "$HOME/.openclaw/skills/moon/docs/"
+```
+
+Use the actual configured skill destination if different. Repeat for each
+separately installed agent copy. Copy matching files together, preserve
+unrelated local files, and restart or reload the agent session so it reads the
+updated instructions. Copying the skill changes instructions only; it neither
+upgrades the binary nor migrates the database. Do not replace skills during an
+active update transaction or recovery.
+
+## Transaction reference
+
 Moon v2.2.0 introduced the native updater. Use v2.2.1 or later for the initial
 bootstrap; v2.2.1 preserves the embedding identity already stored by v2
 databases. The updater changes the binary, OpenClaw adapter, agent skill, and
 database schema as one compatibility-set transaction. It never compiles remote
 source, evaluates manifest fields as shell, downloads trust roots, deletes prior
 releases, or copies credentials.
+
+## Source/topic hardening in 2.7.0
+
+The schema-13 release extends this transaction to source-processing and topic
+compilation jobs. Preflight rejects active source, topic and session-learning
+leases. After the host worker stops, the updater snapshots job columns, row
+counts and content hashes; post-migration checks compare the original columns
+and rows so additive schema changes are permitted but lost or rewritten jobs are
+not. Queued, pending-review and completed jobs must survive. Recovery also
+checks leases before replacing an intact database; a corrupt failed-migration
+database remains restorable after workers have stopped.
+
+Before restarting the candidate host, the updater persists a full post-migration
+learning checkpoint. If the host then changes learning jobs and validation
+fails, automatic rollback stops with the current database and candidate retained
+for operator recovery. This protects completed work even when no lease remains.
+Do not report that outcome as a completed rollback or force replacement with the
+older snapshot. Migration failures before restart still use normal verified
+restoration; unreadable corrupt databases retain the existing recovery path.
+
+Signed bundles may include up to 32 regular `skill/docs/*.md` files, each at
+most 4 MiB, in addition to the existing required payload. The archive manifest
+binds their paths, modes, sizes and hashes. Old six-file bundles remain valid.
+The updater backs up and stages the complete installed skill directory, overlays
+the candidate's signed files, and restores candidate-managed paths during
+rollback. It retains unrelated local files and old documents absent from the
+candidate; it cannot assume those files are disposable. Conflicting later edits
+to managed paths stop restoration for review rather than being overwritten.
+
+An older updater whose manifest parser requires exactly six payload files cannot
+read a documentation-extended release. Publish a signed bridge built with
+`moon-release bundle --legacy-skill-only` first, containing the updated reader
+but the old six-file payload shape; a subsequent signed release can include the
+documents. This switch changes packaging only and never bypasses signature
+verification. New readers continue accepting old six-file releases. A local
+development deployment follows its separately approved backup/cutover procedure.
+
+These changes retain the existing signed-release and journalled recovery
+requirements. They do not add an unsigned installer for development builds.
+Deploying a build still requires approval and database/configuration backups.
+Use the [isolated model canary](source-learning-canary.md) before cutover; it is
+separate from the updater's offline validation.
 
 ## Moon 2.6.4 native recall upgrade
 
@@ -148,15 +301,16 @@ OpenClaw configuration or infer provider credentials.
 
 ```bash
 moon update
-moon update --version 2.2.1
-moon update --version 2.2.0 --allow-downgrade
+moon update --version=2.7.0
 moon --json update --yes
 ```
 
 Interactive application prints the plan and asks once. JSON or other
 non-interactive application requires `--yes`. A shadowing executable may check
 but cannot apply; run the canonical path reported by `--check`. Downgrades need
-both an exact signed version and `--allow-downgrade`.
+both an exact signed version and `--allow-downgrade`, and still cannot open a
+newer unsupported schema. Recover with the old binary's matching database rather
+than treating downgrade as a reverse migration.
 
 The transaction performs these durable phases:
 
@@ -192,12 +346,14 @@ Successful JSON includes the trusted `verified_key_ids` that authenticated the
 release. The same IDs are retained in the transaction journal for rotation and
 incident review.
 
-If any post-quiesce gate fails, Moon switches back to the prior immutable
-release, restores the prior skill and verified SQLite backup, restarts OpenClaw,
-and verifies rollback health before returning `rollback_completed`. If rollback
-cannot itself be proven, it returns `rollback_failed`, preserves the lock,
-journal, failed database, releases, and backup, and must not be reported as a
-safe failure.
+If a post-quiesce gate fails and restoration is safe, Moon switches back to the
+prior immutable release, restores the prior skill and verified SQLite backup,
+restarts OpenClaw, and verifies rollback health before returning
+`rollback_completed`. Post-restart learning changes or conflicting skill edits
+stop restoration for operator review, preserving newer work. If rollback cannot
+itself be proven, it returns `rollback_failed`, preserves the lock, journal,
+failed database, releases, and backup, and must not be reported as a safe
+failure.
 
 `moon update --check` and `moon update --dry-run` report
 `recovery_required: true` without changing an interrupted installation. Run
@@ -268,7 +424,7 @@ add the newer updater's rollback behaviour to an old executable.
 ```text
 ~/.moon/
   bin/moon -> ../current/bin/moon
-  current -> releases/2.2.1
+  current -> releases/2.7.0
   openclaw-plugin -> current/openclaw-plugin
   releases/<version>/
   state/moon.sqlite

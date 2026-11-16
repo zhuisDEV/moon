@@ -1,58 +1,100 @@
-# Moon v1 to v2 migration
+# Database migration and rollback
 
-Moon v2 is a breaking architectural replacement. It removes the v1 QMD, Node,
-watcher, and generated-Markdown-as-primary-store paths. The formal identities
-are now:
+For normal Moon v2 updates, use the signed transaction in
+[updating](updating.md). You do not need to export and reimport your knowledge
+or convert Markdown files to use Moon 2.7.0. New users should follow
+[getting started](getting-started.md). The
+[v1 migration](#legacy-v1-to-v2-migration) below applies only to the retired
+QMD/watcher runtime.
 
-- command: `moon`
-- runtime: `~/.moon`
-- database: `~/.moon/state/moon.sqlite`
-- OpenClaw plugin and context-engine id: `moon`
-- environment variables: `MOON_HOME`, `MOON_DATABASE`, and
-  `MOON_EMBEDDING_DIMENSIONS`
+Moon 2.7.0 uses database **schema 13** and accepts supported databases from
+schema 6 through 13. The runtime remains `~/.moon`, the database remains
+`~/.moon/state/moon.sqlite`, and the OpenClaw plugin ID remains `moon`. Runtime
+settings in `moon.toml` survive updates; migration does not enable L2, call a
+model or create a new login.
 
-The production migration completed on 2026-07-29. The validated v2 database is
-active under `~/.moon`; the retired v1 runtime remains read-only at
-`/Users/lilac/.moon-legacy-20260728T080052Z`.
+## Before an existing v2 runtime is upgraded
 
-## Upgrade contract
-
-1. Stop the v1 watcher before changing the runtime.
-2. Make a dated copy of the complete v1 runtime and OpenClaw configuration.
-3. Build and validate Moon v2 in a separate checkout and temporary `--home`.
-4. Initialize the v2 SQLite database.
-5. Import v1 memory from the dated copy with `import-legacy`; never point a
-   migration at the only copy of the source.
-6. Embed eligible memory and references with the local provider.
-7. Require `health` to report schema v8, complete vector coverage, zero evidence
-   vectors, no failed/dead work, and zero integrity or logical violations.
-8. Install the `moon` OpenClaw plugin, select its context-engine slot, disable
-   OpenClaw memory search, and retain native automatic compaction.
-9. Run lexical, hybrid, completed-turn, automatic-embedding, and compaction
-   canaries before retiring the v1 plugin.
-10. Keep the dated v1 runtime and pre/post-migration SQLite backups for
-    rollback.
-
-The Moon CLI deliberately has no cutover or legacy-delete command.
-
-For updates between Moon v2 releases, v2.2.0 and later use the native signed
-transaction described in [updating.md](updating.md). The first v2.1.0 to v2.2.1
-installation is the documented bootstrap boundary; it retains v2.1.0 and does
-not change the preserved v1 rollback runtime.
+1. Verify `command -v moon` and `moon --json --version` identify the currently
+   installed binary. Preserve that executable with the recovery point.
+2. Back up the database with that **pre-upgrade executable**, then retain
+   `moon.toml`, any referenced prompt files and the OpenClaw configuration in a
+   private directory. The new binary's normal write commands, including
+   `backup`, can migrate storage before doing their requested work; do not use
+   it to create the first pre-migration backup. A Markdown memory export is
+   useful for inspection but is not a complete database backup.
+3. Inspect `moon update --check` and `moon update --dry-run`, including the
+   signed version, supported schema range and skill plan. The signed updater
+   stops its workers before taking its final recovery snapshot. For a manual
+   rehearsal, use a consistent snapshot with an explicit temporary `--home` and
+   database path; never copy only the live SQLite file while WAL writers are
+   active.
+4. Follow the upgrade guide's bridge-release instructions for 2.6.6 and earlier.
+   Do not send an older six-file reader a documentation-extended archive.
+5. After migration, check health, configuration, plugin discovery and actual
+   recall. Refresh `SKILL.md` and its companion documents as described in the
+   upgrade guide, including any separately installed agent copies.
+6. Retain the previous immutable release and its matching database, plugin,
+   skill and configuration backups. Rehearse restoration before relying on them.
+   Restore a schema-12 backup with a schema-12 executable; never test a
+   downgrade by opening schema 13 with an older binary.
 
 ## SQLite migrations
 
-Moon applies numbered migrations transactionally. The current schema is v8.
-Opening a normal command migrates older Moon v2 databases forward; `health`
-never creates or migrates storage.
+Moon applies numbered migrations transactionally. Moon 2.7.0 uses schema v13.
+Opening a normal write command migrates older supported Moon v2 databases
+forward; `health` and source inspection (`get`, `list`, `history`, `cite`,
+`state`, deletion preview, learning status/preview, and claim inspection) never
+create or migrate storage.
 
 Schema v5 adds canonical-head, immutable-revision, citation, and embedding-lease
 invariants. Schema v6 adds priority, retry scheduling, and dead-letter state for
 automatic embedding. Schema v7 adds content-free metrics, and schema v8 adds
-learning lifecycle state. The signed 2.6.4 release accepts schemas 6 through 8
-and migrates older supported databases to schema 8. If existing data violates a
+learning lifecycle state. The earlier 2.6.x releases accept schemas 6 through 8
+and migrate older supported databases to schema 8. If existing data violates a
 new invariant, migration stops and rolls back instead of guessing which record
 to keep.
+
+Schema v9 adds separate immutable source identities and revisions. It preserves
+the existing indexed documents, completed-session evidence, canonical memories,
+citations and learning state. Existing generated memory exports are not source
+intake inputs by default; reimporting them would duplicate already retained
+knowledge and risk circular evidence. Source bodies stay outside automatic L1/L2
+and direct recall. See [source storage](source-storage.md).
+
+Schema v10 adds source lifecycle state, recoverable source-processing jobs,
+reviewed verbatim claims and exact source support. The source-learning workflow
+requires explicit preparation/submission and operator acceptance. It starts no
+automatic worker and makes no model request during migration. Existing eligible
+captures are reconciled into durable work according to the migration contract;
+captured text is never treated as an already approved claim.
+
+Schema v11 adds scoped topic definitions and aliases, compilation jobs,
+immutable typed revisions and flattened source/claim/topic dependencies.
+Existing source claims are not automatically grouped or compiled. Migration
+calls no model. Only explicitly reviewed fresh topic revisions can join recall;
+source deletion also purges affected copied topic material. See
+[reviewed topics](topics.md).
+
+Schema v12 replaces the valid-source-claim view's deduplicating join with an
+existence check. Each claim still appears once, and expiry, current source
+revision, scope, learning eligibility and withdrawal checks remain in force.
+This avoids rebuilding the entire valid-claim set during joined retrieval. The
+migration changes no retained content, IDs, citations, indexes or model
+configuration; it runs transactionally with its migration ledger entry.
+
+Schema v13 adds nullable, constrained `failure_code` columns to source and topic
+jobs. It preserves existing columns, rows, accepted reviews and topic revisions;
+old errors remain readable. Configuration failures stop until explicit retry,
+while timeouts use the existing retry budget. Both alterations and the migration
+ledger commit are one transaction. No model is called during migration.
+
+Before deploying schema v13, rehearse migration, integrity checks and backup
+restoration with a temporary `--home`. Obtain a consistent online SQLite backup
+and configuration backup before the authorised live migration. Preserve the
+previous binary with its matching database backup: an older binary must not open
+schema v13 as a rollback attempt. Building the checkout does not authorise
+replacing the installed binary, plugin or live database.
 
 ## Embedding model changes
 
@@ -71,7 +113,42 @@ active lease.
 
 ## Rollback
 
-Rollback restores the dated v1 runtime and matching OpenClaw configuration
-together. Do not point v1 at the v2 SQLite database, and do not attempt a
-reverse schema migration. The v2 database and generated memory export remain
-available for forensic comparison or a later retry.
+Rollback restores the previous binary/plugin/skill and its matching SQLite
+backup together; there is no reverse schema migration. Stop Gateway and verify
+its Moon workers and active leases have ended before replacing storage. Preserve
+the current database and WAL/SHM in a new private recovery directory before
+restoring anything. Configuration restoration must preserve any edits made since
+the backup.
+
+The signed updater verifies rollback rather than assuming it succeeded. If the
+candidate host has already changed learning state, or managed skill files have
+been edited, rollback can stop for operator recovery to avoid overwriting new
+work. Preserve the journal, failed database, releases and backups; do not delete
+the lock or copy an old snapshot over newer work to force a retry. See the
+[recovery procedure](updating.md) and report `rollback_failed` as incomplete
+recovery.
+
+## Legacy v1 to v2 migration
+
+Moon v2 replaces the v1 QMD, Node.js watcher and Markdown knowledge store with
+one Rust binary and SQLite. This is a separate migration from a normal v2
+update. The CLI deliberately has no cutover or legacy-delete command.
+
+1. Stop the v1 watcher and preserve a dated copy of the complete v1 runtime,
+   executable/plugin and OpenClaw configuration. Keep the source copy read-only.
+2. Build and validate v2 in a separate checkout and explicit temporary `--home`.
+   Initialise a new SQLite database, then use `import-legacy` against the dated
+   copy, never the only source copy.
+3. Embed eligible memories and references with the local provider. Require
+   database health, zero logical violations and complete eligible vector
+   coverage; raw completed-session evidence should have zero vectors.
+4. Follow the installation guide for the Moon context-engine slot, disabled
+   duplicate memory search and host-owned compaction. Verify lexical/hybrid
+   retrieval, completed-turn learning and embeddings before cutover.
+5. Keep the old runtime and pre/post-migration backups. A v1 rollback restores
+   the complete v1 runtime and its matching OpenClaw configuration; never point
+   v1 at the v2 SQLite database.
+
+Moon v2.1.0 also lacks the native updater. Its controlled v2.2.1 bootstrap is
+described in [updating](updating.md); no-toolchain updates begin after that
+boundary.

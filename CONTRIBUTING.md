@@ -17,6 +17,7 @@ Requirements:
 
 1. Rust stable
 2. `cargo`
+3. Deno 2 for adapter/developer-tool validation (not a runtime dependency)
 
 Basic workflow:
 
@@ -24,12 +25,28 @@ Basic workflow:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-deno test --node-modules-dir=none \
-  --allow-read --allow-write --allow-env --allow-run \
-  assets/openclaw-plugin/index.test.ts
+cargo build --locked --release
+sh tools/test-openclaw-adapter.sh "$PWD/target/release/moon"
+deno test --no-config tools/probe-codex-route.test.ts
+deno test --no-config --no-remote tools/source-learning-canary.test.ts
+deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md
+deno lint assets/openclaw-plugin tools
 ```
 
 ## Pull Requests
+
+Use an explicit fresh temporary `--home` and `--database` for manual tests.
+Inherited `MOON_DATABASE` can override a home unless the database is supplied.
+The adapter test helper creates synthetic data and scopes Deno permissions.
+Ordinary CI uses no provider credentials or model calls. The optional
+[real-model canary](docs/source-learning-canary.md) is an explicitly authorised
+operator check with a bounded usage budget; it is not a replacement for offline
+tests.
+
+See [RELEASE.md](RELEASE.md) for clean provenance, four-platform validation and
+the protected signed-release process. See
+[Getting started](docs/getting-started.md) for user installation rather than
+copying build outputs over a live symlink.
 
 Please keep pull requests focused.
 

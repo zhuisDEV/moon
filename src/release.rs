@@ -13,6 +13,8 @@ pub const SIGNATURE_SCHEMA: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_SKILL_DOCS: usize = 32;
+pub const MAX_SKILL_DOC_BYTES: u64 = 4 * 1024 * 1024;
 
 const SUPPORTED_TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
@@ -597,7 +599,8 @@ fn validate_key_id(key_id: &str) -> Result<()> {
 
 fn validate_payload_files(files: &[BundleFile]) -> Result<()> {
     ensure!(
-        files.len() == REQUIRED_PAYLOAD_FILES.len(),
+        (REQUIRED_PAYLOAD_FILES.len()..=REQUIRED_PAYLOAD_FILES.len() + MAX_SKILL_DOCS)
+            .contains(&files.len()),
         "bundle contains an unexpected number of payload files"
     );
     let mut paths = BTreeSet::new();
@@ -612,13 +615,21 @@ fn validate_payload_files(files: &[BundleFile]) -> Result<()> {
             "bundle file size is outside the allowed range"
         );
         validate_sha256("bundle file sha256", &file.sha256)?;
-        let Some((_, expected_mode)) = REQUIRED_PAYLOAD_FILES
+        let expected_mode = if let Some((_, expected_mode)) = REQUIRED_PAYLOAD_FILES
             .iter()
             .find(|(path, _)| *path == file.path)
-        else {
-            bail!("unexpected bundle file path {}", file.path);
+        {
+            *expected_mode
+        } else if is_skill_document_path(&file.path) {
+            ensure!(
+                file.size <= MAX_SKILL_DOC_BYTES,
+                "skill document exceeds size limit"
+            );
+            0o644
+        } else {
+            bail!("unexpected bundle file path {}", file.path)
         };
-        ensure!(file.mode == *expected_mode, "unexpected bundle file mode");
+        ensure!(file.mode == expected_mode, "unexpected bundle file mode");
     }
     for (required, _) in REQUIRED_PAYLOAD_FILES {
         ensure!(
@@ -627,13 +638,33 @@ fn validate_payload_files(files: &[BundleFile]) -> Result<()> {
         );
     }
     ensure!(
-        files
-            .iter()
-            .map(|file| file.path.as_str())
-            .eq(REQUIRED_PAYLOAD_FILES.iter().map(|(path, _)| *path)),
+        files.windows(2).all(|pair| pair[0].path < pair[1].path),
         "bundle files must use canonical path order"
     );
+    let insensitive = files
+        .iter()
+        .map(|file| file.path.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    ensure!(
+        insensitive.len() == files.len(),
+        "bundle paths collide on case-insensitive filesystems"
+    );
     Ok(())
+}
+
+pub fn is_skill_document_path(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("skill/docs/") else {
+        return false;
+    };
+    name.len() <= 128
+        && name.ends_with(".md")
+        && name
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_archive_path(value: &str) -> Result<()> {
@@ -815,6 +846,104 @@ mod tests {
         let mut bundle = sample_bundle();
         bundle.files[0].mode = 0o644;
         assert!(bundle.validate().is_err());
+    }
+
+    #[test]
+    fn optional_skill_docs_are_signed_bounded_and_legacy_bundles_still_validate() {
+        sample_bundle().validate().unwrap();
+        let mut manifest = sample_manifest();
+        let asset = &mut manifest.assets[0];
+        asset.bundle.files.push(BundleFile {
+            path: "skill/docs/source-learning.md".into(),
+            size: 12,
+            sha256: sha256_hex(b"source guide"),
+            mode: 0o644,
+        });
+        asset.archive.bundle_manifest_sha256 =
+            sha256_hex(&encode_bundle_manifest(&asset.bundle).unwrap());
+        let bytes = encode_release_manifest(&manifest).unwrap();
+        let (signature, trusted) = signed_fixture(&bytes);
+        let verified =
+            verify_release_manifest(&bytes, &signature, std::slice::from_ref(&trusted)).unwrap();
+        let asset = &verified.manifest.assets[0];
+        asset
+            .bundle
+            .verify_payload_file("skill/docs/source-learning.md", 0o644, b"source guide")
+            .unwrap();
+        assert!(
+            asset
+                .bundle
+                .verify_payload_file("skill/docs/source-learning.md", 0o644, b"altered text")
+                .is_err()
+        );
+        manifest.assets[0].bundle.files.last_mut().unwrap().sha256 = sha256_hex(b"altered text");
+        manifest.assets[0].archive.bundle_manifest_sha256 =
+            sha256_hex(&encode_bundle_manifest(&manifest.assets[0].bundle).unwrap());
+        assert!(
+            verify_release_manifest(
+                &encode_release_manifest(&manifest).unwrap(),
+                &signature,
+                &[trusted]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn skill_doc_paths_sizes_modes_and_counts_are_strict() {
+        for path in [
+            "skill/docs/../outside.md",
+            "skill/docs/nested/guide.md",
+            "skill/docs/.hidden.md",
+            "skill/docs/guide.js",
+            "skill/docs/back\\slash.md",
+            "skill/docs/../SKILL.md",
+            "skill/docs/guide.MD",
+        ] {
+            let mut bundle = sample_bundle();
+            bundle.files.push(BundleFile {
+                path: path.into(),
+                size: 1,
+                sha256: sha256_hex(b"x"),
+                mode: 0o644,
+            });
+            bundle
+                .files
+                .sort_by(|left, right| left.path.cmp(&right.path));
+            assert!(bundle.validate().is_err(), "{path}");
+        }
+        for (size, mode) in [(0, 0o644), (MAX_SKILL_DOC_BYTES + 1, 0o644), (1, 0o755)] {
+            let mut bundle = sample_bundle();
+            bundle.files.push(BundleFile {
+                path: "skill/docs/guide.md".into(),
+                size,
+                sha256: sha256_hex(b"x"),
+                mode,
+            });
+            assert!(bundle.validate().is_err());
+        }
+        let mut bundle = sample_bundle();
+        for name in ["Guide.md", "guide.md"] {
+            bundle.files.push(BundleFile {
+                path: format!("skill/docs/{name}"),
+                size: 1,
+                sha256: sha256_hex(b"x"),
+                mode: 0o644,
+            });
+        }
+        assert!(bundle.validate().is_err());
+        let mut bundle = sample_bundle();
+        for index in 0..=MAX_SKILL_DOCS {
+            bundle.files.push(BundleFile {
+                path: format!("skill/docs/guide-{index:02}.md"),
+                size: 1,
+                sha256: sha256_hex(b"x"),
+                mode: 0o644,
+            });
+        }
+        assert!(bundle.validate().is_err());
+        bundle.files.pop();
+        bundle.validate().unwrap();
     }
 
     #[test]

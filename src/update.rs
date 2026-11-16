@@ -9,6 +9,7 @@ use flate2::read::GzDecoder;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -709,6 +710,8 @@ pub struct UpdateJournal {
     pub changed: bool,
     pub gateway_stopped: bool,
     pub current_switched: bool,
+    #[serde(default)]
+    pub candidate_gateway_started: bool,
     pub schema_before: Option<i64>,
     pub schema_after: Option<i64>,
     pub prior_release: Option<PathBuf>,
@@ -1002,6 +1005,8 @@ fn preflight_update_with_available_bytes(
             "active embedding leases block an update",
         );
     }
+    ensure_learning_quiescent(&context.home.join("state/moon.sqlite"))?;
+    validate_skill_location(&context.skill_path)?;
     let required = required_free_space(context, asset.archive.size)?;
     let available = match available_override {
         Some(available) => available,
@@ -1176,6 +1181,7 @@ fn apply_update_inner(
         changed: false,
         gateway_stopped: false,
         current_switched: false,
+        candidate_gateway_started: false,
         schema_before: plan.database_schema_before,
         schema_after: None,
         prior_release: None,
@@ -1192,6 +1198,7 @@ fn apply_update_inner(
             health_before.leased_embeddings == 0,
             "active embedding leases block an update"
         );
+        ensure_learning_quiescent(&context.home.join("state/moon.sqlite"))?;
         journal.phase = UpdatePhase::Preflight;
         persist_journal(&journal_path, &journal)?;
         inject_crash(crash_after, journal.phase)?;
@@ -1230,6 +1237,7 @@ fn apply_update_inner(
             health_before.leased_embeddings == 0,
             "active embedding leases block an update"
         );
+        ensure_learning_quiescent(&context.home.join("state/moon.sqlite"))?;
         let backup =
             create_rollback_bundle(context, release, &plan, &health_before, &transaction_id)
                 .map_err(|error| UpdateFailure {
@@ -1251,6 +1259,7 @@ fn apply_update_inner(
             &target_release.join("skill/SKILL.md"),
             &context.skill_path,
             &transaction_id,
+            &backup,
         )?;
         journal.phase = UpdatePhase::Switched;
         persist_journal(&journal_path, &journal)?;
@@ -1267,6 +1276,11 @@ fn apply_update_inner(
         })?;
         let health_after = healthy_installed_runtime(context)?;
         ensure_queue_preserved(&health_before, &health_after)?;
+        verify_learning_jobs(
+            &context.home.join("state/moon.sqlite"),
+            &read_learning_snapshot(&backup)?,
+        )?;
+        ensure_learning_quiescent(&context.home.join("state/moon.sqlite"))?;
         journal.schema_after = Some(health_after.schema_version);
         let snapshot_after = inspect_openclaw_config_at(context.openclaw.config_path.as_deref())?;
         ensure!(
@@ -1274,6 +1288,22 @@ fn apply_update_inner(
                 && snapshot_after.memory_slot == context.openclaw.memory_slot,
             "OpenClaw Moon slots changed during update"
         );
+        // Capture the full candidate schema, including newly introduced job
+        // tables/columns, before allowing any candidate worker to run.
+        let candidate_checkpoint = backup.join("candidate-learning-jobs.json");
+        write_new_file(
+            &candidate_checkpoint,
+            &serde_json::to_vec(&learning_snapshot(
+                &context.home.join("state/moon.sqlite"),
+                None,
+            )?)?,
+            0o600,
+        )?;
+        sync_parent(&candidate_checkpoint)?;
+        // Starting may partially succeed even when the host command fails.
+        // Persist intent before any candidate worker can acknowledge new work.
+        journal.candidate_gateway_started = true;
+        persist_journal(&journal_path, &journal)?;
         openclaw.start()?;
         openclaw.wait_ready(Duration::from_secs(60))?;
         openclaw
@@ -1646,6 +1676,195 @@ fn recover_incomplete_update(context: &ApplyContext, openclaw: &dyn OpenClawCont
     Ok(())
 }
 
+// Read ordinary tables directly so recovery can inspect a newer schema without
+// asking the old Store implementation to open or migrate it. No content or
+// provider diagnostics enter this checkpoint: only identifiers and row hashes.
+const LEARNING_JOB_TABLES: &[(&str, &str, &str)] = &[
+    ("learning_runs", "run_id", "prepared"),
+    ("source_learning_jobs", "job_id", "leased"),
+    ("topic_jobs", "job_id", "leased"),
+];
+
+// Supporting ledgers/dependencies are part of recoverable jobs too: preserving
+// a proposal while losing its dependency snapshot would not preserve its work.
+const LEARNING_CHECKPOINT_TABLES: &[(&str, &str)] = &[
+    ("learning_runs", "run_id"),
+    ("source_learning_jobs", "job_id"),
+    ("topic_jobs", "job_id"),
+    (
+        "learning_processed_evidence",
+        "CAST(evidence_session_id AS TEXT)",
+    ),
+    ("learning_reviews", "CAST(id AS TEXT)"),
+    (
+        "topic_dependencies",
+        "json_array(job_id,kind,input_id,revision_id)",
+    ),
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct LearningTableSnapshot {
+    columns: Vec<String>,
+    rows: BTreeMap<String, String>,
+}
+
+type LearningSnapshot = BTreeMap<String, LearningTableSnapshot>;
+
+fn learning_connection(database: &Path) -> Result<rusqlite::Connection> {
+    ensure!(
+        fs::symlink_metadata(database)?.file_type().is_file(),
+        "learning checkpoint requires a regular database file"
+    );
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    Ok(connection)
+}
+
+fn has_table(connection: &rusqlite::Connection, name: &str) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+        [name],
+        |row| row.get(0),
+    )?)
+}
+
+fn ensure_learning_quiescent(database: &Path) -> Result<()> {
+    let connection = learning_connection(database)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    for (table, _, status) in LEARNING_JOB_TABLES {
+        if !has_table(&connection, table)? {
+            continue;
+        }
+        let active: bool = connection.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE status=?1 AND lease_until_ms>?2)"),
+            rusqlite::params![status, now],
+            |row| row.get(0),
+        )?;
+        if active {
+            return fail(
+                "active_learning_lease",
+                format!("active {table} lease blocks update or database restoration"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_learning_quiescent_before_restore(database: &Path) -> Result<()> {
+    match ensure_learning_quiescent(database) {
+        Ok(()) => Ok(()),
+        Err(error) if learning_database_is_corrupt(&error) => {
+            // Called only after Gateway and Moon writers have stopped. A
+            // broken migration must remain recoverable when SQLite cannot
+            // read its lease tables at all; other inspection errors fail shut.
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn learning_database_is_corrupt(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<rusqlite::Error>()
+        .is_some_and(|error| {
+            matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+            )
+        })
+}
+
+fn learning_snapshot(
+    database: &Path,
+    previous: Option<&LearningSnapshot>,
+) -> Result<LearningSnapshot> {
+    use rusqlite::types::ValueRef;
+    let connection = learning_connection(database)?;
+    let transaction = connection.unchecked_transaction()?;
+    let mut snapshot = BTreeMap::new();
+    for (table, key) in LEARNING_CHECKPOINT_TABLES {
+        if previous.is_some_and(|previous| !previous.contains_key(*table)) {
+            continue;
+        }
+        if !has_table(&transaction, table)? {
+            ensure!(previous.is_none(), "migration removed a learning job table");
+            continue;
+        }
+        let available = transaction
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let columns = match previous.and_then(|previous| previous.get(*table)) {
+            Some(before) => {
+                ensure!(
+                    before
+                        .columns
+                        .iter()
+                        .all(|column| available.contains(column)),
+                    "migration removed a learning job column"
+                );
+                before.columns.clone()
+            }
+            None => available,
+        };
+        let projection = columns
+            .iter()
+            .map(|name| format!("\"{}\"", name.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT {key},{projection} FROM {table} ORDER BY {key}"
+        ))?;
+        let mut rows = statement.query([])?;
+        let mut hashes = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let mut hash = Sha256::new();
+            for index in 1..=columns.len() {
+                let (kind, bytes) = match row.get_ref(index)? {
+                    ValueRef::Null => (0_u8, Vec::new()),
+                    ValueRef::Integer(value) => (1, value.to_le_bytes().to_vec()),
+                    ValueRef::Real(value) => (2, value.to_le_bytes().to_vec()),
+                    ValueRef::Text(value) => (3, value.to_vec()),
+                    ValueRef::Blob(value) => (4, value.to_vec()),
+                };
+                hash.update([kind]);
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+            hashes.insert(row.get::<_, String>(0)?, hex::encode(hash.finalize()));
+        }
+        snapshot.insert(
+            (*table).to_owned(),
+            LearningTableSnapshot {
+                columns,
+                rows: hashes,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
+fn read_learning_snapshot(backup: &Path) -> Result<LearningSnapshot> {
+    Ok(serde_json::from_slice(&read_bounded_file(
+        &backup.join("learning-jobs.json"),
+        MAX_ARCHIVE_BYTES,
+    )?)?)
+}
+
+fn verify_learning_jobs(database: &Path, previous: &LearningSnapshot) -> Result<()> {
+    if learning_snapshot(database, Some(previous))? != *previous {
+        return fail(
+            "learning_jobs_changed",
+            "migration changed existing learning jobs or review proposals",
+        );
+    }
+    Ok(())
+}
+
 fn healthy_runtime(context: &ApplyContext) -> Result<crate::model::HealthReport> {
     let database = context.home.join("state/moon.sqlite");
     let store = crate::Store::open_existing(&database, context.dimensions).map_err(|error| {
@@ -1847,8 +2066,7 @@ fn ensure_prior_release(context: &ApplyContext, transaction_id: &str) -> Result<
         &staging.join("openclaw-plugin"),
     )?;
     if context.skill_path.is_file() {
-        create_private_dir_all(&staging.join("skill"))?;
-        copy_regular_file(&context.skill_path, &staging.join("skill/SKILL.md"), 0o644)?;
+        copy_tree(skill_root(&context.skill_path)?, &staging.join("skill"))?;
     }
     fs::rename(&staging, &release).context("failed to materialize prior release")?;
     sync_parent(&release)?;
@@ -1892,8 +2110,15 @@ fn create_rollback_bundle(
     ensure!(!backup.exists(), "rollback bundle already exists");
     create_private_dir_all(&backup)?;
     let database = context.home.join("state/moon.sqlite");
+    let jobs = learning_snapshot(&database, None)?;
     let store = crate::Store::open_existing(&database, context.dimensions)?;
     store.backup_to(&backup.join("moon.sqlite"))?;
+    verify_learning_jobs(&backup.join("moon.sqlite"), &jobs)?;
+    write_new_file(
+        &backup.join("learning-jobs.json"),
+        &serde_json::to_vec(&jobs)?,
+        0o600,
+    )?;
     store.export_memories(&backup.join("memory-export.md"))?;
     write_new_file(
         &backup.join("health.json"),
@@ -1927,10 +2152,25 @@ fn create_rollback_bundle(
         &fs::canonicalize(context.home.join("openclaw-plugin"))?,
         &files.join("openclaw-plugin"),
     )?;
-    if context.skill_path.is_file() {
-        create_private_dir_all(&files.join("skill"))?;
-        copy_regular_file(&context.skill_path, &files.join("skill/SKILL.md"), 0o644)?;
-    }
+    let skill_root = skill_root(&context.skill_path)?;
+    let original_exists = skill_root.exists();
+    let original_hashes = if original_exists {
+        copy_tree(skill_root, &files.join("skill"))?;
+        checked_skill_hashes(&files.join("skill"))?
+    } else {
+        BTreeMap::new()
+    };
+    write_new_file(
+        &backup.join("skill-layout.json"),
+        &serde_json::to_vec(&SkillLayout {
+            schema_version: 1,
+            original_exists,
+            original_hashes,
+            installed_hashes: None,
+            managed_paths: BTreeSet::new(),
+        })?,
+        0o600,
+    )?;
     let hashes = hash_tree(&files)?;
     write_new_file(
         &backup.join("file-hashes.json"),
@@ -2024,7 +2264,13 @@ fn switch_current(
     }
 }
 
-fn install_skill(source: &Path, destination: &Path, transaction_id: &str) -> Result<()> {
+// Legacy rollback bundles only captured this file. They cannot reconstruct
+// historical docs, so retain their original file-only restoration behaviour.
+fn install_legacy_skill_file(
+    source: &Path,
+    destination: &Path,
+    transaction_id: &str,
+) -> Result<()> {
     let parent = destination.parent().context("skill path has no parent")?;
     fs::create_dir_all(parent)?;
     let bytes = read_bounded_file(source, MAX_CONFIG_BYTES)?;
@@ -2035,6 +2281,319 @@ fn install_skill(source: &Path, destination: &Path, transaction_id: &str) -> Res
     write_new_file(&temporary, &bytes, 0o644)?;
     fs::rename(&temporary, destination)?;
     sync_parent(destination)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillLayout {
+    schema_version: u32,
+    original_exists: bool,
+    original_hashes: BTreeMap<String, String>,
+    installed_hashes: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    managed_paths: BTreeSet<String>,
+}
+
+fn skill_root(path: &Path) -> Result<&Path> {
+    ensure!(
+        path.file_name().is_some_and(|name| name == "SKILL.md"),
+        "skill path must name SKILL.md"
+    );
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("skill path has no directory")
+}
+
+fn validate_skill_location(path: &Path) -> Result<()> {
+    let root = skill_root(path)?;
+    if fs::symlink_metadata(root).is_ok() {
+        checked_skill_hashes(root)?;
+        ensure!(path.is_file(), "existing skill directory has no SKILL.md");
+    }
+    Ok(())
+}
+
+fn checked_skill_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
+    ensure!(
+        fs::symlink_metadata(root)?.file_type().is_dir(),
+        "skill root must be a physical directory"
+    );
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = entry?;
+        ensure!(
+            entry.path().strip_prefix(root)?.to_str().is_some(),
+            "skill path is not UTF-8"
+        );
+        ensure!(
+            entry.file_type().is_dir() || entry.file_type().is_file(),
+            "skill tree contains a symlink or special file"
+        );
+    }
+    hash_tree(root)
+}
+
+fn write_skill_layout(backup: &Path, layout: &SkillLayout) -> Result<()> {
+    let temporary = backup.join(format!(".skill-layout-{:032x}", rand::random::<u128>()));
+    write_new_file(&temporary, &serde_json::to_vec(layout)?, 0o600)?;
+    fs::rename(&temporary, backup.join("skill-layout.json"))?;
+    sync_parent(&backup.join("skill-layout.json"))
+}
+
+fn read_skill_layout(backup: &Path) -> Result<Option<SkillLayout>> {
+    let path = backup.join("skill-layout.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let layout: SkillLayout = serde_json::from_slice(&read_bounded_file(&path, MAX_CONFIG_BYTES)?)?;
+    ensure!(
+        layout.schema_version == 1,
+        "unsupported skill backup layout"
+    );
+    for path in layout
+        .original_hashes
+        .keys()
+        .chain(
+            layout
+                .installed_hashes
+                .iter()
+                .flat_map(|hashes| hashes.keys()),
+        )
+        .chain(layout.managed_paths.iter())
+    {
+        ensure!(
+            !path.is_empty()
+                && !path.contains('\\')
+                && Path::new(path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "skill rollback path is unsafe"
+        );
+    }
+    Ok(Some(layout))
+}
+
+fn overlay_skill_tree(source: &Path, destination: &Path) -> Result<()> {
+    checked_skill_hashes(source)?;
+    for entry in walkdir::WalkDir::new(source)
+        .follow_links(false)
+        .min_depth(1)
+    {
+        let entry = entry?;
+        let target = destination.join(entry.path().strip_prefix(source)?);
+        if entry.file_type().is_dir() {
+            create_private_dir_all(&target)?;
+        } else {
+            if fs::symlink_metadata(&target).is_ok() {
+                ensure!(
+                    fs::symlink_metadata(&target)?.file_type().is_file(),
+                    "skill file conflicts with an existing directory"
+                );
+                fs::remove_file(&target)?;
+            }
+            copy_regular_file(entry.path(), &target, file_mode(entry.path())?)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_skill_case_compatible(
+    existing: &BTreeMap<String, String>,
+    candidate: &BTreeMap<String, String>,
+) -> Result<()> {
+    let mut spellings = BTreeMap::new();
+    for path in existing.keys().chain(candidate.keys()) {
+        for ancestor in Path::new(path)
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            let spelling = ancestor.to_str().context("skill path is not UTF-8")?;
+            let prior = spellings.insert(spelling.to_lowercase(), spelling);
+            ensure!(
+                prior.is_none_or(|prior| prior == spelling),
+                "skill paths collide on case-insensitive filesystems"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn publish_skill_tree(
+    stage: tempfile::TempDir,
+    destination: &Path,
+    expected: &BTreeMap<String, String>,
+) -> Result<()> {
+    if destination.exists() {
+        ensure!(
+            checked_skill_hashes(destination)? == *expected,
+            "skill changed while the update was staging"
+        );
+    } else {
+        ensure!(
+            expected.is_empty(),
+            "skill disappeared while the update was staging"
+        );
+    }
+    // Keep the stage on error/crash: it may own the only copy of a concurrent
+    // user edit. The update journal already records switch intent and recovery
+    // restores the complete private backup if interrupted between these moves.
+    let stage = stage.keep();
+    if destination.exists() {
+        fs::rename(destination, stage.join("previous"))?;
+        sync_parent(destination)?;
+    }
+    fs::rename(stage.join("next"), destination)?;
+    sync_parent(destination)?;
+    if stage.join("previous").exists() {
+        ensure!(
+            checked_skill_hashes(&stage.join("previous"))? == *expected,
+            "skill was edited during replacement; previous directory retained for inspection"
+        );
+    }
+    fs::remove_dir_all(stage)?;
+    Ok(())
+}
+
+fn install_skill(
+    source: &Path,
+    destination: &Path,
+    transaction_id: &str,
+    backup: &Path,
+) -> Result<()> {
+    let destination = skill_root(destination)?;
+    let parent = destination
+        .parent()
+        .context("skill directory has no parent")?;
+    fs::create_dir_all(parent)?;
+    let existing = if destination.exists() {
+        checked_skill_hashes(destination)?
+    } else {
+        BTreeMap::new()
+    };
+    let candidate = checked_skill_hashes(skill_root(source)?)?;
+    let mut existing_paths = existing.clone();
+    if destination.exists() {
+        for entry in walkdir::WalkDir::new(destination).min_depth(1) {
+            let entry = entry?;
+            if entry.file_type().is_dir() {
+                existing_paths.insert(
+                    entry
+                        .path()
+                        .strip_prefix(destination)?
+                        .to_str()
+                        .context("skill path is not UTF-8")?
+                        .to_owned(),
+                    String::new(),
+                );
+            }
+        }
+    }
+    ensure_skill_case_compatible(&existing_paths, &candidate)?;
+    let stage = tempfile::Builder::new()
+        .prefix(&format!(".moon-skill-{transaction_id}-"))
+        .tempdir_in(parent)?;
+    let next = stage.path().join("next");
+    if destination.exists() {
+        copy_tree(destination, &next)?;
+    } else {
+        create_private_dir(&next)?;
+    }
+    // Merge into a staged copy so unrelated files in the skill directory stay
+    // available. The full pre-change directory remains in the rollback bundle.
+    overlay_skill_tree(skill_root(source)?, &next)?;
+    let mut layout =
+        read_skill_layout(backup)?.context("complete skill rollback evidence is missing")?;
+    ensure!(
+        layout.original_hashes == existing,
+        "skill changed after the rollback snapshot"
+    );
+    layout.installed_hashes = Some(checked_skill_hashes(&next)?);
+    ensure!(
+        candidate
+            .iter()
+            .all(|(path, hash)| layout.installed_hashes.as_ref().unwrap().get(path) == Some(hash)),
+        "staged skill does not preserve candidate path spelling and content"
+    );
+    layout.managed_paths = candidate.into_keys().collect();
+    write_skill_layout(backup, &layout)?;
+    publish_skill_tree(stage, destination, &existing)
+}
+
+fn validate_skill_rollback(context: &ApplyContext, backup: &Path) -> Result<()> {
+    let Some(layout) = read_skill_layout(backup)? else {
+        return Ok(());
+    };
+    let Some(installed) = layout.installed_hashes else {
+        return Ok(());
+    };
+    let root = skill_root(&context.skill_path)?;
+    if root.exists() {
+        let current = checked_skill_hashes(root)?;
+        for path in &layout.managed_paths {
+            ensure!(
+                current.get(path) == installed.get(path)
+                    || current.get(path) == layout.original_hashes.get(path),
+                "skill file changed after installation; refusing to overwrite the edit during rollback"
+            );
+        }
+    }
+    if layout.original_exists {
+        ensure!(
+            checked_skill_hashes(&backup.join("files/skill"))? == layout.original_hashes,
+            "skill rollback snapshot was modified"
+        );
+    }
+    Ok(())
+}
+
+fn restore_skill(context: &ApplyContext, backup: &Path, transaction_id: &str) -> Result<()> {
+    let Some(layout) = read_skill_layout(backup)? else {
+        let source = backup.join("files/skill/SKILL.md");
+        return if source.is_file() {
+            install_legacy_skill_file(&source, &context.skill_path, transaction_id)
+        } else {
+            Ok(())
+        };
+    };
+    let Some(_) = layout.installed_hashes else {
+        return Ok(());
+    };
+    validate_skill_rollback(context, backup)?;
+    let root = skill_root(&context.skill_path)?;
+    let parent = root.parent().context("skill directory has no parent")?;
+    let stage = tempfile::Builder::new()
+        .prefix(".moon-skill-rollback-")
+        .tempdir_in(parent)?;
+    let next = stage.path().join("next");
+    let current = if root.exists() {
+        checked_skill_hashes(root)?
+    } else {
+        BTreeMap::new()
+    };
+    if root.exists() {
+        copy_tree(root, &next)?;
+    } else if layout.original_exists {
+        copy_tree(&backup.join("files/skill"), &next)?;
+    } else {
+        create_private_dir(&next)?;
+    }
+    // Roll back only paths supplied by the candidate. Unrelated additions,
+    // edits and deletions in the installed directory retain their current state.
+    for path in &layout.managed_paths {
+        let destination = next.join(path);
+        if destination.exists() {
+            fs::remove_file(&destination)?;
+        }
+        if layout.original_hashes.contains_key(path) {
+            let source = backup.join("files/skill").join(path);
+            copy_regular_file(&source, &destination, file_mode(&source)?)?;
+        }
+    }
+    publish_skill_tree(stage, root, &current)?;
+    if !layout.original_exists && fs::read_dir(root)?.next().is_none() {
+        fs::remove_dir(root)?;
+        sync_parent(root)?;
+    }
+    Ok(())
 }
 
 fn run_migration(context: &ApplyContext) -> Result<()> {
@@ -2183,6 +2742,32 @@ fn rollback_update(
         // The candidate gateway may already be running. Quiesce its worker
         // before changing the release or restoring SQLite and its sidecars.
         openclaw.stop()?;
+        // A failed update may have briefly restarted the candidate gateway.
+        // Do not overwrite an in-flight learning run when recovering it.
+        ensure_learning_quiescent_before_restore(&context.home.join("state/moon.sqlite"))?;
+        let backup = journal
+            .backup_path
+            .as_deref()
+            .context("journal has no rollback bundle")?;
+        if journal.candidate_gateway_started {
+            // A worker may have finished between restart and validation. An
+            // inactive lease is not proof that the pre-update DB is still the
+            // latest acknowledged state. Keep the candidate and DB intact.
+            let checkpoint: LearningSnapshot = serde_json::from_slice(&read_bounded_file(
+                &backup.join("candidate-learning-jobs.json"),
+                MAX_ARCHIVE_BYTES,
+            )?)?;
+            if let Err(error) =
+                verify_learning_jobs(&context.home.join("state/moon.sqlite"), &checkpoint)
+                && !learning_database_is_corrupt(&error)
+            {
+                return fail(
+                    "learning_jobs_changed_after_restart",
+                    "learning state changed after candidate restart; current database retained and operator recovery required",
+                );
+            }
+        }
+        validate_skill_rollback(context, backup)?;
         let prior = journal
             .prior_release
             .as_deref()
@@ -2192,18 +2777,11 @@ fn rollback_update(
             prior,
             &format!("rollback-{}", journal.transaction_id),
         )?;
-        let backup = journal
-            .backup_path
-            .as_deref()
-            .context("journal has no rollback bundle")?;
-        let skill = backup.join("files/skill/SKILL.md");
-        if skill.is_file() {
-            install_skill(
-                &skill,
-                &context.skill_path,
-                &format!("rollback-{}", journal.transaction_id),
-            )?;
-        }
+        restore_skill(
+            context,
+            backup,
+            &format!("rollback-{}", journal.transaction_id),
+        )?;
         restore_database(
             context,
             &backup.join("moon.sqlite"),
@@ -2297,10 +2875,12 @@ fn required_free_space(context: &ApplyContext, archive_size: u64) -> Result<u64>
             .map(|metadata| metadata.len())
             .unwrap_or(0),
     );
+    let skill_size = directory_size(skill_root(&context.skill_path)?)?;
     Ok(archive_size
-        .saturating_mul(2)
+        .saturating_mul(3)
         .saturating_add(database_size.saturating_mul(2))
         .saturating_add(installed_size.saturating_mul(2))
+        .saturating_add(skill_size.saturating_mul(3))
         .saturating_add(64 * 1024 * 1024))
 }
 
@@ -2422,7 +3002,11 @@ fn duplicate_warnings(context: &ApplyContext) -> Vec<String> {
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
-    ensure!(source.is_dir(), "{} is not a directory", source.display());
+    ensure!(
+        fs::symlink_metadata(source)?.file_type().is_dir(),
+        "{} is not a physical directory",
+        source.display()
+    );
     create_private_dir_all(destination)?;
     for entry in walkdir::WalkDir::new(source).follow_links(false) {
         let entry = entry?;
@@ -2907,6 +3491,55 @@ mod tests {
         assert_eq!(error_code(&error), Some("checksum_mismatch"));
     }
 
+    #[test]
+    fn skill_docs_must_exactly_match_the_verified_archive_manifest() {
+        let fixture = transaction_fixture();
+        let mut original = BTreeMap::new();
+        let mut archive = Archive::new(GzDecoder::new(fixture.archive.as_slice()));
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry
+                .path()
+                .unwrap()
+                .to_string_lossy()
+                .strip_prefix("moon-release/")
+                .unwrap()
+                .to_owned();
+            let mode = entry.header().mode().unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            original.insert(path, (mode, bytes));
+        }
+        let bundle = original.remove("bundle-manifest.json").unwrap().1;
+        for mutation in ["missing", "extra", "tampered"] {
+            let mut payload = original.clone();
+            match mutation {
+                "missing" => {
+                    payload.remove("skill/docs/workflow.md");
+                }
+                "extra" => {
+                    payload.insert(
+                        "skill/docs/unlisted.md".into(),
+                        (0o644, b"unlisted doc".to_vec()),
+                    );
+                }
+                _ => {
+                    payload.get_mut("skill/docs/workflow.md").unwrap().1 =
+                        b"changed workflow".to_vec();
+                }
+            }
+            let bytes = fixture_archive(&payload, &bundle);
+            let mut asset = fixture.release.manifest.assets[0].clone();
+            asset.archive.size = bytes.len() as u64;
+            asset.archive.sha256 = sha256_hex(&bytes);
+            assert!(
+                extract_verified_archive(&bytes, &asset, &fixture._root.path().join(mutation))
+                    .is_err(),
+                "{mutation}"
+            );
+        }
+    }
+
     fn sample_asset() -> ReleaseAsset {
         let files = [
             ("bin/moon", 0o755),
@@ -2935,7 +3568,7 @@ mod tests {
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 8,
+            database_schema_max: 13,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -3186,6 +3819,7 @@ printf '%s\n' '{"action":"stop","ok":true}'
         validation_failures: Mutex<usize>,
         ready_failures: Mutex<usize>,
         check_rollback_marker: Option<PathBuf>,
+        complete_source_on_validate: Option<PathBuf>,
     }
 
     impl OpenClawControl for MockOpenClaw {
@@ -3212,6 +3846,17 @@ printf '%s\n' '{"action":"stop","ok":true}'
         fn start(&self) -> Result<()> {
             let mut events = self.events.lock().unwrap();
             events.push("start".to_owned());
+            if let Some(home) = &self.complete_source_on_validate {
+                let path = fs::read_dir(home.join("update/journals"))?
+                    .next()
+                    .context("missing journal")??
+                    .path();
+                let journal: UpdateJournal = serde_json::from_slice(&fs::read(path)?)?;
+                assert!(
+                    journal.candidate_gateway_started,
+                    "candidate restart intent must be durable before start"
+                );
+            }
             if events
                 .iter()
                 .filter(|event| event.as_str() == "start")
@@ -3238,6 +3883,27 @@ printf '%s\n' '{"action":"stop","ok":true}'
                 .lock()
                 .unwrap()
                 .push(format!("validate:{expected_version}"));
+            if expected_version == "2.2.0"
+                && let Some(home) = &self.complete_source_on_validate
+            {
+                let mut store = crate::Store::open(home.join("state/moon.sqlite"), 64)?;
+                let status = store.source_learning_status("update-test", None, 20)?;
+                let review = status["jobs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|job| job["status"] == "review")
+                    .unwrap();
+                store.source_learning_accept(
+                    "update-test",
+                    review["job_id"].as_str().unwrap(),
+                    review["result_hash"].as_str().unwrap(),
+                )?;
+                return fail(
+                    "plugin_validation_failed",
+                    "injected failure after acknowledging learning work",
+                );
+            }
             ensure!(
                 snapshot.context_engine_slot.as_deref() == Some("moon"),
                 "wrong context slot"
@@ -3317,7 +3983,7 @@ if [ -z "$version_arg" ] && [ -z "$database_arg" ]; then exit 91; fi
             r#"#!/bin/sh
 for value in "$@"; do
   if [ "$value" = health ]; then
-    printf '%s\n' '{"ok":true,"schema_version":8,"failed_embeddings":0,"dead_embeddings":0}'
+    printf '%s\n' '{"ok":true,"schema_version":13,"failed_embeddings":0,"dead_embeddings":0}'
     exit 0
   fi
 done
@@ -3346,6 +4012,17 @@ done
         let skill = root.path().join("openclaw/skills/moon/SKILL.md");
         fs::create_dir_all(skill.parent().unwrap()).expect("skill parent");
         fs::write(&skill, "<!-- moon-version: 2.1.0 -->\n# Moon\n").expect("skill");
+        fs::create_dir(skill.parent().unwrap().join("docs")).unwrap();
+        fs::write(
+            skill.parent().unwrap().join("docs/workflow.md"),
+            "old workflow",
+        )
+        .unwrap();
+        fs::write(
+            skill.parent().unwrap().join("local-notes.txt"),
+            "original user note",
+        )
+        .unwrap();
         let config = root.path().join("openclaw/openclaw.json");
         fs::write(
             &config,
@@ -3397,7 +4074,7 @@ done
             ""
         };
         let script = format!(
-            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":8,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":13,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
             current_target()
         );
         let script = require_explicit_database(&script).into_bytes();
@@ -3423,6 +4100,14 @@ done
                 "skill/SKILL.md".to_owned(),
                 (0o644, b"<!-- moon-version: 2.2.0 -->\n# Moon\n".to_vec()),
             ),
+            (
+                "skill/docs/workflow.md".to_owned(),
+                (0o644, b"new workflow".to_vec()),
+            ),
+            (
+                "skill/docs/source-learning.md".to_owned(),
+                (0o644, b"new source learning workflow".to_vec()),
+            ),
         ]);
         let files = payload
             .iter()
@@ -3444,7 +4129,7 @@ done
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 8,
+            database_schema_max: 13,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -3487,15 +4172,37 @@ done
             bundle_format: 1,
         };
         let snapshot = inspect_openclaw_config_at(Some(&config)).expect("snapshot");
+        use ed25519_dalek::Signer;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
+        let manifest_bytes = crate::release::encode_release_manifest(&manifest).unwrap();
+        let signature_bytes =
+            crate::release::encode_signature_envelope(&crate::release::SignatureEnvelope {
+                schema_version: crate::release::SIGNATURE_SCHEMA,
+                algorithm: "ed25519".into(),
+                signatures: vec![crate::release::ManifestSignature {
+                    key_id: "test-release-key".into(),
+                    signature: hex::encode(key.sign(&manifest_bytes).to_bytes()),
+                }],
+            })
+            .unwrap();
+        let verified = crate::release::verify_release_manifest(
+            &manifest_bytes,
+            &signature_bytes,
+            &[
+                crate::release::TrustedKey::new("test-release-key", key.verifying_key().to_bytes())
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
         let release = VerifiedRelease {
-            manifest_bytes: crate::release::encode_release_manifest(&manifest).expect("manifest"),
-            signature_bytes: b"test-signature-fixture".to_vec(),
-            manifest,
+            manifest_bytes,
+            signature_bytes,
+            manifest: verified.manifest,
             manifest_url: Url::parse(
                 "https://github.com/zhuisDEV/moon/releases/download/v2.2.0/release-manifest.json",
             )
             .unwrap(),
-            verified_key_ids: vec!["test-release-key".to_owned()],
+            verified_key_ids: verified.verified_key_ids,
         };
         TransactionFixture {
             _root: root,
@@ -3559,7 +4266,7 @@ done
         assert!(result.ok && result.changed && result.gateway_reachable);
         assert_eq!(result.from_version, "2.1.0");
         assert_eq!(result.to_version, "2.2.0");
-        assert_eq!(result.schema_after, Some(8));
+        assert_eq!(result.schema_after, Some(13));
         assert_eq!(result.verified_key_ids, ["test-release-key"]);
         assert!(fixture.context.home.join("current").is_symlink());
         assert!(fixture.context.home.join("bin/moon").is_symlink());
@@ -3579,6 +4286,23 @@ done
                 .is_file()
         );
         let backup = result.rollback_bundle.expect("rollback bundle");
+        let skill = fixture.context.skill_path.parent().unwrap();
+        assert_eq!(
+            fs::read_to_string(skill.join("docs/workflow.md")).unwrap(),
+            "new workflow"
+        );
+        assert_eq!(
+            fs::read_to_string(skill.join("docs/source-learning.md")).unwrap(),
+            "new source learning workflow"
+        );
+        assert_eq!(
+            fs::read_to_string(skill.join("local-notes.txt")).unwrap(),
+            "original user note"
+        );
+        assert_eq!(
+            fs::read_to_string(backup.join("files/skill/docs/workflow.md")).unwrap(),
+            "old workflow"
+        );
         assert!(backup.join("moon.sqlite").is_file());
         assert_eq!(file_mode(&backup).unwrap(), 0o700);
         assert_eq!(file_mode(&backup.join("moon.sqlite")).unwrap(), 0o600);
@@ -3933,6 +4657,8 @@ done
         ];
         for phase in phases {
             let fixture = transaction_fixture();
+            let skill_before =
+                checked_skill_hashes(fixture.context.skill_path.parent().unwrap()).unwrap();
             let openclaw = MockOpenClaw::default();
             let error = apply_update_inner(
                 &fixture.context,
@@ -3970,6 +4696,11 @@ done
             recovery_lock.release().unwrap();
             let recovered: UpdateJournal =
                 serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
+            assert_eq!(
+                checked_skill_hashes(fixture.context.skill_path.parent().unwrap()).unwrap(),
+                skill_before,
+                "phase {phase:?}"
+            );
             assert_eq!(recovered.phase, UpdatePhase::RolledBack, "phase {phase:?}");
             assert!(
                 healthy_runtime(&fixture.context).unwrap().ok,
@@ -4022,11 +4753,454 @@ done
         (fixture, path, journal)
     }
 
+    fn seed_review_jobs(fixture: &TransactionFixture) {
+        use crate::source_learning::{SourcePrepareRequest, SourceProposalInput};
+        use crate::topics::{TopicInput, TopicPrepareRequest, TopicProposalInput};
+        let mut store =
+            crate::Store::open(fixture.context.home.join("state/moon.sqlite"), 64).unwrap();
+        let quote = "The update fixture retains evidence and review proposals.";
+        let mut claim = String::new();
+        for key in ["pending", "review", "accepted"] {
+            let input = serde_json::from_value(serde_json::json!({"schema_version":1,"source_key":key,"kind":"external_document","author":"Fixture","content":quote})).unwrap();
+            store
+                .source_import("update-test", input, None, true)
+                .unwrap();
+            if key == "pending" {
+                continue;
+            }
+            let prepared = store
+                .source_learning_prepare(&SourcePrepareRequest {
+                    scope: "update-test".into(),
+                    key: Some(key.into()),
+                    max_bytes: 65536,
+                    lease_ms: 60000,
+                    preview: false,
+                })
+                .unwrap();
+            let proposal: SourceProposalInput = serde_json::from_value(
+                serde_json::json!({"schema_version":1,"claims":[{"quote":quote}]}),
+            )
+            .unwrap();
+            let job = prepared["job_id"].as_str().unwrap();
+            let review = store
+                .source_learning_submit(
+                    "update-test",
+                    job,
+                    prepared["lease_token"].as_str().unwrap(),
+                    proposal,
+                )
+                .unwrap();
+            if key == "accepted" {
+                let accepted = store
+                    .source_learning_accept(
+                        "update-test",
+                        job,
+                        review["result_hash"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                claim = accepted["claim_ids"][0].as_str().unwrap().to_owned();
+            }
+        }
+        for key in ["pending", "review"] {
+            let input: TopicInput = serde_json::from_value(serde_json::json!({"schema_version":1,"key":key,"title":"Update preservation","claim_ids":[claim],"topic_ids":[]})).unwrap();
+            store.topic_put("update-test", input, None).unwrap();
+            if key == "pending" {
+                continue;
+            }
+            let prepared = store
+                .topic_prepare(&TopicPrepareRequest {
+                    scope: "update-test".into(),
+                    key: Some(key.into()),
+                    max_bytes: 65536,
+                    lease_ms: 60000,
+                    preview: false,
+                })
+                .unwrap();
+            let proposal: TopicProposalInput = serde_json::from_value(serde_json::json!({"schema_version":1,"review_complete":true,"statements":[{"kind":"fact","text":quote,"input_ids":[claim]}]})).unwrap();
+            store
+                .topic_submit(
+                    "update-test",
+                    prepared["job_id"].as_str().unwrap(),
+                    prepared["lease_token"].as_str().unwrap(),
+                    proposal,
+                )
+                .unwrap();
+        }
+        rusqlite::Connection::open(store.path()).unwrap().execute(
+            "INSERT INTO learning_runs(run_id,run_key,scope,status,created_at_ms,snapshot_hash,snapshot_json) VALUES('fixture-run','fixture-key','update-test','failed',1,'fixture','private snapshot sentinel')", []).unwrap();
+    }
+
     #[test]
-    fn skill_failure_after_switch_restores_the_prior_pointer() {
+    fn all_learning_leases_block_preflight_and_recovery_without_clobbering_jobs() {
+        for (table, key, leased_status) in LEARNING_JOB_TABLES {
+            let (fixture, path, journal) = dead_interrupted_fixture();
+            seed_review_jobs(&fixture);
+            let database = fixture.context.home.join("state/moon.sqlite");
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            match *table {
+                "source_learning_jobs" => {
+                    crate::Store::open(&database, 64)
+                        .unwrap()
+                        .source_learning_prepare(&crate::source_learning::SourcePrepareRequest {
+                            scope: "update-test".into(),
+                            key: Some("pending".into()),
+                            max_bytes: 65536,
+                            lease_ms: 60000,
+                            preview: false,
+                        })
+                        .unwrap();
+                }
+                "topic_jobs" => {
+                    crate::Store::open(&database, 64)
+                        .unwrap()
+                        .topic_prepare(&crate::topics::TopicPrepareRequest {
+                            scope: "update-test".into(),
+                            key: Some("pending".into()),
+                            max_bytes: 65536,
+                            lease_ms: 60000,
+                            preview: false,
+                        })
+                        .unwrap();
+                }
+                _ => {
+                    connection.execute(&format!("UPDATE {table} SET status=?1,lease_until_ms=?2 WHERE {key}=(SELECT {key} FROM {table} ORDER BY {key} LIMIT 1)"), rusqlite::params![leased_status, now+60000]).unwrap();
+                }
+            }
+            let before = learning_snapshot(&database, None).unwrap();
+            let openclaw = MockOpenClaw::default();
+            let error = preflight_update(
+                &fixture.context,
+                &fixture.release,
+                &fixture.archive,
+                &openclaw,
+            )
+            .unwrap_err();
+            assert_eq!(error_code(&error), Some("active_learning_lease"), "{table}");
+            assert!(openclaw.events.lock().unwrap().is_empty());
+            let mut recovering = journal.clone();
+            let error =
+                rollback_update(&fixture.context, &mut recovering, &path, &openclaw).unwrap_err();
+            assert_eq!(error_code(&error), Some("active_learning_lease"), "{table}");
+            assert_eq!(learning_snapshot(&database, None).unwrap(), before);
+            assert_eq!(
+                fs::canonicalize(fixture.context.home.join("current")).unwrap(),
+                fs::canonicalize(fixture.context.home.join("releases/2.2.0")).unwrap()
+            );
+            connection
+                .execute(
+                    &format!(
+                        "UPDATE {table} SET lease_until_ms=0 WHERE lease_until_ms IS NOT NULL"
+                    ),
+                    [],
+                )
+                .unwrap();
+            ensure_learning_quiescent(&database).unwrap();
+        }
+    }
+
+    #[test]
+    fn updates_and_rollbacks_preserve_pending_review_and_completed_learning_jobs() {
+        for fail_validation in [false, true] {
+            let fixture = transaction_fixture();
+            seed_review_jobs(&fixture);
+            let database = fixture.context.home.join("state/moon.sqlite");
+            let before = learning_snapshot(&database, None).unwrap();
+            assert_eq!(before["source_learning_jobs"].rows.len(), 3);
+            assert_eq!(before["topic_jobs"].rows.len(), 2);
+            let openclaw = MockOpenClaw {
+                validation_failures: Mutex::new(usize::from(fail_validation)),
+                ..MockOpenClaw::default()
+            };
+            let result = apply_update(
+                &fixture.context,
+                &fixture.release,
+                &fixture.archive,
+                &openclaw,
+            );
+            if fail_validation {
+                assert_eq!(error_code(&result.unwrap_err()), Some("rollback_completed"));
+            } else {
+                assert!(result.unwrap().ok);
+            }
+            assert_eq!(learning_snapshot(&database, None).unwrap(), before);
+            let backup = fs::read_dir(fixture.context.home.join("backups"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            assert_eq!(read_learning_snapshot(&backup).unwrap(), before);
+            assert!(
+                !fs::read_to_string(backup.join("learning-jobs.json"))
+                    .unwrap()
+                    .contains("private snapshot sentinel")
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_preserves_learning_completed_after_candidate_restart() {
         let fixture = transaction_fixture();
-        fs::remove_file(&fixture.context.skill_path).unwrap();
-        fs::create_dir(&fixture.context.skill_path).unwrap();
+        seed_review_jobs(&fixture);
+        let database = fixture.context.home.join("state/moon.sqlite");
+        let before = learning_snapshot(&database, None).unwrap();
+        let openclaw = MockOpenClaw {
+            complete_source_on_validate: Some(fixture.context.home.clone()),
+            ..MockOpenClaw::default()
+        };
+        let error = apply_update(
+            &fixture.context,
+            &fixture.release,
+            &fixture.archive,
+            &openclaw,
+        )
+        .unwrap_err();
+        assert_eq!(error_code(&error), Some("rollback_failed"));
+        assert!(error.to_string().contains("operator recovery required"));
+        let after = learning_snapshot(&database, None).unwrap();
+        assert_ne!(after, before);
+        let completed: i64 = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM source_learning_jobs WHERE status='complete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(completed, 2);
+        assert_eq!(
+            fs::canonicalize(fixture.context.home.join("current")).unwrap(),
+            fs::canonicalize(fixture.context.home.join("releases/2.2.0")).unwrap()
+        );
+        assert_eq!(
+            openclaw.events.lock().unwrap().as_slice(),
+            ["stop", "start", "ready", "validate:2.2.0", "stop"]
+        );
+        let path = fs::read_dir(fixture.context.home.join("update/journals"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let mut journal: UpdateJournal = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(journal.candidate_gateway_started && journal.current_switched);
+        journal.pid = i32::MAX as u32;
+        persist_journal(&path, &journal).unwrap();
+        let lock_path = fixture.context.home.join("update/update.lock");
+        let mut lock: LockDocument =
+            serde_json::from_slice(&fs::read(&lock_path).unwrap()).unwrap();
+        lock.pid = i32::MAX as u32;
+        fs::write(lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
+        let error = recover_pending_update(&fixture.context, &MockOpenClaw::default()).unwrap_err();
+        assert_eq!(error_code(&error), Some("rollback_failed"));
+        assert_eq!(learning_snapshot(&database, None).unwrap(), after);
+    }
+
+    #[test]
+    fn restart_checkpoint_includes_tables_absent_from_the_old_schema() {
+        let (fixture, path, mut journal) = dead_interrupted_fixture();
+        let database = fixture.context.home.join("state/moon.sqlite");
+        let backup = journal.backup_path.as_ref().unwrap();
+        let candidate = learning_snapshot(&database, None).unwrap();
+        let mut old = candidate.clone();
+        old.retain(|table, _| table.starts_with("learning_"));
+        fs::write(
+            backup.join("learning-jobs.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        write_new_file(
+            &backup.join("candidate-learning-jobs.json"),
+            &serde_json::to_vec(&candidate).unwrap(),
+            0o600,
+        )
+        .unwrap();
+        // The old schema projection cannot detect work in newly added tables.
+        let mut store = crate::Store::open(&database, 64).unwrap();
+        let input = serde_json::from_value(serde_json::json!({"schema_version":1,"source_key":"new-source","kind":"external_document","content":"New acknowledged candidate work."})).unwrap();
+        store
+            .source_import("update-test", input, None, true)
+            .unwrap();
+        drop(store);
+        verify_learning_jobs(&database, &old).unwrap();
+        journal.candidate_gateway_started = true;
+        persist_journal(&path, &journal).unwrap();
+        let error = rollback_update(
+            &fixture.context,
+            &mut journal,
+            &path,
+            &MockOpenClaw::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error_code(&error),
+            Some("learning_jobs_changed_after_restart")
+        );
+        assert_eq!(
+            learning_snapshot(&database, None).unwrap()["source_learning_jobs"]
+                .rows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn job_checkpoint_accepts_additive_columns_but_rejects_changed_or_missing_jobs() {
+        let fixture = transaction_fixture();
+        seed_review_jobs(&fixture);
+        let database = fixture.context.home.join("state/moon.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        // Exercise the actual schema-12 -> 13 projection using existing rows.
+        connection.execute_batch("ALTER TABLE source_learning_jobs DROP COLUMN failure_code; ALTER TABLE topic_jobs DROP COLUMN failure_code; PRAGMA user_version=12;").unwrap();
+        let before = learning_snapshot(&database, None).unwrap();
+        crate::Store::open(&database, 64).unwrap();
+        verify_learning_jobs(&database, &before).unwrap();
+        for sql in [
+            "UPDATE source_learning_jobs SET proposals_json='changed proposal' WHERE status='review'",
+            "UPDATE topic_jobs SET result_hash='changed result' WHERE status='review'",
+            "DELETE FROM learning_runs",
+            "DELETE FROM topic_dependencies",
+            "INSERT INTO learning_runs SELECT 'new-run',run_key,scope,status,created_at_ms,completed_at_ms,lease_until_ms,snapshot_hash,snapshot_json,outcome_json FROM learning_runs LIMIT 1",
+        ] {
+            let mutated = transaction_fixture();
+            seed_review_jobs(&mutated);
+            let database = mutated.context.home.join("state/moon.sqlite");
+            let before = learning_snapshot(&database, None).unwrap();
+            rusqlite::Connection::open(&database)
+                .unwrap()
+                .execute_batch(sql)
+                .unwrap();
+            let error = verify_learning_jobs(&database, &before).unwrap_err();
+            assert_eq!(error_code(&error), Some("learning_jobs_changed"));
+        }
+    }
+
+    #[test]
+    fn whole_skill_rollback_preserves_unrelated_edits_and_handles_missing_directory() {
+        for missing_directory in [false, true] {
+            let (fixture, _, _) = dead_interrupted_fixture();
+            let root = fixture.context.skill_path.parent().unwrap();
+            let retained = root.with_file_name("interrupted-previous");
+            if missing_directory {
+                fs::rename(root, &retained).unwrap();
+            } else {
+                fs::write(root.join("local-notes.txt"), "edited user note").unwrap();
+                fs::write(root.join("new-local-note.txt"), "new user note").unwrap();
+            }
+            recover_pending_update(&fixture.context, &MockOpenClaw::default()).unwrap();
+            assert_eq!(
+                fs::read_to_string(root.join("docs/workflow.md")).unwrap(),
+                "old workflow"
+            );
+            assert!(!root.join("docs/source-learning.md").exists());
+            assert_eq!(
+                fs::read_to_string(root.join("local-notes.txt")).unwrap(),
+                if missing_directory {
+                    "original user note"
+                } else {
+                    "edited user note"
+                }
+            );
+            if !missing_directory {
+                assert_eq!(
+                    fs::read_to_string(root.join("new-local-note.txt")).unwrap(),
+                    "new user note"
+                );
+            } else {
+                assert!(retained.is_dir());
+            }
+        }
+    }
+
+    #[test]
+    fn rollback_refuses_changed_managed_docs_without_overwriting_them() {
+        let (fixture, _, _) = dead_interrupted_fixture();
+        let document = fixture
+            .context
+            .skill_path
+            .parent()
+            .unwrap()
+            .join("docs/workflow.md");
+        fs::write(&document, "user edit after update").unwrap();
+        let error = recover_pending_update(&fixture.context, &MockOpenClaw::default()).unwrap_err();
+        assert_eq!(error_code(&error), Some("rollback_failed"));
+        assert_eq!(
+            fs::read_to_string(document).unwrap(),
+            "user edit after update"
+        );
+        assert_eq!(
+            fs::canonicalize(fixture.context.home.join("current")).unwrap(),
+            fs::canonicalize(fixture.context.home.join("releases/2.2.0")).unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_file_only_skill_backup_remains_recoverable() {
+        let (fixture, _, journal) = dead_interrupted_fixture();
+        let backup = journal.backup_path.unwrap();
+        fs::remove_file(backup.join("skill-layout.json")).unwrap();
+        fs::remove_dir_all(backup.join("files/skill/docs")).unwrap();
+        recover_pending_update(&fixture.context, &MockOpenClaw::default()).unwrap();
+        assert!(
+            fs::read_to_string(&fixture.context.skill_path)
+                .unwrap()
+                .contains("2.1.0")
+        );
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .context
+                    .skill_path
+                    .parent()
+                    .unwrap()
+                    .join("docs/workflow.md")
+            )
+            .unwrap(),
+            "new workflow"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_symlinks_and_unsafe_rollback_paths_are_rejected() {
+        let fixture = transaction_fixture();
+        let root = fixture.context.skill_path.parent().unwrap();
+        let outside = fixture._root.path().join("outside-note");
+        fs::write(&outside, "outside sentinel").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("docs/unsafe.md")).unwrap();
+        assert!(validate_skill_location(&fixture.context.skill_path).is_err());
+        assert_eq!(fs::read_to_string(outside).unwrap(), "outside sentinel");
+        let (fixture, _, journal) = dead_interrupted_fixture();
+        let backup = journal.backup_path.unwrap();
+        let mut layout = read_skill_layout(&backup).unwrap().unwrap();
+        layout.managed_paths.insert("../../outside".into());
+        write_skill_layout(&backup, &layout).unwrap();
+        assert!(
+            read_skill_layout(&backup)
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe")
+        );
+        assert!(recover_pending_update(&fixture.context, &MockOpenClaw::default()).is_err());
+    }
+
+    #[test]
+    fn skill_merge_rejects_case_ambiguous_files_and_directories() {
+        for existing in ["docs/Workflow.md", "Docs/local.md"] {
+            let prior = BTreeMap::from([(existing.into(), "prior".into())]);
+            let candidate = BTreeMap::from([("docs/workflow.md".into(), "candidate".into())]);
+            assert!(ensure_skill_case_compatible(&prior, &candidate).is_err());
+        }
+        let prior = BTreeMap::from([("docs/local.md".into(), "prior".into())]);
+        let candidate = BTreeMap::from([("docs/workflow.md".into(), "candidate".into())]);
+        ensure_skill_case_compatible(&prior, &candidate).unwrap();
+
+        let fixture = transaction_fixture();
+        let root = fixture.context.skill_path.parent().unwrap();
+        fs::remove_file(root.join("docs/workflow.md")).unwrap();
+        fs::rename(root.join("docs"), root.join("Docs")).unwrap();
+        let before = checked_skill_hashes(root).unwrap();
         let error = apply_update(
             &fixture.context,
             &fixture.release,
@@ -4035,10 +5209,27 @@ done
         )
         .unwrap_err();
         assert_eq!(error_code(&error), Some("rollback_completed"));
-        assert_eq!(
-            fs::canonicalize(fixture.context.home.join("current")).unwrap(),
-            fs::canonicalize(fixture.context.home.join("releases/2.1.0")).unwrap()
-        );
+        assert_eq!(checked_skill_hashes(root).unwrap(), before);
+        assert!(root.join("Docs").is_dir());
+    }
+
+    #[test]
+    fn invalid_skill_is_rejected_before_switching_or_stopping_gateway() {
+        let fixture = transaction_fixture();
+        fs::remove_file(&fixture.context.skill_path).unwrap();
+        fs::create_dir(&fixture.context.skill_path).unwrap();
+        let openclaw = MockOpenClaw::default();
+        let error = apply_update(
+            &fixture.context,
+            &fixture.release,
+            &fixture.archive,
+            &openclaw,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no SKILL.md"));
+        assert!(!fixture.context.home.join("current").exists());
+        assert!(!fixture.context.home.join("update/update.lock").exists());
+        assert!(openclaw.events.lock().unwrap().is_empty());
         assert!(healthy_runtime(&fixture.context).unwrap().ok);
     }
 

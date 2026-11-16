@@ -75,6 +75,36 @@ pub struct LearningMetadata {
     pub model: String,
     pub reasoning: String,
     pub prompt_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ModelExecution>,
+}
+
+/// Requested settings and host observations are deliberately separate. Missing
+/// host metadata is unknown; it is never filled from the request as evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelExecution {
+    pub requested: RequestedModel,
+    pub observed: ObservedModel,
+    pub identity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestedModel {
+    pub provider: String,
+    pub model: String,
+    pub reasoning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedModel {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub backend: Option<String>,
+    pub reasoning: Option<String>,
+    pub fallback_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -843,6 +873,46 @@ fn validate_metadata(metadata: &LearningMetadata) -> Result<()> {
         || !metadata.prompt_hash.bytes().all(|b| b.is_ascii_hexdigit())
     {
         anyhow::bail!("invalid reasoning or prompt hash metadata");
+    }
+    if let Some(execution) = &metadata.execution {
+        validate_identifier(&execution.requested.provider, "requested provider", 64)?;
+        validate_identifier(&execution.requested.model, "requested model", 128)?;
+        let expected = format!(
+            "{}/{}",
+            execution.requested.provider, execution.requested.model
+        );
+        let observed = &execution.observed;
+        let identity = match (observed.provider.is_some(), observed.model.is_some()) {
+            (true, true) => "verified",
+            (false, false) => "unknown",
+            _ => "partial",
+        };
+        if expected != metadata.model
+            || execution.requested.provider.contains('/')
+            || execution.requested.reasoning != metadata.reasoning
+            || execution.identity != identity
+            || observed
+                .provider
+                .as_ref()
+                .is_some_and(|v| v != &execution.requested.provider)
+            || observed
+                .model
+                .as_ref()
+                .is_some_and(|v| v != &execution.requested.model)
+            || observed.fallback_attempts.is_some_and(|v| v != 0)
+            || observed
+                .backend
+                .as_deref()
+                .is_some_and(|v| !matches!(v, "openclaw" | "codex" | "claude"))
+            || observed.reasoning.as_deref().is_some_and(|v| {
+                !matches!(
+                    v,
+                    "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                )
+            })
+        {
+            anyhow::bail!("invalid model execution metadata");
+        }
     }
     Ok(())
 }

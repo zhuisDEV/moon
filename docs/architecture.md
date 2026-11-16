@@ -1,5 +1,10 @@
 # Moon architecture
 
+User setup is in [Getting started](getting-started.md); existing installations
+should follow [Updating](updating.md). Moon 2.7.0 produces schema 13. This page
+describes the engineering contracts; historical benchmarks are documented
+separately in [Performance](performance.md).
+
 Moon was built as a greenfield, self-contained memory engine and became the
 active Moon runtime on 2026-07-28. It does not share a writable database or
 process with the retired legacy implementation.
@@ -15,6 +20,13 @@ process with the retired legacy implementation.
 - Imported durable Markdown uses the `legacy-memory` source kind; canonical
   structured claims use `memory` and own a `memory_items` lifecycle row.
 - Markdown memory views are exports, not a second writable source of truth.
+
+Explicit source captures have immutable revisions and separate lifecycle rows.
+An eligible capture atomically queues source extraction; it never becomes a
+completed-session evidence record. Schema 10 stores leased jobs, pending review,
+accepted verbatim statements and typed source support in the same database.
+Accepted statements use the reserved `source_claim` document kind for indexes
+and remain attributed references, separate from personal canonical memories.
 
 ## Memory lifecycle
 
@@ -65,7 +77,72 @@ Use [memory-improvement-plan.md](memory-improvement-plan.md) to evaluate recall,
 correction, redundancy, packet density, and long-window behavior before changing
 these contracts.
 
+## Source learning lifecycle
+
+The CLI exposes bounded prepare, submit, inspect and accept/reject operations.
+The optional OpenClaw `moon_source_learn` tool invokes the configured L1 route
+for one explicitly requested eligible source and submits proposals only. Host
+owner and current-invocation checks apply before reads, model attempts, writes
+and disclosure. Source text remains untrusted input. A model cannot grant its
+own learning permission or accept its output.
+
+Each proposed statement is a verbatim retained quote. Rust verifies exact UTF-8
+ranges; an operator reviews its surrounding meaning before acceptance. Each
+independent support covers the whole unchanged statement. Matching statements
+can share supports without turning duplicate sources into confidence or truth.
+Author statements, attributed user statements and generated statements remain
+distinct. Reviewed topics consume these accepted statements and current topic
+revisions under the separate [topic contract](topics.md); logical combinations
+of partial support never become verbatim source claims.
+
+Jobs use bounded attempts, retry delays and expiring leases with a new token per
+attempt. Snapshot revision and lifecycle generation are rechecked
+transactionally before submission and acceptance. Acceptance commits statements,
+citations, indexes and job completion together. A lost worker leaves recoverable
+queued or leased work; source changes cancel obsolete attempts and reviews.
+
+Withdrawal invalidates source support immediately. Claims without remaining
+support leave recall and embedding work in the same transaction; authoritative
+support and expiry views also gate reads and embedding callbacks. Restoration is
+an explicit generation-checked operation and can revive previously accepted,
+still-current support. Lifecycle history retains reasons until explicit
+deletion. Deletion previews fingerprint affected sources, statements, supports,
+jobs and history; applying a stale plan fails. Independently supported
+statements survive, including expired historical statements. Deleted content is
+purged logically while a tombstone prevents accidental reimport. See
+[source storage](source-storage.md) for the command contract and limits.
+
 ## Retrieval
+
+Fresh reviewed topics use a bounded share of context: at most two topics, one
+third of available reference slots and one quarter of the character budget.
+Their compact Markdown renders complete typed statements and numbered exact
+source-key/revision/byte pointers, deduplicating shared pointers across blocks.
+Full premise quotations, provenance and input IDs remain in typed context JSON
+and topic inspection. A topic that cannot fit is omitted whole; qualifications
+are never trimmed. Ordinary evidence is retrieved separately so topic matches
+cannot exhaust its candidate list.
+
+Reference selection scores bounded candidates against meaningful query clauses,
+with local inverse-document-frequency weighting to discount common project names
+and boilerplate. Each clause must meet a lexical coverage floor; clauses are
+balanced so a long Chinese clause cannot suppress a short English qualifier. The
+exact normalised scope can establish its own collection name; another named
+subject in an admitting query clause must occur in the evidence/title. Named
+comparison fragments also require a second global topical match. This reference
+matcher does not change personal-memory recall or correction matching. These
+scores are ranking heuristics, not truth/confidence.
+
+At most two strongly matched topics can contribute at most sixteen exact source
+premises each. Every lookup rechecks the fresh topic and the same-scope valid
+source revision, range and full statement. Selected original evidence is packed
+before explanations; a topic can use remaining capacity or replace identical
+factual evidence, but cannot shorten a selected source statement. Accepted
+source claims are returned complete or omitted, even when a search matched a
+later chunk. Identical source quotations are rendered once with all citation
+metadata retained. Raw document excerpts and personal-memory citations retain
+their existing bounded-excerpt behaviour. See the
+[four-budget comparison](packet-selection.md) for measurements and limitations.
 
 Lexical and vector retrieval produce independent ranked lists. Hybrid search
 combines them with reciprocal-rank fusion, which avoids treating incomparable
@@ -85,9 +162,18 @@ paraphrases and synonyms.
 
 ## Durability
 
-The database uses WAL mode, foreign keys, bounded busy waits, transactional
-document replacement, content hashes, and numbered schema migrations. A model or
-dimensionality change requires an explicit re-embedding migration.
+The database uses WAL mode with `synchronous=FULL` on every writable connection,
+foreign keys, bounded busy waits, transactional document replacement, content
+hashes, and numbered schema migrations. Backup destination connections also set
+`FULL` explicitly. The setting is connection-local and is reapplied on every
+writer open; inspecting it through a separate connection does not measure the
+writer's policy. A model or dimensionality change requires an explicit
+re-embedding migration.
+
+`FULL` requests the extra WAL sync at commit before reporting success.
+Durability still depends on the operating system and storage honouring sync
+requests; it does not replace backups or prove recovery from physical hardware
+failure.
 
 Evidence recording and canonical distillation use immediate single transactions.
 Every changed canonical claim receives a new immutable revision identity. Schema

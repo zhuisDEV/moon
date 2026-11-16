@@ -130,6 +130,209 @@ Deno.test("fallback recomputes the output hint for its own provider", async () =
   equal(runs.map((run) => run.streamParams), [undefined, { maxTokens: 4096 }]);
 });
 
+Deno.test("model execution distinguishes requested settings from returned identity", async () => {
+  for (const backend of ["openclaw", "codex", "claude"]) {
+    const api = apiFor(() => ({
+      meta: {
+        agentMeta: {
+          provider: "OpenAI",
+          model: "OPENAI/gpt-6-astra",
+          agentHarnessId: backend,
+          fallbackAttempts: [],
+          // Neither field is in the current host's server-effort contract.
+          thinkLevel: "low",
+          reasoningEffort: "low",
+          credentialSource: { token: "PRIVATE_METADATA_SECRET" },
+        },
+      },
+      payloads: [{ text: "READY" }],
+    }));
+    const result = await modelRun(api);
+    equal(result.execution, {
+      requested: { provider: "openai", model: "gpt-6-astra", reasoning: "low" },
+      observed: {
+        provider: "openai",
+        model: "gpt-6-astra",
+        backend,
+        reasoning: null,
+        fallback_attempts: 0,
+      },
+      identity: "verified",
+    });
+    equal(JSON.stringify(result).includes("PRIVATE_METADATA_SECRET"), false);
+  }
+});
+
+Deno.test("missing host observations stay unknown rather than claiming successful settings", async () => {
+  for (
+    const [meta, identity, provider, model] of [
+      [{}, "unknown", null, null],
+      [{ provider: "openai" }, "partial", "openai", null],
+      [{ model: "gpt-6-astra" }, "partial", null, "gpt-6-astra"],
+    ] as const
+  ) {
+    const result = await modelRun(apiFor(() => ({
+      meta: {
+        agentMeta: { ...meta, agentHarnessId: "PRIVATE_UNKNOWN_BACKEND" },
+      },
+      payloads: [{ text: "READY" }],
+    })));
+    equal(result.execution.identity, identity);
+    equal(result.execution.observed, {
+      provider,
+      model,
+      backend: null,
+      reasoning: null,
+      fallback_attempts: null,
+    });
+  }
+});
+
+Deno.test("confirmed model changes and unexpected host fallback never reach validation or fallback", async () => {
+  const privateValue = "PRIVATE_UNEXPECTED_MODEL_OR_ERROR";
+  for (
+    const agentMeta of [
+      { provider: "other", model: "gpt-6-astra" },
+      { provider: "openai", model: privateValue },
+      { provider: "openai", model: 12 },
+      { provider: "openai", model: "gpt-6-astra", fallbackAttempts: [{}] },
+      { provider: "openai", model: "gpt-6-astra", fallbackUsed: true },
+      { fallbackAttempts: { secret: privateValue } },
+      {
+        provider: "openai",
+        model: "gpt-6-astra",
+        runtimeModelSelection: { provider: "openai", model: privateValue },
+      },
+    ]
+  ) {
+    let runs = 0;
+    let validations = 0;
+    const api = apiFor(() => {
+      runs += 1;
+      return { meta: { agentMeta }, payloads: [{ text: "UNREVIEWED" }] };
+    });
+    const settings = {
+      ...__moonTest.resolveSettings(api),
+      primaryModel: "openai/gpt-6-astra",
+      fallbackModel: "vllm/local",
+    };
+    let caught: unknown;
+    try {
+      await __moonTest.runModelWithFallback(api, settings, "READY", {
+        validateOutput() {
+          validations += 1;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    equal(__moonTest.failureDiagnostic(caught), {
+      phase: "model",
+      code: "model_route_mismatch",
+      dispatch: "completed",
+    });
+    equal(runs, 1);
+    equal(validations, 0);
+    equal(String(caught).includes(privateValue), false);
+  }
+});
+
+Deno.test("known runtime admission failures are safe, terminal, and do not claim dispatch knowledge", async () => {
+  const privateValue = "PRIVATE_AUTH_OR_PROVIDER_BODY";
+  for (
+    const [error, code] of [
+      [
+        Object.assign(new Error(privateValue), {
+          code: "AUTH_PROFILE_INCOMPATIBLE",
+        }),
+        "authentication_failed",
+      ],
+      [
+        Object.assign(new Error(privateValue), { name: "ProviderAuthError" }),
+        "authentication_failed",
+      ],
+      [
+        new Error(
+          `Auth profile "${privateValue}" uses oauth auth, but openai/openai-responses requires an OpenAI API key profile.`,
+        ),
+        "authentication_failed",
+      ],
+      [
+        Object.assign(new Error(privateValue), {
+          name: "AgentHarnessPreflightError",
+        }),
+        "runtime_setup_failed",
+      ],
+      [
+        new Error(
+          "Plugin embedded-agent execution requires an active plugin runtime scope.",
+        ),
+        "runtime_setup_failed",
+      ],
+      [
+        Object.assign(new Error(privateValue), { code: "MODEL_NOT_FOUND" }),
+        "model_unavailable",
+      ],
+    ] as const
+  ) {
+    let runs = 0;
+    const api = apiFor(() => {
+      runs += 1;
+      throw error;
+    });
+    let caught: unknown;
+    try {
+      await __moonTest.runModelWithFallback(api, {
+        ...__moonTest.resolveSettings(api),
+        fallbackModel: "vllm/local",
+      }, "READY");
+    } catch (failure) {
+      caught = failure;
+    }
+    equal(runs, 1);
+    equal(__moonTest.failureDiagnostic(caught), {
+      phase: "model",
+      code,
+      dispatch: "unknown",
+    });
+    equal(String(caught).includes(privateValue), false);
+  }
+});
+
+Deno.test("malformed identity and rerouted timeout metadata cannot trigger fallback", async () => {
+  for (
+    const meta of [
+      { agentMeta: "PRIVATE_INVALID_METADATA" },
+      {
+        agentMeta: { provider: "openai", model: "unexpected-model" },
+        timeoutPhase: "provider",
+      },
+      {
+        agentMeta: { fallbackAttempts: [{}] },
+        error: { code: "ETIMEDOUT", message: "PRIVATE_REMOTE_BODY" },
+      },
+    ]
+  ) {
+    let runs = 0;
+    const api = apiFor(() => {
+      runs += 1;
+      return { meta, payloads: [{ text: "partial" }] };
+    });
+    let caught: unknown;
+    try {
+      await __moonTest.runModelWithFallback(api, {
+        ...__moonTest.resolveSettings(api),
+        fallbackModel: "vllm/local",
+      }, "READY");
+    } catch (failure) {
+      caught = failure;
+    }
+    equal(runs, 1);
+    equal(__moonTest.failureDiagnostic(caught).code, "model_route_mismatch");
+    equal(String(caught).includes("PRIVATE_"), false);
+  }
+});
+
 function acceptedTurn() {
   const admission = {
     agentId: "main",

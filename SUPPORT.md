@@ -1,5 +1,9 @@
 # Support
 
+Start with [Getting started](docs/getting-started.md), the
+[upgrade checklist](docs/updating.md#upgrade-checklist), or the
+[skill refresh instructions](docs/updating.md#refresh-the-agent-skill).
+
 ## Where to get help
 
 1. Usage questions and troubleshooting:
@@ -16,7 +20,7 @@
 1. Moon version (`moon --version`) and `moon --json health` output.
 2. OS + architecture.
 3. Command you ran.
-4. Exact error output.
+4. Moon's fixed error code and redacted diagnostic output.
 5. Minimal reproducible steps.
 
 For learning or automatic recall problems, also include the OpenClaw version,
@@ -28,6 +32,12 @@ authenticate, and an old injection metric does not prove current native recall.
 Do not post credentials, private memory, evidence transcripts, or unredacted
 configuration. See the
 [native recall canary](docs/openclaw-canary.md#native-recall-compatibility).
+
+For 2.7.0 upgrades, include schema version, the installed skill's `moon-version`
+marker and whether the signed bridge update completed. Source/topic issues need
+job state and fixed failure code, not the source body or raw model response.
+Unknown observed reasoning effort is a host metadata limitation, not proof of
+the wrong model. Preserve failed update journals and rollback bundles privately.
 
 ## Response expectations
 

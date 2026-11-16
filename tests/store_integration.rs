@@ -1646,10 +1646,10 @@ fn schema_four_migrates_transactionally_to_auto_embedding_schema() {
     let database = temp.path().join("moon.sqlite");
     create_v4_database(&database);
 
-    let store = Store::open(&database, 64).expect("migrate to v7");
+    let store = Store::open(&database, 64).expect("migrate to current schema");
     let health = store.health().expect("health");
     assert!(health.ok);
-    assert_eq!(health.schema_version, 8);
+    assert_eq!(health.schema_version, 13);
     let columns = rusqlite::Connection::open(database)
         .expect("inspect")
         .prepare("PRAGMA table_info(embedding_queue)")

@@ -712,6 +712,12 @@ Deno.test("plugin manifest is a strict context-engine manifest", async () => {
   );
   assertEquals(manifest.id, "moon");
   assertEquals(manifest.kind, "context-engine");
+  assertEquals(manifest.contracts.tools, [
+    "moon_source_learn",
+    "moon_topic_compile",
+  ]);
+  assertEquals(manifest.toolMetadata.moon_source_learn.optional, true);
+  assertEquals(manifest.toolMetadata.moon_topic_compile.optional, true);
   assertEquals(manifest.configSchema.additionalProperties, false);
   assert(!("apiKeyEnv" in manifest.configSchema.properties));
   assert(!("endpoint" in manifest.configSchema.properties));
@@ -3400,6 +3406,21 @@ Deno.test("daily L2 skips committed batches and sends xhigh with a fixed evidenc
   );
   assertEquals(payload.metadata.model, "openai/gpt-6-astra");
   assertEquals(payload.metadata.reasoning, "xhigh");
+  assertEquals(payload.metadata.execution, {
+    requested: {
+      provider: "openai",
+      model: "gpt-6-astra",
+      reasoning: "xhigh",
+    },
+    observed: {
+      provider: null,
+      model: null,
+      backend: null,
+      reasoning: null,
+      fallback_attempts: null,
+    },
+    identity: "unknown",
+  });
   assert(/^[a-f0-9]{64}$/.test(payload.metadata.prompt_hash));
   assert(!("prompt" in payload.metadata));
 });

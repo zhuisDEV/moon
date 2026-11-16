@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 13;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -62,9 +62,11 @@ impl Store {
             .with_context(|| format!("failed to open {}", path.display()))?;
         set_private_file(&path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
+        // Canonical evidence must be durable when a commit is acknowledged.
+        // This setting is connection-local, so apply it on every writer open.
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
-             PRAGMA synchronous = NORMAL;
+             PRAGMA synchronous = FULL;
              PRAGMA temp_store = MEMORY;
              PRAGMA wal_autocheckpoint = 1000;
              PRAGMA mmap_size = 268435456;",
@@ -169,7 +171,9 @@ impl Store {
             }
             return Ok(());
         }
-        let transaction = self.connection.transaction()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing_version =
             transaction.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?;
         if existing_version > SCHEMA_VERSION {
@@ -230,6 +234,56 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0008_learning_lifecycle.sql"))?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(8, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 9 {
+            transaction.execute_batch(include_str!("../migrations/0009_source_storage.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(9, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 10 {
+            transaction.execute_batch(include_str!("../migrations/0010_source_learning.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(10, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 11 {
+            let reserved_collision: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents
+                 WHERE lower(source_kind)='topic_summary' OR lower(source_uri) LIKE 'moon-topic:%')",
+                [], |row| row.get(0),
+            )?;
+            if reserved_collision {
+                anyhow::bail!(
+                    "existing raw documents use the reserved topic namespace; inspect them before migration"
+                );
+            }
+            transaction.execute_batch(include_str!("../migrations/0011_topic_synthesis.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(11, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 12 {
+            transaction.execute_batch(include_str!("../migrations/0012_retrieval_validity.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(12, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 13 {
+            transaction.execute_batch(include_str!("../migrations/0013_job_diagnostics.sql"))?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(13, ?1)",
                 [now_ms()],
             )?;
         }
@@ -343,6 +397,23 @@ impl Store {
     }
 
     pub fn ingest(&mut self, document: IngestDocument) -> Result<IngestOutcome> {
+        // Managed claims can only be created by the evidence-backed acceptance
+        // transaction. Raw intake must not overwrite their index documents.
+        if document.source_kind.eq_ignore_ascii_case("source_claim")
+            || document.source_kind.eq_ignore_ascii_case("topic_summary")
+            || document
+                .source_uri
+                .get(.."moon-source-claim:".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("moon-source-claim:"))
+            || document
+                .source_uri
+                .get(.."moon-topic:".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("moon-topic:"))
+        {
+            anyhow::bail!(
+                "managed knowledge must be created through its reviewed acceptance workflow"
+            );
+        }
         let prepared = prepare_ingest(document)?;
         let transaction = self
             .connection
@@ -353,6 +424,13 @@ impl Store {
     }
 
     pub fn remember(&mut self, input: MemoryInput) -> Result<IngestOutcome> {
+        if input.memory_kind.eq_ignore_ascii_case("source_claim")
+            || input.memory_kind.eq_ignore_ascii_case("topic_summary")
+        {
+            anyhow::bail!(
+                "managed knowledge must be created through its reviewed acceptance workflow"
+            );
+        }
         validate_unit_interval("importance", input.importance)?;
         validate_unit_interval("confidence", input.confidence)?;
         let timestamp = now_ms();
@@ -428,6 +506,12 @@ impl Store {
                  JOIN chunks c ON c.id = q.chunk_id
                  JOIN documents d ON d.id = c.document_id
                  WHERE d.active = 1
+                   AND (d.source_kind <> 'source_claim' OR EXISTS (
+                       SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+                   ))
+                   AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                       SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+                   ))
                    AND (q.lease_until_ms IS NULL OR q.lease_until_ms <= ?1)
                    AND (q.next_attempt_at_ms IS NULL OR q.next_attempt_at_ms <= ?1)
                    AND q.attempts < ?2
@@ -603,6 +687,23 @@ impl Store {
         request: &SearchRequest,
         provider: Option<&dyn EmbeddingProvider>,
     ) -> Result<Vec<SearchHit>> {
+        self.search_inner(request, provider, false)
+    }
+
+    pub(crate) fn search_without_topics(
+        &self,
+        request: &SearchRequest,
+        provider: Option<&dyn EmbeddingProvider>,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_inner(request, provider, true)
+    }
+
+    fn search_inner(
+        &self,
+        request: &SearchRequest,
+        provider: Option<&dyn EmbeddingProvider>,
+        exclude_topics: bool,
+    ) -> Result<Vec<SearchHit>> {
         if request.query.trim().is_empty() {
             anyhow::bail!("search query must not be empty");
         }
@@ -611,15 +712,21 @@ impl Store {
         }
         let limit = request.limit.clamp(1, 100);
         match request.mode {
-            SearchMode::Lexical => self.lexical_search(request, limit),
+            SearchMode::Lexical => self.lexical_search(request, limit, exclude_topics),
             SearchMode::Semantic => {
                 let vector = self.embed_query(provider, &request.query)?;
-                self.semantic_search(request, &vector, limit)
+                self.semantic_search(request, &vector, limit, exclude_topics)
             }
             SearchMode::Hybrid => {
-                let lexical = self.lexical_search(request, limit.saturating_mul(4))?;
+                let lexical =
+                    self.lexical_search(request, limit.saturating_mul(4), exclude_topics)?;
                 let vector = self.embed_query(provider, &request.query)?;
-                let semantic = self.semantic_search(request, &vector, limit.saturating_mul(4))?;
+                let semantic = self.semantic_search(
+                    request,
+                    &vector,
+                    limit.saturating_mul(4),
+                    exclude_topics,
+                )?;
                 Ok(fuse_rankings(lexical, semantic, limit))
             }
         }
@@ -662,11 +769,17 @@ impl Store {
         Ok(vector)
     }
 
-    fn lexical_search(&self, request: &SearchRequest, limit: usize) -> Result<Vec<SearchHit>> {
+    fn lexical_search(
+        &self,
+        request: &SearchRequest,
+        limit: usize,
+        exclude_topics: bool,
+    ) -> Result<Vec<SearchHit>> {
         let (strict_query, relaxed_query) = safe_fts_queries(&request.query)?;
-        let hits = self.lexical_search_query(request, limit, &strict_query)?;
+        let hits = self.lexical_search_query(request, limit, &strict_query, exclude_topics)?;
         if hits.is_empty() && relaxed_query != strict_query {
-            let relaxed = self.lexical_search_query(request, limit, &relaxed_query)?;
+            let relaxed =
+                self.lexical_search_query(request, limit, &relaxed_query, exclude_topics)?;
             if !relaxed.is_empty() {
                 return Ok(relaxed);
             }
@@ -684,7 +797,7 @@ impl Store {
         {
             return Ok(Vec::new());
         }
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT d.id, c.id, d.source_uri, d.source_kind, d.scope, d.title, c.content
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
@@ -741,13 +854,20 @@ impl Store {
         request: &SearchRequest,
         limit: usize,
         fts_query: &str,
+        exclude_topics: bool,
     ) -> Result<Vec<SearchHit>> {
-        let mut metadata = self.connection.prepare(
+        let mut metadata = self.connection.prepare_cached(
             "SELECT d.id, c.id, d.source_uri, d.source_kind, d.scope, d.title, c.content
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
              WHERE c.id = ?1
                AND d.active = 1
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))
                AND (
                    NOT EXISTS (
                        SELECT 1 FROM memory_items m
@@ -761,14 +881,15 @@ impl Store {
                    )
                )
                AND (?2 IS NULL OR d.scope = ?2)
-               AND (?3 IS NULL OR d.source_kind = ?3)",
+               AND (?3 IS NULL OR d.source_kind = ?3)
+               AND (?5 = 0 OR d.source_kind <> 'topic_summary')",
         )?;
 
         let mut candidate_limit = limit.saturating_mul(4).clamp(1, 400);
         let mut active_fallback = false;
         loop {
             let ranked_ids = if active_fallback {
-                let mut statement = self.connection.prepare(
+                let mut statement = self.connection.prepare_cached(
                     "SELECT chunk_fts.rowid,
                             bm25(chunk_fts, 4.0, 1.0, 0.0, 0.0) AS lexical_score
                      FROM chunk_fts
@@ -777,6 +898,12 @@ impl Store {
                      LEFT JOIN memory_items m ON m.document_id = d.id
                      WHERE chunk_fts MATCH ?1
                        AND d.active = 1
+                       AND (d.source_kind <> 'source_claim' OR EXISTS (
+                           SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+                       ))
+                       AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                           SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+                       ))
                        AND (
                            m.document_id IS NULL
                            OR (
@@ -786,6 +913,7 @@ impl Store {
                        )
                        AND (?2 IS NULL OR d.scope = ?2)
                        AND (?3 IS NULL OR d.source_kind = ?3)
+                       AND (?6 = 0 OR d.source_kind <> 'topic_summary')
                      ORDER BY lexical_score, chunk_fts.rowid
                      LIMIT ?5",
                 )?;
@@ -797,19 +925,27 @@ impl Store {
                             request.source_kind.as_deref(),
                             now_ms(),
                             limit.saturating_mul(4).clamp(1, 400) as i64,
+                            exclude_topics,
                         ],
                         |row| row.get::<_, i64>(0),
                     )?
                     .collect::<rusqlite::Result<Vec<_>>>()?
             } else {
-                let mut statement = self.connection.prepare(
+                let mut statement = self.connection.prepare_cached(
                     "SELECT chunk_fts.rowid, bm25(chunk_fts, 4.0, 1.0, 0.0, 0.0) AS lexical_score
                      FROM chunk_fts
                      LEFT JOIN chunks c ON c.id = chunk_fts.rowid
                      LEFT JOIN memory_items m ON m.document_id = c.document_id
                      WHERE chunk_fts MATCH ?1
+                       AND (chunk_fts.source_kind <> 'source_claim' OR EXISTS (
+                           SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = c.document_id
+                       ))
+                       AND (chunk_fts.source_kind <> 'topic_summary' OR EXISTS (
+                           SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = c.document_id
+                       ))
                        AND (?2 IS NULL OR chunk_fts.scope = ?2)
                        AND (?3 IS NULL OR chunk_fts.source_kind = ?3)
+                       AND (?6 = 0 OR chunk_fts.source_kind <> 'topic_summary')
                        AND (m.document_id IS NULL OR (
                            m.superseded_by IS NULL
                            AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?4)
@@ -825,6 +961,7 @@ impl Store {
                             request.source_kind.as_deref(),
                             now_ms(),
                             candidate_limit as i64,
+                            exclude_topics,
                         ],
                         |row| row.get::<_, i64>(0),
                     )?
@@ -841,6 +978,7 @@ impl Store {
                             request.scope.as_deref(),
                             request.source_kind.as_deref(),
                             now_ms(),
+                            exclude_topics,
                         ],
                         |row| {
                             Ok(SearchHit {
@@ -882,6 +1020,7 @@ impl Store {
         request: &SearchRequest,
         query_vector: &[f32],
         limit: usize,
+        exclude_topics: bool,
     ) -> Result<Vec<SearchHit>> {
         // sqlite-vec applies rowid IN during KNN selection. A post-join expiry
         // filter would let stale cached vectors consume k before fresh hits.
@@ -898,6 +1037,14 @@ impl Store {
                    JOIN documents eligible_document ON eligible_document.id = eligible_chunk.document_id
                    LEFT JOIN memory_items m ON m.document_id = eligible_document.id
                    WHERE eligible_document.active = 1
+                     AND (?4 = 0 OR eligible_document.source_kind <> 'topic_summary')
+                     AND (eligible_document.source_kind <> 'source_claim' OR EXISTS (
+                         SELECT 1 FROM source_valid_claims sc
+                         WHERE sc.document_id = eligible_document.id
+                     ))
+                     AND (eligible_document.source_kind <> 'topic_summary' OR EXISTS (
+                         SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = eligible_document.id
+                     ))
                      AND (m.document_id IS NULL OR (
                          m.superseded_by IS NULL
                          AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?3)
@@ -909,6 +1056,7 @@ impl Store {
             Value::Blob(vector_to_blob(query_vector)),
             Value::Integer(candidate_limit),
             Value::Integer(now_ms()),
+            Value::Integer(i64::from(exclude_topics)),
         ];
         if let Some(scope) = request.scope.as_ref() {
             sql.push_str(&format!(" AND v.scope = ?{}", values.len() + 1));
@@ -920,7 +1068,7 @@ impl Store {
         }
         sql.push_str(" ORDER BY v.distance, c.id");
 
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let rows = statement.query_map(params_from_iter(values), |row| {
             let distance = row.get::<_, f64>(7)?;
             Ok(SearchHit {
@@ -946,6 +1094,18 @@ impl Store {
     }
 
     pub fn health(&self) -> Result<HealthReport> {
+        // Diagnose one committed snapshot with fresh virtual-table state. A
+        // long-lived FTS5 handle can otherwise report a stale checksum after a
+        // different connection commits, even though a fresh integrity check
+        // passes. Keep every logical check in this same read transaction too.
+        let reader = Self::open_existing(&self.path, self.embedding_dimensions)?;
+        reader.connection.execute_batch("BEGIN")?;
+        let result = reader.health_snapshot();
+        reader.connection.execute_batch("ROLLBACK")?;
+        result
+    }
+
+    fn health_snapshot(&self) -> Result<HealthReport> {
         let integrity = self
             .connection
             .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
@@ -1055,6 +1215,12 @@ impl Store {
              LEFT JOIN memory_items m ON m.document_id = d.id
              LEFT JOIN chunk_fts ON chunk_fts.rowid = c.id
              WHERE d.active = 1
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))
                AND (
                    m.document_id IS NULL
                    OR (
@@ -1126,11 +1292,15 @@ impl Store {
             + invalid_aliases
             + invalid_learning_ledger;
         let citation_violations = invalid_citations;
+        let source_violations = self.source_integrity_violations()?
+            + self.source_learning_integrity_violations()?
+            + self.topic_integrity_violations()?;
         let logical_violations = memory_violations
             + citation_violations
             + fts_violations
             + vector_violations
-            + queue_violations;
+            + queue_violations
+            + source_violations;
         let leased_embeddings = self.connection.query_row(
             "SELECT count(*) FROM embedding_queue WHERE lease_until_ms > ?1",
             [now],
@@ -1182,7 +1352,13 @@ impl Store {
             "SELECT count(*)
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
-             WHERE d.active = 1 AND d.source_kind NOT IN ('memory', 'evidence')",
+             WHERE d.active = 1 AND d.source_kind NOT IN ('memory', 'evidence')
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))",
             [],
             |row| row.get::<_, i64>(0),
         )? as usize;
@@ -1191,7 +1367,13 @@ impl Store {
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
              JOIN chunk_vectors v ON v.rowid = c.id
-             WHERE d.active = 1 AND d.source_kind NOT IN ('memory', 'evidence')",
+             WHERE d.active = 1 AND d.source_kind NOT IN ('memory', 'evidence')
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))",
             [],
             |row| row.get::<_, i64>(0),
         )? as usize;
@@ -1239,6 +1421,9 @@ impl Store {
                 |row| row.get::<_, i64>(0),
             )? as usize,
             citations: self.count("memory_citations")?,
+            sources: self.count("sources")?,
+            source_revisions: self.count("source_revisions")?,
+            source_violations,
             foreign_key_violations,
             memory_violations,
             citation_violations,
@@ -1263,6 +1448,7 @@ impl Store {
         let mut destination_connection = Connection::open(destination)
             .with_context(|| format!("failed to create backup {}", destination.display()))?;
         set_private_file(destination)?;
+        destination_connection.pragma_update(None, "synchronous", "FULL")?;
         let backup = Backup::new(&self.connection, &mut destination_connection)?;
         backup.run_to_completion(128, Duration::from_millis(10), None)?;
         set_private_file(destination)?;
@@ -1277,6 +1463,12 @@ impl Store {
              SELECT c.id, d.title, c.content, d.source_uri, d.scope, d.source_kind
              FROM chunks c JOIN documents d ON d.id = c.document_id
              WHERE d.active = 1
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))
                AND (
                    NOT EXISTS (
                        SELECT 1 FROM memory_items m
@@ -1324,6 +1516,12 @@ impl Store {
              JOIN documents d ON d.id = c.document_id
              WHERE d.active = 1
                AND d.source_kind <> 'evidence'
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))
                AND (
                    NOT EXISTS (
                        SELECT 1 FROM memory_items m
@@ -1367,6 +1565,7 @@ impl Store {
              FROM memory_items m
              JOIN documents d ON d.id = m.document_id
              WHERE d.active = 1
+               AND d.source_kind NOT IN ('source_claim', 'topic_summary')
                AND m.superseded_by IS NULL
                AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?1)
              ORDER BY m.pinned DESC, m.importance DESC, d.modified_at_ms DESC, d.id",
@@ -1437,6 +1636,8 @@ impl Store {
             "evidence_sessions",
             "memory_items WHERE superseded_by IS NULL",
             "memory_citations",
+            "sources",
+            "source_revisions",
         ];
         if !allowed.contains(&from_clause) {
             anyhow::bail!("unsupported count target");
@@ -1635,6 +1836,12 @@ fn prune_inactive_embedding_jobs(transaction: &Transaction<'_>, at_ms: i64) -> R
              LEFT JOIN memory_items m ON m.document_id = d.id
              WHERE d.active <> 1 OR m.superseded_by IS NOT NULL
                 OR (m.valid_until_ms IS NOT NULL AND m.valid_until_ms <= ?1)
+                OR (d.source_kind = 'source_claim' AND NOT EXISTS (
+                    SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+                ))
+                OR (d.source_kind = 'topic_summary' AND NOT EXISTS (
+                    SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+                ))
          )",
         [at_ms],
     )?;
@@ -1867,7 +2074,47 @@ pub(crate) fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_fts_queries;
+    use super::{Store, safe_fts_queries};
+
+    #[test]
+    fn full_sync_applies_to_each_actual_writer_connection() {
+        let home = tempfile::tempdir().expect("temporary Moon home");
+        let path = home.path().join("state/moon.sqlite");
+        let assert_durability = |store: &Store| {
+            // A separately opened inspection connection has its own synchronous
+            // value and would not detect a regression in Moon's write policy.
+            let sync: i64 = store
+                .connection
+                .pragma_query_value(None, "synchronous", |row| row.get(0))
+                .expect("writer synchronous setting");
+            let journal: String = store
+                .connection
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .expect("writer journal setting");
+            assert_eq!(sync, 2, "FULL must apply on the actual writer");
+            assert_eq!(journal, "wal");
+        };
+
+        let first = Store::open(&path, 64).expect("new database");
+        assert_durability(&first);
+        first
+            .set_state("durability-test", &serde_json::json!({"committed": true}))
+            .expect("commit runtime state");
+        assert_durability(&first);
+
+        let second = Store::open(&path, 64).expect("second writer");
+        assert_durability(&second);
+        assert_eq!(
+            second.get_state("durability-test").unwrap(),
+            Some(serde_json::json!({"committed": true}))
+        );
+        drop(second);
+        drop(first);
+
+        let reopened = Store::open(&path, 64).expect("reopened writer");
+        assert_durability(&reopened);
+        assert!(reopened.health().expect("health").ok);
+    }
 
     #[test]
     fn fts_query_does_not_pass_operators_through() {

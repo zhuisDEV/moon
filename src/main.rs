@@ -55,6 +55,10 @@ enum Command {
     DistillBatch(DistillBatchArgs),
     /// Prepare, validate and commit durable daily memory reconciliation.
     Learning(LearningArgs),
+    /// Capture and inspect immutable, scoped source revisions as JSON.
+    Source(SourceArgs),
+    /// Compile and review scoped topics with explicit source dependencies.
+    Topic(TopicArgs),
     /// Assemble a bounded, cited memory packet for an agent turn.
     Context(ContextArgs),
     /// Incrementally index a file or directory.
@@ -103,6 +107,348 @@ enum ConfigCommand {
     Validate,
     /// Create a starter moon.toml; never replace an existing file.
     Init,
+}
+
+#[derive(Debug, Args)]
+struct SourceArgs {
+    #[command(subcommand)]
+    command: SourceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SourceCommand {
+    /// Capture sanitised UTF-8 text; never fetch an origin or interpret body instructions.
+    Import {
+        #[arg(long)]
+        scope: String,
+        /// Version-1 JSON from a regular file or stdin (-).
+        #[arg(long, default_value = "-")]
+        input: PathBuf,
+        /// Required when changing an existing source; protects against stale writes.
+        #[arg(long)]
+        expected_revision: Option<String>,
+        /// Queue explicit source learning; does not call a model or approve claims.
+        #[arg(long)]
+        allow_learning: bool,
+    },
+    /// Read the current or one retained revision, including its sanitised body.
+    Get {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// List current source summaries within one exact scope.
+    List {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        after_key: Option<String>,
+    },
+    /// List retained revisions, newest first, without their bodies.
+    History {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        before_revision: Option<i64>,
+    },
+    /// Resolve an exact UTF-8 byte range against a retained sanitised revision.
+    Cite {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        revision: String,
+        /// Inclusive zero-based byte offset.
+        #[arg(long)]
+        start_byte: usize,
+        /// Exclusive zero-based byte offset.
+        #[arg(long)]
+        end_byte: usize,
+    },
+    /// Inspect withdrawal state and the generation used for lifecycle changes.
+    State {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+    },
+    /// Stop learning and recall support while retaining source history.
+    Withdraw(SourceLifecycleArgs),
+    /// Explicitly restore a withdrawn source without approving new claims.
+    Restore(SourceLifecycleArgs),
+    /// Preview explicit deletion and its affected source-derived records.
+    DeletePreview {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+    },
+    /// Apply one unchanged deletion plan; logical deletion is not secure erasure.
+    DeleteApply {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        expected_plan_hash: String,
+        /// Confirm the reviewed plan outside the untrusted input payload.
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Prepare, submit and review bounded source-derived claim proposals.
+    Learning(SourceLearningArgs),
+    /// Inspect source-derived claims and their exact supporting quotes.
+    Claims(SourceClaimsArgs),
+}
+
+#[derive(Debug, Args)]
+struct SourceLifecycleArgs {
+    #[arg(long)]
+    scope: String,
+    #[arg(long)]
+    key: String,
+    #[arg(long)]
+    expected_revision: String,
+    #[arg(long)]
+    expected_generation: i64,
+    /// A concise nonsecret reason, retained with the lifecycle change.
+    #[arg(long)]
+    reason: String,
+}
+
+#[derive(Debug, Args)]
+struct SourceLearningArgs {
+    #[command(subcommand)]
+    command: SourceLearningCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SourceLearningCommand {
+    /// Lease one bounded source job, or inspect its packet without a lease.
+    Prepare {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value_t = 65_536)]
+        max_bytes: usize,
+        #[arg(long, default_value_t = 300_000)]
+        lease_ms: i64,
+        #[arg(long)]
+        preview: bool,
+    },
+    /// Submit versioned JSON containing only proposed verbatim source quotes.
+    Submit {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, default_value = "-")]
+        input: PathBuf,
+    },
+    /// Approve the exact reviewed result for eligible, current source recall.
+    Accept {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        expected_result_hash: String,
+        /// Confirm the reviewed result outside the untrusted model payload.
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Reject the exact reviewed result and retain a concise reason.
+    Reject {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        expected_result_hash: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Release a failed attempt using a fixed code, never a provider error body.
+    Fail {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, value_parser = moon::job_failure::CODES)]
+        error_code: String,
+    },
+    /// Explicitly retry a recoverable source job.
+    Retry {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+    },
+    /// Inspect bounded job summaries or one result for review.
+    Status {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+}
+
+#[derive(Debug, Args)]
+struct SourceClaimsArgs {
+    #[command(subcommand)]
+    command: SourceClaimsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SourceClaimsCommand {
+    /// List bounded source-claim summaries in one scope.
+    List {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        include_inactive: bool,
+    },
+    /// Inspect one claim and its retained provenance.
+    Get {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        claim_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct TopicArgs {
+    #[command(subcommand)]
+    command: TopicCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TopicCommand {
+    /// Create or revise a topic definition, explicitly selecting accepted inputs.
+    Put {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, default_value = "-")]
+        input: PathBuf,
+        #[arg(long)]
+        expected_generation: Option<i64>,
+    },
+    /// Inspect a topic by key or exact scoped alias, including freshness.
+    Get {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+    },
+    /// List bounded topic summaries in one scope.
+    List {
+        #[arg(long)]
+        scope: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Inspect retained topic revisions and their current support state.
+    History {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Lease a bounded complete compilation snapshot, or preview read-only.
+    Prepare {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value_t = 65_536)]
+        max_bytes: usize,
+        #[arg(long, default_value_t = 300_000)]
+        lease_ms: i64,
+        #[arg(long)]
+        preview: bool,
+    },
+    /// Submit typed proposed statements for separate operator review.
+    Submit {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, default_value = "-")]
+        input: PathBuf,
+    },
+    /// Accept the exact reviewed result if every dependency remains current.
+    Accept {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        expected_result_hash: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Reject an exact reviewed compilation and retain a nonsecret reason.
+    Reject {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        expected_result_hash: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Release a failed compilation using a fixed code.
+    Fail {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, value_parser = moon::job_failure::CODES)]
+        error_code: String,
+    },
+    /// Explicitly retry recoverable topic work.
+    Retry {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: String,
+    },
+    /// Inspect queued work or one proposed result without modifying storage.
+    Status {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        job_id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -477,7 +823,12 @@ struct UpdateArgs {
 }
 
 fn main() {
-    let wants_json = env::args_os().any(|argument| argument == "--json");
+    // Source data and identifiers are untrusted. Even argument failures use a
+    // fixed JSON message so clap cannot echo a supplied secret or control byte.
+    let source_command = env::args_os()
+        .skip(1)
+        .any(|argument| argument == "source" || argument == "topic");
+    let wants_json = source_command || env::args_os().any(|argument| argument == "--json");
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -513,36 +864,49 @@ fn main() {
                 return;
             }
             if wants_json {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "ok": false,
-                        "error": {
-                            "code": "invalid_arguments",
-                            "message": error.to_string(),
-                        }
-                    })
-                );
+                let mut failure = serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "invalid_arguments",
+                        "message": if source_command {
+                            "invalid knowledge command arguments; use moon source --help or moon topic --help".to_string()
+                        } else {
+                            error.to_string()
+                        },
+                    }
+                });
+                if source_command {
+                    failure["schema_version"] = serde_json::json!(1);
+                }
+                eprintln!("{failure}");
             } else {
                 let _ = error.print();
             }
             std::process::exit(error.exit_code());
         }
     };
+    let source_command = matches!(&cli.command, Command::Source(_) | Command::Topic(_));
+    let wants_json = cli.json || source_command;
     if let Err(error) = run(cli) {
-        let safe_message = redact_text(&format!("{error:#}")).value;
+        let safe_message = if source_command && error.downcast_ref::<rusqlite::Error>().is_some() {
+            // A damaged or tampered database can supply arbitrary trigger text.
+            "knowledge storage operation failed".to_string()
+        } else {
+            redact_text(&format!("{error:#}")).value
+        };
         let code = moon::update::error_code(&error).unwrap_or("operation_failed");
         if wants_json {
-            eprintln!(
-                "{}",
-                serde_json::json!({
-                    "ok": false,
-                    "error": {
-                            "code": code,
-                        "message": safe_message,
-                    }
-                })
-            );
+            let mut failure = serde_json::json!({
+                "ok": false,
+                "error": {
+                        "code": code,
+                    "message": safe_message,
+                }
+            });
+            if source_command {
+                failure["schema_version"] = serde_json::json!(1);
+            }
+            eprintln!("{failure}");
         } else {
             eprintln!("moon error: {safe_message}");
         }
@@ -585,6 +949,12 @@ fn run(cli: Cli) -> Result<()> {
         .database
         .clone()
         .unwrap_or_else(|| home.join("state/moon.sqlite"));
+    if let Command::Source(args) = &cli.command {
+        return run_source(&database, cli.dimensions, args);
+    }
+    if let Command::Topic(args) = &cli.command {
+        return run_topic(&database, cli.dimensions, args);
+    }
     if matches!(&cli.command, Command::Health) {
         let store = Store::open_existing(&database, cli.dimensions)?;
         let report = store.health()?;
@@ -1064,7 +1434,322 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Update(_) => unreachable!("update is handled without opening storage for writes"),
         Command::Config(_) => unreachable!("config is handled without opening storage"),
+        Command::Source(_) | Command::Topic(_) => {
+            unreachable!("knowledge commands use their own input and storage boundary")
+        }
     }
+}
+
+fn run_source(database: &Path, dimensions: usize, args: &SourceArgs) -> Result<()> {
+    let outcome = match &args.command {
+        SourceCommand::Import {
+            scope,
+            input,
+            expected_revision,
+            allow_learning,
+        } => {
+            // Read and parse before creating a database. Discard parser causes:
+            // serde errors can include arbitrary submitted field names/values.
+            let payload = read_source_input(input)?;
+            let input =
+                serde_json::from_str::<moon::sources::SourceInput>(&payload).map_err(|_| {
+                    anyhow::anyhow!("source input must match the versioned JSON schema")
+                })?;
+            input.validate(scope, expected_revision.as_deref())?;
+            let mut store = open_source_store(database, dimensions, false)?;
+            store.source_import(scope, input, expected_revision.as_deref(), *allow_learning)?
+        }
+        SourceCommand::Withdraw(lifecycle) | SourceCommand::Restore(lifecycle) => {
+            let mut store = open_source_store(database, dimensions, false)?;
+            store.source_set_withdrawn(
+                &lifecycle.scope,
+                &lifecycle.key,
+                &lifecycle.expected_revision,
+                lifecycle.expected_generation,
+                matches!(&args.command, SourceCommand::Withdraw(_)),
+                &lifecycle.reason,
+            )?
+        }
+        SourceCommand::DeleteApply {
+            scope,
+            key,
+            expected_plan_hash,
+            yes: _,
+        } => {
+            let mut store = open_source_store(database, dimensions, false)?;
+            store.source_delete_apply(scope, key, expected_plan_hash)?
+        }
+        SourceCommand::Learning(args) => run_source_learning(database, dimensions, &args.command)?,
+        command => {
+            let store = open_source_store(database, dimensions, true)?;
+            match command {
+                SourceCommand::Get {
+                    scope,
+                    key,
+                    revision,
+                } => store.source_get(scope, key, revision.as_deref())?,
+                SourceCommand::List {
+                    scope,
+                    limit,
+                    after_key,
+                } => store.source_list(scope, *limit, after_key.as_deref())?,
+                SourceCommand::History {
+                    scope,
+                    key,
+                    limit,
+                    before_revision,
+                } => store.source_history(scope, key, *limit, *before_revision)?,
+                SourceCommand::Cite {
+                    scope,
+                    key,
+                    revision,
+                    start_byte,
+                    end_byte,
+                } => store.source_cite(scope, key, revision, *start_byte, *end_byte)?,
+                SourceCommand::State { scope, key } => store.source_state(scope, key)?,
+                SourceCommand::DeletePreview { scope, key } => {
+                    store.source_delete_preview(scope, key)?
+                }
+                SourceCommand::Claims(args) => match &args.command {
+                    SourceClaimsCommand::List {
+                        scope,
+                        limit,
+                        include_inactive,
+                    } => store.source_claim_list(scope, *limit, *include_inactive)?,
+                    SourceClaimsCommand::Get { scope, claim_id } => {
+                        store.source_claim_get(scope, claim_id)?
+                    }
+                },
+                SourceCommand::Import { .. }
+                | SourceCommand::Withdraw(_)
+                | SourceCommand::Restore(_)
+                | SourceCommand::DeleteApply { .. }
+                | SourceCommand::Learning(_) => unreachable!("source writes handled above"),
+            }
+        }
+    };
+    // JSON escaping is required even without --json: source content is not
+    // trusted terminal markup and may contain embedded control characters.
+    emit(&outcome, true)
+}
+
+fn open_source_store(database: &Path, dimensions: usize, read_only: bool) -> Result<Store> {
+    if read_only {
+        Store::open_existing(database, dimensions).map_err(|_| {
+            anyhow::anyhow!(
+                "source database is unavailable or incompatible; initialise the selected database with a compatible Moon binary"
+            )
+        })
+    } else {
+        Store::open(database, dimensions)
+            .map_err(|_| anyhow::anyhow!("source database could not be opened or migrated"))
+    }
+}
+
+fn run_source_learning(
+    database: &Path,
+    dimensions: usize,
+    command: &SourceLearningCommand,
+) -> Result<serde_json::Value> {
+    match command {
+        SourceLearningCommand::Submit {
+            scope,
+            job_id,
+            lease_token,
+            input,
+        } => {
+            let payload = read_source_input(input)?;
+            let input =
+                serde_json::from_str::<moon::source_learning::SourceProposalInput>(&payload)
+                    .map_err(|_| {
+                        anyhow::anyhow!("source proposal must match the versioned JSON schema")
+                    })?;
+            input.validate()?;
+            let mut store = open_source_store(database, dimensions, false)?;
+            store.source_learning_submit(scope, job_id, lease_token, input)
+        }
+        SourceLearningCommand::Prepare {
+            scope,
+            key,
+            max_bytes,
+            lease_ms,
+            preview,
+        } => {
+            let mut store = open_source_store(database, dimensions, *preview)?;
+            store.source_learning_prepare(&moon::source_learning::SourcePrepareRequest {
+                scope: scope.clone(),
+                key: key.clone(),
+                max_bytes: *max_bytes,
+                lease_ms: *lease_ms,
+                preview: *preview,
+            })
+        }
+        SourceLearningCommand::Status {
+            scope,
+            job_id,
+            limit,
+        } => {
+            let store = open_source_store(database, dimensions, true)?;
+            store.source_learning_status(scope, job_id.as_deref(), *limit)
+        }
+        command => {
+            let mut store = open_source_store(database, dimensions, false)?;
+            match command {
+                SourceLearningCommand::Accept {
+                    scope,
+                    job_id,
+                    expected_result_hash,
+                    yes: _,
+                } => store.source_learning_accept(scope, job_id, expected_result_hash),
+                SourceLearningCommand::Reject {
+                    scope,
+                    job_id,
+                    expected_result_hash,
+                    reason,
+                } => store.source_learning_reject(scope, job_id, expected_result_hash, reason),
+                SourceLearningCommand::Fail {
+                    scope,
+                    job_id,
+                    lease_token,
+                    error_code,
+                } => store.source_learning_fail(scope, job_id, lease_token, error_code),
+                SourceLearningCommand::Retry { scope, job_id } => {
+                    store.source_learning_retry(scope, job_id)
+                }
+                SourceLearningCommand::Prepare { .. }
+                | SourceLearningCommand::Submit { .. }
+                | SourceLearningCommand::Status { .. } => {
+                    unreachable!("source preparation, submission and inspection handled above")
+                }
+            }
+        }
+    }
+}
+
+fn run_topic(database: &Path, dimensions: usize, args: &TopicArgs) -> Result<()> {
+    use moon::topics::{TopicInput, TopicPrepareRequest, TopicProposalInput};
+    let open = |read_only| {
+        open_source_store(database, dimensions, read_only)
+        .map_err(|_| anyhow::anyhow!("topic database is unavailable or incompatible; initialise the selected database with a compatible Moon binary"))
+    };
+    let input_text = |path: &Path| {
+        read_source_input(path).map_err(|_| {
+            anyhow::anyhow!("topic input must be bounded UTF-8 JSON from stdin or a regular file")
+        })
+    };
+    let outcome = match &args.command {
+        TopicCommand::Put {
+            scope,
+            input,
+            expected_generation,
+        } => {
+            let input: TopicInput = serde_json::from_str(&input_text(input)?).map_err(|_| {
+                anyhow::anyhow!("topic definition must match the versioned JSON schema")
+            })?;
+            input.validate()?;
+            open(false)?.topic_put(scope, input, *expected_generation)?
+        }
+        TopicCommand::Submit {
+            scope,
+            job_id,
+            lease_token,
+            input,
+        } => {
+            let input: TopicProposalInput =
+                serde_json::from_str(&input_text(input)?).map_err(|_| {
+                    anyhow::anyhow!("topic proposal must match the versioned JSON schema")
+                })?;
+            input.validate()?;
+            open(false)?.topic_submit(scope, job_id, lease_token, input)?
+        }
+        TopicCommand::Prepare {
+            scope,
+            key,
+            max_bytes,
+            lease_ms,
+            preview,
+        } => open(*preview)?.topic_prepare(&TopicPrepareRequest {
+            scope: scope.clone(),
+            key: key.clone(),
+            max_bytes: *max_bytes,
+            lease_ms: *lease_ms,
+            preview: *preview,
+        })?,
+        TopicCommand::Get { scope, key } => open(true)?.topic_get(scope, key)?,
+        TopicCommand::List { scope, limit } => open(true)?.topic_list(scope, *limit)?,
+        TopicCommand::History { scope, key, limit } => {
+            open(true)?.topic_history(scope, key, *limit)?
+        }
+        TopicCommand::Status {
+            scope,
+            job_id,
+            limit,
+        } => open(true)?.topic_status(scope, job_id.as_deref(), *limit)?,
+        TopicCommand::Accept {
+            scope,
+            job_id,
+            expected_result_hash,
+            yes: _,
+        } => open(false)?.topic_accept(scope, job_id, expected_result_hash)?,
+        TopicCommand::Reject {
+            scope,
+            job_id,
+            expected_result_hash,
+            reason,
+        } => open(false)?.topic_reject(scope, job_id, expected_result_hash, reason)?,
+        TopicCommand::Fail {
+            scope,
+            job_id,
+            lease_token,
+            error_code,
+        } => open(false)?.topic_fail(scope, job_id, lease_token, error_code)?,
+        TopicCommand::Retry { scope, job_id } => open(false)?.topic_retry(scope, job_id)?,
+    };
+    emit(&outcome, true)
+}
+
+fn read_source_input(path: &Path) -> Result<String> {
+    fn read(reader: impl Read) -> Result<String> {
+        let mut bytes = Vec::new();
+        reader
+            .take(MAX_INPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("source input could not be read"))?;
+        if bytes.len() as u64 > MAX_INPUT_BYTES {
+            anyhow::bail!("source input exceeds the maximum JSON request size");
+        }
+        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("source input must be UTF-8 JSON"))
+    }
+    if path == Path::new("-") {
+        return read(io::stdin().lock());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK avoids hanging while opening a FIFO; metadata is checked
+        // on the opened descriptor to close the stat/open race for file type.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    if fs::symlink_metadata(path)
+        .map_err(|_| anyhow::anyhow!("source input file could not be inspected"))?
+        .file_type()
+        .is_symlink()
+    {
+        anyhow::bail!("source input must be a regular file, not a symbolic link");
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| anyhow::anyhow!("source input file could not be opened"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| anyhow::anyhow!("source input file could not be inspected"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("source input must be a regular file");
+    }
+    read(file)
 }
 
 fn run_update(home: &Path, dimensions: usize, json: bool, args: &UpdateArgs) -> Result<()> {

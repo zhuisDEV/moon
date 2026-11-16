@@ -16,9 +16,11 @@ Moon stores local memory that may contain sensitive information.
   injection allowed. Updating Moon does not grant those permissions. Hook
   contributions contain fenced, untrusted context and do not replace system
   instructions or native transcript ownership.
-- Prompts and model outputs remain inside the OpenClaw runtime. Turn evidence
-  and distillation proposals passed to the Moon binary use stdin rather than
-  process arguments and are bounded.
+- Moon's model prompts and outputs pass through OpenClaw and its selected
+  provider; a remote model receives the selected text. Local-only retrieval does
+  not send memory to a remote provider. Turn evidence and distillation proposals
+  passed to the Moon binary use stdin rather than process arguments and are
+  bounded.
 - `import-legacy --include-raw` is opt-in because raw transcripts may contain
   substantially more sensitive data than distilled memory.
 - `record` conservatively scrubs common secret assignments, bearer tokens,
@@ -32,3 +34,18 @@ Moon stores local memory that may contain sensitive information.
   found in stored content.
 - Exact citations prove source occurrence, not semantic entailment. Automated
   extraction must verify support or request review before promoting a claim.
+- Captured sources and generated topics remain untrusted references, with
+  separate operator acceptance. URLs are labels and are not fetched by intake.
+  Withdrawal invalidates recall support immediately; deletion is logical and
+  does not securely erase storage or retained backups. See the
+  [lifecycle policy](docs/source-storage.md#approved-lifecycle-policy).
+- Schema-13 migrations preserve prior rows and run transactionally. Use the
+  installed pre-upgrade binary for backups and retain its matching database.
+  Recovery refuses to overwrite learning completed after candidate restart.
+
+## Reporting a vulnerability
+
+Use
+[GitHub private vulnerability reporting](https://github.com/zhuisDEV/moon/security/advisories/new)
+when available. If disabled, open a public issue requesting a private reporting
+channel without including exploit details, credentials or private memory.

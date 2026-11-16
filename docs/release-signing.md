@@ -34,8 +34,8 @@ pipes it to the bounded release signer over standard input.
 
 The normal production flow is deliberately short:
 
-1. Complete `RELEASE.md`, commit the reviewed release to `main`, and create and
-   push one annotated `vX.Y.Z` tag.
+1. Complete `RELEASE.md`, merge the reviewed release pull request to `main`, and
+   create and push one annotated `vX.Y.Z` tag.
 2. Run the `Release` workflow at that exact tag:
 
    ```bash
@@ -51,6 +51,11 @@ The normal production flow is deliberately short:
 Ordinary push and pull-request CI produces unsigned artifacts and cannot access
 the signing secret. The release job receives `contents: write` only after its
 dependencies pass and the protected environment is approved.
+
+Moon 2.7.0 uses the six-file compatibility bridge described in
+[RELEASE.md](../RELEASE.md). Keep the bridge flag in the workflow and include
+the skill-refresh instruction in release notes. Signing an extended bundle does
+not make it readable by an older six-file updater.
 
 ### One-time Keychain migration
 
