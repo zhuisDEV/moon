@@ -79,6 +79,127 @@ fn profile(connection: &Connection, name: &str, sql: &str, values: Vec<Value>) -
     )
 }
 
+// Exercise the actual per-hit lookup across cache returns and changed bindings.
+// A retained statement with one repeated parameter misses SQLite 3.54's
+// reprepare cost when rusqlite clears bindings as it returns a statement.
+fn cached_lexical_metadata(connection: &Connection) -> Result<Json> {
+    let original = r#"SELECT d.id, c.id, d.source_uri, d.source_kind, d.scope, d.title, c.content
+             FROM chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE c.id = ?1
+               AND d.active = 1
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))
+               AND (
+                   NOT EXISTS (
+                       SELECT 1 FROM memory_items m
+                       WHERE m.document_id = d.id
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM memory_items m
+                       WHERE m.document_id = d.id
+                         AND m.superseded_by IS NULL
+                         AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?4)
+                   )
+               )
+               AND (?2 IS NULL OR d.scope = ?2)
+               AND (?3 IS NULL OR d.source_kind = ?3)
+               AND (?5 = 0 OR d.source_kind <> 'topic_summary')"#;
+    let cast = original.replace("c.id = ?1", "c.id = CAST(?1 AS INTEGER)");
+    ensure!(
+        original != cast,
+        "Metadata diagnostic must cast the chunk ID"
+    );
+    let mut ids = connection.prepare(
+        "SELECT min(c.id) FROM chunks c JOIN documents d ON d.id=c.document_id GROUP BY d.source_kind ORDER BY d.source_kind",
+    )?.query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.extend([0, -1, i64::MAX]);
+    let mut parameters = Vec::new();
+    for id in ids {
+        for (scope, kind, exclude, now) in [
+            (SCOPE, Value::Null, false, 2_000_000_000_000i64),
+            (
+                SCOPE,
+                Value::Text("source_claim".into()),
+                true,
+                9_000_000_000_000_000i64,
+            ),
+            (
+                "unrelated-synthetic-scope",
+                Value::Null,
+                false,
+                2_000_000_000_000i64,
+            ),
+        ] {
+            parameters.push(vec![
+                id.into(),
+                scope.to_string().into(),
+                kind,
+                now.into(),
+                exclude.into(),
+            ]);
+        }
+    }
+    let mut samples = [Vec::new(), Vec::new()];
+    let mut fingerprint = Sha256::new();
+    let mut parity_checks = 0;
+    for round in 0..ROUNDS + 3 {
+        for (case, values) in parameters.iter().enumerate() {
+            let mut outputs = [Vec::new(), Vec::new()];
+            // Alternate order so one form does not always warm the other's pages.
+            for variant in if (round + case) % 2 == 0 {
+                [0, 1]
+            } else {
+                [1, 0]
+            } {
+                let started = Instant::now();
+                let mut statement =
+                    connection.prepare_cached(if variant == 0 { original } else { &cast })?;
+                statement.reset_status(StatementStatus::RePrepare);
+                let columns = statement.column_count();
+                let rows = statement
+                    .query_map(params_from_iter(values), |row| {
+                        (0..columns)
+                            .map(|column| row.get::<_, Value>(column))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if round >= 3 {
+                    samples[variant].push(json!({
+                        "case":case,"elapsed_ms":elapsed_ms,
+                        "reprepares":statement.get_status(StatementStatus::RePrepare),
+                        "returned_rows":rows.len(),
+                    }));
+                }
+                outputs[variant] = rows;
+                // Drop returns this statement to the cache and clears bindings.
+            }
+            ensure!(
+                outputs[0] == outputs[1],
+                "Chunk-ID cast changed metadata rows or column values"
+            );
+            if round >= 3 {
+                fingerprint.update(format!("{case}:{:?}\n", outputs[0]).as_bytes());
+                parity_checks += 1;
+            }
+        }
+    }
+    Ok(json!({
+        "name":"cached_lexical_metadata_changing_integer_ids",
+        "original_sql":original,"candidate_sql":cast,"parameter_cases":parameters.len(),
+        "full_row_parity_checks":parity_checks,
+        "result_sha256":hex::encode(fingerprint.finalize()),
+        "original_samples":samples[0],"cast_samples":samples[1],
+        "limitations":["Every chunk ID is bound as an i64; casting arbitrary external text is not covered.","Cache-return and prepare costs are included; this is not complete packet latency."]
+    }))
+}
+
 fn run(snapshot: &Path, migration: Option<&str>) -> Result<Json> {
     let temporary = tempfile::Builder::new()
         .prefix("retrieval-sql-profile-")
@@ -290,7 +411,9 @@ fn run(snapshot: &Path, migration: Option<&str>) -> Result<Json> {
             measurements.push(reordered);
         }
     }
-    Ok(json!({"documents":document_count,"measurements":measurements}))
+    Ok(
+        json!({"documents":document_count,"measurements":measurements,"cached_lexical_metadata":cached_lexical_metadata(&connection)?}),
+    )
 }
 
 fn main() -> Result<()> {

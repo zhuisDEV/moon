@@ -45,6 +45,11 @@ Moon stores local memory that may contain sensitive information.
 
 ## Reporting a vulnerability
 
+The 2.7.0 release uses patched bundled SQLite 3.54.1 and refreshed TLS/QUIC
+dependencies. CI audits the full lockfile against RustSec. Informational
+maintenance warnings for transitive `number_prefix` and `paste` remain; they are
+tracked separately from vulnerability findings and are not suppressed.
+
 Use
 [GitHub private vulnerability reporting](https://github.com/zhuisDEV/moon/security/advisories/new)
 when available. If disabled, open a public issue requesting a private reporting

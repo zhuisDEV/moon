@@ -4,6 +4,13 @@
 
 ## 2.7.0 - 2026-11-17
 
+- Refresh vulnerable locked dependencies before publication: bundled SQLite is
+  now 3.54.1 through rusqlite 0.41.1, with patched TLS, certificate roots, QUIC
+  and I/O dependencies. The database schema remains 13.
+- Avoid repeated SQLite 3.54 metadata-query recompilation while preserving
+  read-time validity checks. The patched-engine 8,000-character benchmark meets
+  50 ms warm lexical p95 at 1k and 10k references with exact packet parity.
+
 - Add SQLite source capture with immutable revisions, provenance, exact
   citations, reviewed verbatim claims, withdrawal/restoration and explicit
   deletion plans.

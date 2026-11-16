@@ -502,11 +502,14 @@ impl Store {
             .connection
             // Cache the SQL program, never its result: every candidate still
             // checks current source/topic validity when the statement executes.
+            // Both IDs are i64; explicit types avoid SQLite 3.54 recompiling
+            // this lookup as candidate IDs change between cached executions.
             .prepare_cached(
                 "SELECT d.body, c.start_byte
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
-             WHERE c.id = ?1 AND c.document_id = ?2 AND d.active = 1
+             WHERE c.id = CAST(?1 AS INTEGER)
+               AND c.document_id = CAST(?2 AS INTEGER) AND d.active = 1
                AND (d.source_kind <> 'source_claim' OR EXISTS (
                    SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
                ))

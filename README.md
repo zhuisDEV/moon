@@ -54,6 +54,8 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 - `health` and source/topic inspection do not create or migrate storage. Normal
   write commands can migrate it. Back up using the **installed pre-upgrade
   binary**.
+- Bundled SQLite 3.54.1 and refreshed TLS dependencies address the security
+  findings discovered during release validation.
 - Markdown is an intake/export format, not another writable knowledge store.
 - Retrieved text is untrusted. Citations establish where text occurred; review
   remains necessary for meaning and truth.

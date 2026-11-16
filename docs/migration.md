@@ -13,6 +13,11 @@ schema 6 through 13. The runtime remains `~/.moon`, the database remains
 settings in `moon.toml` survive updates; migration does not enable L2, call a
 model or create a new login.
 
+This release also updates bundled SQLite from 3.51.3 to patched 3.54.1. The
+engine upgrade does not add a Moon schema migration or change the vector model.
+Keep earlier engine timings historical and validate the actual release before
+making performance claims.
+
 ## Before an existing v2 runtime is upgraded
 
 1. Verify `command -v moon` and `moon --json --version` identify the currently

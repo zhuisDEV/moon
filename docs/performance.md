@@ -191,3 +191,52 @@ some indexed scans still scale with collection size, and broader tasks or larger
 databases can have different tails. No evidence checks were weakened to meet the
 timing target. Live hybrid/model validation, production observation and an
 authorised backed-up deployment remain separate work.
+
+## Moon 2.7.0 patched SQLite release check
+
+Release security auditing required SQLite 3.54.1 and refreshed TLS/QUIC
+libraries. The earlier SQLite 3.51.3 results above remain historical. On the
+same Apple M1 machine and retained synthetic corpora, the first patched build
+preserved packets but regressed to 62.026 ms p95 at 10k references.
+
+Profiling identified repeated automatic recompilation of cached per-result
+metadata lookups as integer IDs changed. The queries now explicitly cast those
+already-i64 IDs to INTEGER. This caches only the SQL program: scope, activity,
+source revision, withdrawal, expiry and topic freshness are still checked every
+execution. The source/topic views and database schema remain unchanged.
+
+The versioned `profile_retrieval` example retains an alternating-ID/cache-return
+reproducer with full-row equality checks. At each corpus size it verified 360
+comparisons across 18 cases; the lexical metadata lookup changed from 360
+reprepares to zero. Separate checks covered active/expired memories, missing IDs
+and reference chunk/document mismatches. A cross-engine rehearsal preserved all
+44 ordinary/shadow tables and 50 synthetic rows, exact citations,
+FTS/hash-vector recall and restoration of backups from both engine versions.
+
+The complete final packet run used schema 13 on both sides, warm private stdio,
+lexical search, eight result slots, an 8,000-character cap and `observe: true`.
+It reused the four query types, three warm-up rounds and 25 measured rounds,
+alternating before/after requests. There were 400 measured requests, 200 paired
+packet comparisons and 112 retained observations per worker database.
+
+| Stored references | Deployed SQLite 3.51.3 p95 | Patched SQLite 3.54.1 p95 |
+| ----------------- | -------------------------: | ------------------------: |
+| 1,000             |                  11.562 ms |                 15.106 ms |
+| 10,000            |                  42.363 ms |                 47.692 ms |
+
+Both sizes meet the 50 ms warm lexical p95 target. The patched engine has a
+small remaining latency cost in this workload; it is not a new speed
+improvement. All structured packets, ordering, evidence and exact citation
+ranges match; seed hashes, budget/scope checks and health pass. This does not
+establish general answer quality or production hybrid embedding latency.
+
+The retained report is `target/release-2.7.0-sqlite-final-runtime.json`. The
+baseline binary SHA-256 is
+`995360db6bca39cf6ece728caba1f834d3071ddc02d53d3bcca7fb5bedd2edaa`; the measured
+patched candidate is
+`7786e4b1389ea393c5460189fa924ee3d8af2c6e378b469141d8da62bc72da43`. Published
+clean builds have their own commit-bound identities. The benchmark runner now
+accepts schema 13 in addition to the retained schema-11/12 baselines; its
+existing health, corpus-size, citation and parity gates remain enforced. Use the
+runner command above with explicit before/after release binaries and a new
+output path to reproduce this check.

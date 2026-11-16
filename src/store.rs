@@ -856,11 +856,13 @@ impl Store {
         fts_query: &str,
         exclude_topics: bool,
     ) -> Result<Vec<SearchHit>> {
+        // This ID is always bound as i64. The explicit type also prevents
+        // SQLite 3.54 from recompiling this cached lookup for every candidate.
         let mut metadata = self.connection.prepare_cached(
             "SELECT d.id, c.id, d.source_uri, d.source_kind, d.scope, d.title, c.content
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
-             WHERE c.id = ?1
+             WHERE c.id = CAST(?1 AS INTEGER)
                AND d.active = 1
                AND (d.source_kind <> 'source_claim' OR EXISTS (
                    SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
