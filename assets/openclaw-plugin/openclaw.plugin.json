@@ -1,6 +1,17 @@
 {
   "id": "moon",
   "kind": "context-engine",
+  "contracts": {
+    "tools": ["moon_source_learn", "moon_topic_compile"]
+  },
+  "toolMetadata": {
+    "moon_source_learn": {
+      "optional": true
+    },
+    "moon_topic_compile": {
+      "optional": true
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

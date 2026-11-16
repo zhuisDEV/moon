@@ -91,6 +91,10 @@ struct BundleArgs {
     adapter_dir: PathBuf,
     #[arg(long, default_value = "SKILL.md")]
     skill: PathBuf,
+    /// Produce a signed six-file bridge bundle for older updater readers.
+    /// Install that release first, then a later full-docs release.
+    #[arg(long)]
+    legacy_skill_only: bool,
     #[arg(long)]
     output_dir: PathBuf,
     #[arg(long)]
@@ -169,7 +173,7 @@ struct AdapterPackage {
 
 #[derive(Debug, Clone)]
 struct PayloadFile {
-    path: &'static str,
+    path: String,
     mode: u32,
     bytes: Vec<u8>,
 }
@@ -507,7 +511,13 @@ fn build_bundle(args: BundleArgs) -> Result<()> {
     let identity = inspect_binary(&args.binary)?;
     validate_binary_identity(&identity, &version, &git_commit, &target, args.allow_dirty)?;
 
-    let payload = load_payload(&args.binary, &args.adapter_dir, &args.skill, &version)?;
+    let payload = load_payload(
+        &args.binary,
+        &args.adapter_dir,
+        &args.skill,
+        &version,
+        args.legacy_skill_only,
+    )?;
     let files = payload
         .iter()
         .map(|file| BundleFile {
@@ -693,6 +703,7 @@ fn load_payload(
     adapter_dir: &Path,
     skill: &Path,
     version: &str,
+    legacy_skill_only: bool,
 ) -> Result<Vec<PayloadFile>> {
     let package_path = adapter_dir.join("package.json");
     let package_bytes = read_bounded_file(&package_path)?;
@@ -703,37 +714,83 @@ fn load_payload(
 
     let mut payload = vec![
         PayloadFile {
-            path: "bin/moon",
+            path: "bin/moon".to_owned(),
             mode: 0o755,
             bytes: read_bounded_file(binary)?,
         },
         PayloadFile {
-            path: "openclaw-plugin/README.md",
+            path: "openclaw-plugin/README.md".to_owned(),
             mode: 0o644,
             bytes: read_bounded_file(&adapter_dir.join("README.md"))?,
         },
         PayloadFile {
-            path: "openclaw-plugin/index.js",
+            path: "openclaw-plugin/index.js".to_owned(),
             mode: 0o644,
             bytes: read_bounded_file(&adapter_dir.join("index.js"))?,
         },
         PayloadFile {
-            path: "openclaw-plugin/openclaw.plugin.json",
+            path: "openclaw-plugin/openclaw.plugin.json".to_owned(),
             mode: 0o644,
             bytes: read_bounded_file(&adapter_dir.join("openclaw.plugin.json"))?,
         },
         PayloadFile {
-            path: "openclaw-plugin/package.json",
+            path: "openclaw-plugin/package.json".to_owned(),
             mode: 0o644,
             bytes: package_bytes,
         },
         PayloadFile {
-            path: "skill/SKILL.md",
+            path: "skill/SKILL.md".to_owned(),
             mode: 0o644,
             bytes: read_bounded_file(skill)?,
         },
     ];
-    payload.sort_by_key(|file| file.path);
+    let docs = skill
+        .parent()
+        .context("skill file has no parent")?
+        .join("docs");
+    if !legacy_skill_only && fs::symlink_metadata(&docs).is_ok() {
+        ensure!(
+            fs::symlink_metadata(&docs)?.file_type().is_dir(),
+            "skill docs must be a physical directory"
+        );
+        let mut count = 0;
+        for entry in fs::read_dir(&docs)? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("skill document name is not UTF-8"))?;
+            // The repository may contain patch/config artefacts beside the
+            // agent-facing Markdown. Only flat *.md files enter this format.
+            if !name.ends_with(".md") {
+                continue;
+            }
+            let path = format!("skill/docs/{name}");
+            ensure!(
+                moon::release::is_skill_document_path(&path),
+                "unsupported skill document path"
+            );
+            ensure!(
+                entry.file_type()?.is_file(),
+                "skill documentation contains a symlink or non-file"
+            );
+            count += 1;
+            ensure!(
+                count <= moon::release::MAX_SKILL_DOCS,
+                "too many skill documents"
+            );
+            ensure!(
+                entry.metadata()?.len() <= moon::release::MAX_SKILL_DOC_BYTES,
+                "skill document exceeds size limit"
+            );
+            payload.push(PayloadFile {
+                path,
+                mode: 0o644,
+                bytes: read_bounded_file(&entry.path())?,
+            });
+        }
+    }
+    payload.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(payload)
 }
 
@@ -904,12 +961,12 @@ mod tests {
         ]
         .into_iter()
         .map(|(path, mode)| PayloadFile {
-            path,
+            path: path.to_owned(),
             mode,
             bytes: format!("fixture:{path}\n").into_bytes(),
         })
         .collect::<Vec<_>>();
-        files.sort_by_key(|file| file.path);
+        files.sort_by(|left, right| left.path.cmp(&right.path));
         files
     }
 
@@ -992,6 +1049,146 @@ mod tests {
             entries
                 .values()
                 .all(|(_, mtime, uid, gid, _)| (*mtime, *uid, *gid) == (0, 0, 0))
+        );
+    }
+
+    fn payload_files_fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let binary = root.join("moon");
+        let adapter = root.join("adapter");
+        let skill = root.join("skill/SKILL.md");
+        fs::create_dir(&adapter).unwrap();
+        fs::create_dir(skill.parent().unwrap()).unwrap();
+        fs::write(&binary, "fixture executable").unwrap();
+        fs::write(&skill, "fixture skill").unwrap();
+        for path in ["README.md", "index.js", "openclaw.plugin.json"] {
+            fs::write(adapter.join(path), "fixture adapter").unwrap();
+        }
+        fs::write(
+            adapter.join("package.json"),
+            r#"{"name":"moon","version":"2.6.6"}"#,
+        )
+        .unwrap();
+        (binary, adapter, skill)
+    }
+
+    #[test]
+    fn bundle_includes_all_optional_skill_docs_and_rejects_unsupported_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let (binary, adapter, skill) = payload_files_fixture(root.path());
+        assert_eq!(
+            load_payload(&binary, &adapter, &skill, "2.6.6", false)
+                .unwrap()
+                .len(),
+            6
+        );
+        let docs = skill.parent().unwrap().join("docs");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("workflow.md"), "workflow").unwrap();
+        fs::write(docs.join("source-learning.md"), "source learning").unwrap();
+        let payload = load_payload(&binary, &adapter, &skill, "2.6.6", false).unwrap();
+        assert_eq!(payload.len(), 8);
+        assert_eq!(payload[6].path, "skill/docs/source-learning.md");
+        assert_eq!(payload[7].bytes, b"workflow");
+        let archive = build_archive(&payload, b"manifest").unwrap();
+        let mut archive = Archive::new(GzDecoder::new(archive.as_slice()));
+        assert_eq!(archive.entries().unwrap().count(), 9);
+        fs::write(docs.join("proactive-compaction.patch.json"), "{}").unwrap();
+        assert_eq!(
+            load_payload(&binary, &adapter, &skill, "2.6.6", false)
+                .unwrap()
+                .len(),
+            8
+        );
+        let bridge = load_payload(&binary, &adapter, &skill, "2.6.6", true).unwrap();
+        assert_eq!(bridge.len(), 6);
+        assert!(
+            bridge
+                .iter()
+                .all(|file| !file.path.starts_with("skill/docs/"))
+        );
+        fs::create_dir(docs.join("nested.md")).unwrap();
+        assert!(load_payload(&binary, &adapter, &skill, "2.6.6", false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_rejects_symlinked_and_oversize_skill_docs() {
+        let root = tempfile::tempdir().unwrap();
+        let (binary, adapter, skill) = payload_files_fixture(root.path());
+        let docs = skill.parent().unwrap().join("docs");
+        fs::create_dir(&docs).unwrap();
+        let doc = docs.join("guide.md");
+        std::os::unix::fs::symlink(&skill, &doc).unwrap();
+        assert!(load_payload(&binary, &adapter, &skill, "2.6.6", false).is_err());
+        fs::remove_file(&doc).unwrap();
+        fs::File::create(&doc)
+            .unwrap()
+            .set_len(moon::release::MAX_SKILL_DOC_BYTES + 1)
+            .unwrap();
+        assert!(load_payload(&binary, &adapter, &skill, "2.6.6", false).is_err());
+    }
+
+    #[test]
+    fn bridge_bundle_requires_explicit_flag_and_preserves_signed_release_path() {
+        for bridge in [false, true] {
+            let mut args = vec![
+                "moon-release",
+                "bundle",
+                "--binary",
+                "/tmp/moon",
+                "--output-dir",
+                "/tmp/release",
+                "--minimum-os-version",
+                "13.0",
+                "--database-schema-min",
+                "7",
+                "--database-schema-max",
+                "13",
+            ];
+            if bridge {
+                args.push("--legacy-skill-only");
+            }
+            let ReleaseCommand::Bundle(args) = Cli::try_parse_from(args).unwrap().command else {
+                panic!("bundle");
+            };
+            assert_eq!(args.legacy_skill_only, bridge);
+        }
+    }
+
+    #[test]
+    fn repository_skill_documentation_fits_the_release_payload_contract() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("moon");
+        fs::write(&binary, "fixture executable").unwrap();
+        let payload = load_payload(
+            &binary,
+            &root.join("assets/openclaw-plugin"),
+            &root.join("SKILL.md"),
+            env!("CARGO_PKG_VERSION"),
+            false,
+        )
+        .unwrap();
+        let documents = payload
+            .iter()
+            .filter(|file| file.path.starts_with("skill/docs/"))
+            .collect::<Vec<_>>();
+        let expected = fs::read_dir(root.join("docs"))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "md")
+            })
+            .count();
+        assert_eq!(documents.len(), expected);
+        assert!(!documents.is_empty());
+        assert!(
+            documents
+                .iter()
+                .all(|file| moon::release::is_skill_document_path(&file.path))
         );
     }
 

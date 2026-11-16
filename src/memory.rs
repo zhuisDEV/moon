@@ -3,7 +3,7 @@ use crate::embedding::EmbeddingProvider;
 use crate::model::{
     ContextCitation, ContextMemory, ContextPacket, ContextReference, ContextRequest, DistillAction,
     DistillInput, DistillOutcome, EvidenceInput, EvidenceOutcome, IngestDocument, SearchHit,
-    SearchRequest,
+    SearchRequest, SourceClaimCitation,
 };
 use crate::redaction::{redact_json, redact_text};
 use crate::store::{Store, ingest_prepared, now_ms, prepare_ingest, random_nonce};
@@ -326,35 +326,137 @@ impl Store {
         }
         let remaining_slots = limit.saturating_sub(packet.memories.len());
         if remaining_slots > 0 {
-            let reference_hits = self
-                .search(
+            // References may answer one part of a multi-part question. Keep the
+            // stricter personal-memory/correction matcher above unchanged.
+            let topic_limit = (remaining_slots / 3).min(2);
+            let mut topic_hits = if topic_limit > 0 {
+                self.search(
                     &SearchRequest {
                         query: request.query.clone(),
                         mode: request.mode,
-                        limit: remaining_slots.saturating_mul(8).min(100),
+                        limit: topic_limit * 8,
                         scope: request.scope.clone(),
-                        source_kind: None,
+                        source_kind: Some("topic_summary".to_string()),
                     },
                     provider,
                 )?
-                .into_iter()
-                .filter(|hit| is_relevant_search_hit(&request.query, hit))
-                .collect::<Vec<_>>();
-            let mut seen_documents = BTreeSet::new();
-            let references = reference_hits
-                .into_iter()
-                .filter(|hit| !matches!(hit.source_kind.as_str(), "memory" | "evidence"))
-                .filter(|hit| seen_documents.insert(hit.document_id))
-                .map(|hit| self.load_context_reference(hit))
-                .collect::<Result<Vec<_>>>()?;
+            } else {
+                Vec::new()
+            };
+            let mut hits = self.search_without_topics(
+                &SearchRequest {
+                    query: request.query.clone(),
+                    mode: request.mode,
+                    limit: remaining_slots.saturating_mul(8).min(100),
+                    scope: request.scope.clone(),
+                    source_kind: None,
+                },
+                provider,
+            )?;
+            hits.retain(|hit| !matches!(hit.source_kind.as_str(), "memory" | "evidence"));
+            let relevance =
+                ReferenceRelevance::new(&request.query, hits.iter().chain(topic_hits.iter()));
+            let rerank = |hits: &mut Vec<SearchHit>| {
+                hits.retain_mut(|hit| {
+                    if let Some(score) = relevance.score(hit) {
+                        // Weighted overlap ranks partial evidence; original
+                        // search order remains the stable tie breaker.
+                        hit.score = score;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                hits.sort_by(|left, right| right.score.total_cmp(&left.score));
+            };
+            // Topic summaries already address a whole question. Preserve the
+            // lexical/hybrid retrieval order for them; clause normalisation is
+            // useful for partial source evidence but can otherwise promote a
+            // secondary topic above the best whole-question match.
+            topic_hits.retain_mut(|hit| {
+                if let Some(score) = relevance.score(hit) {
+                    hit.score = score;
+                    true
+                } else {
+                    false
+                }
+            });
+            rerank(&mut hits);
+            let best_topic_score = topic_hits.first().map_or(0.0, |hit| hit.score);
+            let mut topics = Vec::new();
+            let mut seen_topics = BTreeSet::new();
+            let mut covered_terms = BTreeSet::new();
+            for hit in topic_hits {
+                // A weak secondary topic is discovery material, not a reason
+                // to expand another graph branch into every answer packet.
+                let terms = &relevance.matches[&hit.chunk_id];
+                if hit.score < best_topic_score * 0.65
+                    || terms.is_subset(&covered_terms)
+                    || !seen_topics.insert(hit.document_id)
+                {
+                    continue;
+                }
+                if let Some(reference) = self.load_context_reference(hit)? {
+                    covered_terms.extend(terms);
+                    topics.push(reference);
+                }
+                if topics.len() >= topic_limit {
+                    break;
+                }
+            }
+            let best_source_score = hits.first().map_or(0.0, |hit| hit.score);
+            let mut references = Vec::new();
+            let mut positions = BTreeMap::new();
+            for hit in hits {
+                if hit.score < best_source_score * 0.5 || positions.contains_key(&hit.document_id) {
+                    continue;
+                }
+                if let Some(reference) = self.load_context_reference(hit)? {
+                    positions.insert(reference.document_id, references.len());
+                    references.push(reference);
+                }
+            }
+            // A reviewed topic establishes a relationship to its exact premises,
+            // including premises that do not repeat the question's subject.
+            // At most 32 unique source lookups, never recursive graph search.
+            for topic in &topics {
+                for mut reference in self.topic_source_references(topic, 16)? {
+                    // Premises inherit most of their topic's relevance, while
+                    // directly matched evidence can still outrank that bridge.
+                    reference.relevance_score *= 0.8;
+                    if let Some(&index) = positions.get(&reference.document_id) {
+                        let existing: &mut ContextReference = &mut references[index];
+                        existing.relevance_score =
+                            existing.relevance_score.max(reference.relevance_score);
+                    } else {
+                        positions.insert(reference.document_id, references.len());
+                        references.push(reference);
+                    }
+                }
+            }
+            references
+                .sort_by(|left, right| right.relevance_score.total_cmp(&left.relevance_score));
             if references.len() > remaining_slots {
                 packet.truncated = true;
             }
-            for mut reference in references.into_iter().take(remaining_slots) {
+            // Reserve the actual selected source evidence first. A topic may
+            // consume spare room or replace an exact duplicate factual quote;
+            // it must never force a source to be shortened or discarded.
+            for mut reference in references {
+                if packet.references.len() >= remaining_slots {
+                    break;
+                }
                 if push_reference_if_fits(&mut packet, reference.clone()) {
                     continue;
                 }
                 packet.truncated = true;
+                if let Some(claim) = &mut reference.source_claim {
+                    // Multiple supports can be inspected separately. Preserve
+                    // the entire accepted statement, including its final caveat.
+                    claim.citations.truncate(1);
+                    let _ = push_reference_if_fits(&mut packet, reference);
+                    continue;
+                }
                 let base_length = packet.render_markdown().chars().count();
                 let full_content = reference.content.clone();
                 reference.content.clear();
@@ -372,33 +474,181 @@ impl Store {
                     let _ = push_reference_if_fits(&mut packet, reference);
                 }
             }
+            let mut topic_chars = 0;
+            for topic in topics {
+                let mut candidate = packet.clone();
+                let mut just_topic = packet.clone();
+                just_topic.references = vec![topic.clone()];
+                candidate
+                    .references
+                    .retain(|reference| !topic_already_quotes_reference(&just_topic, reference));
+                if candidate.references.len() >= remaining_slots {
+                    packet.truncated = true;
+                    continue;
+                }
+                if push_topic_if_fits(&mut candidate, topic, &mut topic_chars) {
+                    packet = candidate;
+                } else {
+                    packet.truncated = true;
+                }
+            }
         }
         packet.used_chars = packet.render_markdown().chars().count();
         Ok(packet)
     }
 
-    fn load_context_reference(&self, hit: SearchHit) -> Result<ContextReference> {
-        let (body, approximate_start) = self.connection.query_row(
-            "SELECT d.body, c.start_byte
+    fn load_context_reference(&self, hit: SearchHit) -> Result<Option<ContextReference>> {
+        let row = self
+            .connection
+            // Cache the SQL program, never its result: every candidate still
+            // checks current source/topic validity when the statement executes.
+            // Both IDs are i64; explicit types avoid SQLite 3.54 recompiling
+            // this lookup as candidate IDs change between cached executions.
+            .prepare_cached(
+                "SELECT d.body, c.start_byte
              FROM chunks c
              JOIN documents d ON d.id = c.document_id
-             WHERE c.id = ?1 AND c.document_id = ?2 AND d.active = 1",
-            params![hit.chunk_id, hit.document_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize)),
-        )?;
-        let (start_byte, end_byte) = exact_reference_range(&body, &hit.content, approximate_start)?;
-        Ok(ContextReference {
+             WHERE c.id = CAST(?1 AS INTEGER)
+               AND c.document_id = CAST(?2 AS INTEGER) AND d.active = 1
+               AND (d.source_kind <> 'source_claim' OR EXISTS (
+                   SELECT 1 FROM source_valid_claims sc WHERE sc.document_id = d.id
+               ))
+               AND (d.source_kind <> 'topic_summary' OR EXISTS (
+                   SELECT 1 FROM topic_valid_documents tv WHERE tv.document_id = d.id
+               ))",
+            )?
+            .query_row(params![hit.chunk_id, hit.document_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .optional()?;
+        let Some((body, approximate_start)) = row else {
+            // A concurrent withdrawal may retire a hit after search returns.
+            return Ok(None);
+        };
+        let topic = if hit.source_kind == "topic_summary" {
+            let Some(topic) = self.topic_context(hit.document_id)? else {
+                return Ok(None);
+            };
+            Some(topic)
+        } else {
+            None
+        };
+        let (start_byte, end_byte) = if topic.is_some() || hit.source_kind == "source_claim" {
+            (0, body.len())
+        } else {
+            exact_reference_range(&body, &hit.content, approximate_start)?
+        };
+        let source_claim = if hit.source_kind == "source_claim" {
+            let Some(mut claim) = self.source_claim_context(hit.document_id, 3)? else {
+                return Ok(None);
+            };
+            if claim.citations.is_empty() {
+                return Ok(None);
+            }
+            for citation in &mut claim.citations {
+                align_source_citation(citation, start_byte, end_byte, &body)?;
+            }
+            Some(claim)
+        } else {
+            None
+        };
+        let reference = ContextReference {
             document_id: hit.document_id,
             chunk_id: hit.chunk_id,
             source_uri: hit.source_uri,
             source_kind: hit.source_kind,
             scope: hit.scope,
             title: hit.title,
-            content: hit.content,
+            content: if topic.is_some() || source_claim.is_some() {
+                body
+            } else {
+                hit.content
+            },
             relevance_score: hit.score,
             start_byte,
             end_byte,
-        })
+            source_claim,
+            topic,
+        };
+        Ok(Some(reference))
+    }
+
+    fn topic_source_references(
+        &self,
+        reference: &ContextReference,
+        limit: usize,
+    ) -> Result<Vec<ContextReference>> {
+        let Some(topic) = &reference.topic else {
+            return Ok(Vec::new());
+        };
+        let mut references = Vec::new();
+        let mut seen = BTreeSet::new();
+        // Join the topic's authoritative validity view again: withdrawal or
+        // expiry between topic retrieval and expansion must not admit premises.
+        let mut statement = self.connection.prepare_cached(
+            "SELECT d.id,c.id,d.source_uri,d.source_kind,d.scope,d.title,d.body
+             FROM source_valid_supports s
+             JOIN source_valid_claims v ON v.claim_id=s.claim_id
+             JOIN documents d ON d.id=v.document_id
+             JOIN chunks c ON c.document_id=d.id
+             WHERE s.source_id=?1 AND s.revision_id=?2
+               AND s.start_byte=?3 AND s.end_byte=?4 AND d.body=?5
+               AND d.scope=?6 AND d.active=1 AND d.source_kind='source_claim'
+               AND EXISTS(SELECT 1 FROM topic_valid_documents
+                          WHERE revision_id=?7 AND document_id=?8)
+             ORDER BY c.id LIMIT 1",
+        )?;
+        for citation in topic.statements.iter().flat_map(|block| &block.citations) {
+            let key = (
+                &citation.revision_id,
+                citation.start_byte,
+                citation.end_byte,
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            if seen.len() > limit {
+                break;
+            }
+            let hit = statement
+                .query_row(
+                    params![
+                        citation.source_id,
+                        citation.revision_id,
+                        citation.start_byte as i64,
+                        citation.end_byte as i64,
+                        citation.quote,
+                        reference.scope,
+                        topic.revision_id,
+                        reference.document_id
+                    ],
+                    |row| {
+                        Ok(SearchHit {
+                            document_id: row.get(0)?,
+                            chunk_id: row.get(1)?,
+                            source_uri: row.get(2)?,
+                            source_kind: row.get(3)?,
+                            scope: row.get(4)?,
+                            title: row.get(5)?,
+                            content: row.get(6)?,
+                            score: reference.relevance_score,
+                            lexical_rank: None,
+                            vector_rank: None,
+                            vector_distance: None,
+                        })
+                    },
+                )
+                .optional()?;
+            if let Some(hit) = hit
+                && let Some(source) = self.load_context_reference(hit)?
+            {
+                references.push(source);
+                if references.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(references)
     }
 
     fn pinned_summary_ids(&self, scope: Option<&str>, limit: usize) -> Result<Vec<i64>> {
@@ -846,6 +1096,250 @@ fn is_relevant_search_hit(query: &str, hit: &SearchHit) -> bool {
     }
 }
 
+/// Reference evidence can support one clause without repeating every other
+/// clause. Entity anchors still have to occur in the evidence or its exact
+/// scoped collection. This deliberately does not change personal-memory recall.
+struct ReferenceRelevance {
+    scores: BTreeMap<i64, f64>,
+    matches: BTreeMap<i64, BTreeSet<usize>>,
+}
+
+impl ReferenceRelevance {
+    fn new<'a>(query: &str, hits: impl Iterator<Item = &'a SearchHit>) -> Self {
+        let query = query.chars().take(2048).collect::<String>();
+        let raw_terms = normalized_terms(&query);
+        let greeting = raw_terms.len() <= 3
+            && raw_terms
+                .first()
+                .is_some_and(|term| matches!(term.as_str(), "hi" | "hello" | "hey"));
+        let terms = if greeting {
+            Vec::new()
+        } else {
+            reference_terms(&query)
+        };
+        let anchors = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|term| {
+                term.len() >= 3
+                    && term.is_ascii()
+                    && (term.chars().all(|c| c.is_numeric())
+                        || term.chars().next().is_some_and(char::is_uppercase))
+            })
+            .map(normalize_term)
+            .filter(|term| terms.contains(term))
+            .collect::<Vec<_>>();
+        let mut matches = BTreeMap::new();
+        let mut missing_anchors = BTreeMap::new();
+        let mut documents = BTreeSet::new();
+        let mut frequencies = vec![BTreeSet::new(); terms.len()];
+        for hit in hits {
+            let content = reference_terms(&format!(
+                "{}\n{}",
+                hit.title.as_deref().unwrap_or_default(),
+                hit.content,
+            ));
+            let scope = normalized_terms(&hit.scope);
+            if !anchors.is_empty()
+                && !anchors.iter().any(|anchor| {
+                    scope.contains(anchor) || content.iter().any(|term| terms_match(anchor, term))
+                })
+            {
+                continue;
+            }
+            // A collection name is not a substitute for a different named
+            // subject in the same clause (Cedar must not stand in for Einstein).
+            // Keep this clause-local so an English operation name in a second
+            // question does not exclude evidence for the first Chinese one.
+            let missing = terms
+                .iter()
+                .enumerate()
+                .filter_map(|(index, term)| {
+                    (anchors.contains(term)
+                        && !scope.contains(term)
+                        && !content.iter().any(|word| terms_match(term, word)))
+                    .then_some(index)
+                })
+                .collect::<BTreeSet<_>>();
+            missing_anchors.insert(hit.chunk_id, missing);
+            documents.insert(hit.document_id);
+            let matched = terms
+                .iter()
+                .enumerate()
+                .filter_map(|(index, term)| {
+                    content
+                        .iter()
+                        .any(|other| terms_match(term, other))
+                        .then_some(index)
+                })
+                .collect::<BTreeSet<_>>();
+            for &index in &matched {
+                frequencies[index].insert(hit.document_id);
+            }
+            matches.insert(hit.chunk_id, matched);
+        }
+        // Local inverse document frequency discounts project names and common
+        // boilerplate shared by nearly every candidate. Unmatched question
+        // wording contributes no denominator penalty to a partial source.
+        let weights = frequencies
+            .iter()
+            .map(|documents_with_term| {
+                if documents_with_term.is_empty() {
+                    0.0
+                } else {
+                    ((documents.len() + 1) as f64 / (documents_with_term.len() + 1) as f64).ln()
+                        + 1.0
+                }
+            })
+            .collect::<Vec<_>>();
+        let total: f64 = weights.iter().sum();
+        let clauses = reference_clauses(&query, &terms, &anchors);
+        let mut raw_scores = BTreeMap::new();
+        let mut best = vec![0.0f64; clauses.len()];
+        for (&id, matched) in &matches {
+            let raw = clauses
+                .iter()
+                .enumerate()
+                .map(|(index, clause)| {
+                    let overlap = clause.intersection(matched).copied().collect::<Vec<_>>();
+                    let topical_matches = overlap
+                        .iter()
+                        .filter(|&&index| !anchors.contains(&terms[index]))
+                        .count();
+                    let score = if !clause.is_disjoint(&missing_anchors[&id])
+                        || matched.len() < terms.len().min(2)
+                        || overlap.len() < clause.len().min(2)
+                        // In a rich question, the project name plus one generic
+                        // word is insufficient, even with no stronger candidate.
+                        || (clause.len() >= 4 && topical_matches < 2)
+                        || (overlap.len() as f64 / clause.len() as f64) < 0.25
+                    {
+                        0.0
+                    } else {
+                        let denominator: f64 = clause.iter().map(|&term| weights[term]).sum();
+                        if denominator > 0.0 {
+                            overlap.iter().map(|&term| weights[term]).sum::<f64>() / denominator
+                        } else {
+                            0.0
+                        }
+                    };
+                    best[index] = best[index].max(score);
+                    score
+                })
+                .collect::<Vec<_>>();
+            raw_scores.insert(id, raw);
+        }
+        // Balance clauses before comparing candidates. Otherwise a long CJK
+        // clause with many bigrams can suppress the sole qualifier answering a
+        // shorter English clause, despite room for both original statements.
+        let scores = raw_scores
+            .into_iter()
+            .filter_map(|(id, raw)| {
+                let balanced = raw
+                    .iter()
+                    .zip(&best)
+                    .map(
+                        |(&score, &best)| {
+                            if best > 0.0 { score / best } else { 0.0 }
+                        },
+                    )
+                    .fold(0.0f64, f64::max);
+                if balanced == 0.0 || total == 0.0 {
+                    None
+                } else {
+                    let coverage: f64 = matches[&id].iter().map(|&term| weights[term]).sum();
+                    Some((id, balanced + 0.05 * coverage / total))
+                }
+            })
+            .collect();
+        Self { scores, matches }
+    }
+
+    fn score(&self, hit: &SearchHit) -> Option<f64> {
+        self.scores.get(&hit.chunk_id).copied()
+    }
+}
+
+fn reference_clauses(query: &str, terms: &[String], anchors: &[String]) -> Vec<BTreeSet<usize>> {
+    let mut clauses = vec![(0..terms.len()).collect()];
+    // A code-switched request may name an English operation and describe its
+    // condition in Chinese. Evaluate the shared English terms as a language
+    // facet too; Chinese bigrams must not dilute those identifiers away.
+    let latin = terms
+        .iter()
+        .enumerate()
+        .filter_map(|(index, term)| term.is_ascii().then_some(index))
+        .collect::<BTreeSet<_>>();
+    if latin.len() >= 2 && latin.len() < terms.len() {
+        clauses.push(latin);
+    }
+    let separated = query
+        .to_lowercase()
+        .replace(" and ", "\n")
+        .replace(" or ", "\n");
+    for clause in separated
+        .split(['?', '？', ';', '；', ',', '，', '\n'])
+        .take(16)
+    {
+        let words = reference_terms(clause);
+        let indices = terms
+            .iter()
+            .enumerate()
+            .filter_map(|(index, term)| words.contains(term).then_some(index))
+            .collect::<BTreeSet<_>>();
+        // A named comparison subject can be a fragment ("Compare Ada and
+        // Grace compilers"). It still needs a second global topical match.
+        // Generic fragments such as "and history" cannot admit a hit alone.
+        let named_fragment =
+            indices.len() == 1 && indices.iter().any(|&index| anchors.contains(&terms[index]));
+        if (indices.len() >= 2 || named_fragment) && !clauses.contains(&indices) {
+            clauses.push(indices);
+        }
+    }
+    clauses
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2fa1f)
+}
+
+fn reference_terms(value: &str) -> Vec<String> {
+    // Generic question/request words are neither subjects nor evidence. CJK
+    // bigrams permit overlap inside an unsegmented Chinese question; no fuzzy
+    // edit matching is used for these two-character terms.
+    const QUESTION_WORDS: &[&str] = &[
+        "describe",
+        "explain",
+        "should",
+        "show",
+        "tell",
+        "why",
+        "summarise",
+        "summarize",
+        "compare",
+    ];
+    let mut terms = value
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|term| !term.chars().any(is_cjk))
+        .map(str::to_lowercase)
+        // Filter before stemming: "does" otherwise becomes "doe" and can
+        // accidentally act as a named-entity anchor in a natural question.
+        .filter(|term| !CONTEXT_STOP_WORDS.contains(&term.as_str()))
+        .filter(|term| !QUESTION_WORDS.contains(&term.as_str()))
+        .map(|term| normalize_term(&term))
+        .filter(|term| term.chars().count() >= 3)
+        .collect::<Vec<_>>();
+    for run in value.split(|c| !is_cjk(c)) {
+        let chars = run.chars().collect::<Vec<_>>();
+        for pair in chars.windows(2) {
+            terms.push(pair.iter().collect());
+        }
+    }
+    terms.sort();
+    terms.dedup();
+    terms.truncate(256);
+    terms
+}
+
 pub(crate) fn fuzzy_context_score(query: &str, content: &str) -> Option<f64> {
     let terms = meaningful_terms(query);
     if terms.is_empty() {
@@ -893,13 +1387,14 @@ pub(crate) fn fuzzy_context_score(query: &str, content: &str) -> Option<f64> {
     }
 }
 
+const CONTEXT_STOP_WORDS: &[&str] = &[
+    "about", "after", "again", "also", "and", "are", "can", "could", "does", "for", "from", "have",
+    "hello", "help", "how", "into", "just", "like", "more", "please", "recall", "remember", "that",
+    "the", "their", "then", "there", "this", "those", "use", "what", "when", "where", "which",
+    "with", "would", "you", "your",
+];
+
 fn meaningful_terms(value: &str) -> Vec<String> {
-    const STOP_WORDS: &[&str] = &[
-        "about", "after", "again", "also", "and", "are", "can", "could", "does", "for", "from",
-        "have", "hello", "help", "how", "into", "just", "like", "more", "please", "recall",
-        "remember", "that", "the", "their", "then", "there", "this", "those", "use", "what",
-        "when", "where", "which", "with", "would", "you", "your",
-    ];
     let raw_terms = normalized_terms(value);
     if raw_terms.len() <= 3
         && raw_terms
@@ -911,7 +1406,7 @@ fn meaningful_terms(value: &str) -> Vec<String> {
     let mut terms = raw_terms
         .into_iter()
         .filter(|term| term.chars().count() >= 3)
-        .filter(|term| !STOP_WORDS.contains(&term.as_str()))
+        .filter(|term| !CONTEXT_STOP_WORDS.contains(&term.as_str()))
         .collect::<Vec<_>>();
     terms.sort();
     terms.dedup();
@@ -1138,6 +1633,52 @@ fn push_reference_if_fits(packet: &mut ContextPacket, reference: ContextReferenc
     }
 }
 
+fn push_topic_if_fits(
+    packet: &mut ContextPacket,
+    reference: ContextReference,
+    topic_chars: &mut usize,
+) -> bool {
+    let chars = crate::model::render_context_reference(&reference)
+        .chars()
+        .count();
+    if topic_chars.saturating_add(chars) > packet.max_chars / 4 {
+        return false;
+    }
+    if push_reference_if_fits(packet, reference) {
+        *topic_chars += chars;
+        true
+    } else {
+        false
+    }
+}
+
+fn topic_already_quotes_reference(packet: &ContextPacket, reference: &ContextReference) -> bool {
+    let Some(claim) = &reference.source_claim else {
+        return false;
+    };
+    packet
+        .references
+        .iter()
+        .filter_map(|reference| reference.topic.as_ref())
+        .any(|topic| {
+            topic.statements.iter().any(|statement| {
+                statement.kind == "fact"
+                    && statement.text == reference.content
+                    && statement.citations.len() == claim.citations.len()
+                    && statement.citations.iter().all(|citation| {
+                        claim.citations.iter().any(|other| {
+                            citation.source_id == other.source_id
+                                && citation.revision_id == other.revision_id
+                                && citation.source_kind == other.source_kind
+                                && citation.start_byte == other.start_byte
+                                && citation.end_byte == other.end_byte
+                                && citation.quote == other.quote
+                        })
+                    })
+            })
+        })
+}
+
 fn exact_reference_range(
     body: &str,
     content: &str,
@@ -1164,12 +1705,49 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 fn truncate_reference_content(reference: &mut ContextReference, max_chars: usize) {
     truncate_exact_prefix(&mut reference.content, max_chars);
     reference.end_byte = reference.start_byte + reference.content.len();
+    if let Some(claim) = &mut reference.source_claim {
+        for citation in &mut claim.citations {
+            truncate_source_citation_quote(citation, max_chars);
+            debug_assert_eq!(citation.quote, reference.content);
+        }
+    }
+}
+
+fn align_source_citation(
+    citation: &mut SourceClaimCitation,
+    claim_start: usize,
+    claim_end: usize,
+    excerpt: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        citation.quote.get(claim_start..claim_end) == Some(excerpt),
+        "retrieved source statement does not match its supporting source range"
+    );
+    citation.start_line += citation.quote[..claim_start].matches('\n').count();
+    citation.start_byte += claim_start;
+    citation.quote = excerpt.to_owned();
+    truncate_source_citation_quote(citation, usize::MAX);
+    Ok(())
 }
 
 fn truncate_citation_quote(citation: &mut ContextCitation, max_chars: usize) {
     truncate_exact_prefix(&mut citation.quote, max_chars);
     citation.end_byte = citation.start_byte + citation.quote.len();
     citation.end_line = citation.start_line + citation.quote.matches('\n').count();
+}
+
+fn truncate_source_citation_quote(citation: &mut SourceClaimCitation, max_chars: usize) {
+    truncate_exact_prefix(&mut citation.quote, max_chars);
+    citation.end_byte = citation.start_byte + citation.quote.len();
+    // Source ranges name the line containing the final included byte. A
+    // trailing newline belongs to that line, not the following empty line.
+    citation.end_line = citation.start_line
+        + citation
+            .quote
+            .strip_suffix('\n')
+            .unwrap_or(&citation.quote)
+            .matches('\n')
+            .count();
 }
 
 fn truncate_exact_prefix(value: &mut String, max_chars: usize) {
@@ -1299,6 +1877,8 @@ mod tests {
             relevance_score: 1.0,
             start_byte: 10,
             end_byte: 26,
+            source_claim: None,
+            topic: None,
         };
         truncate_reference_content(&mut reference, 6);
         assert_eq!(reference.content, "Moon 🌙");
@@ -1326,5 +1906,221 @@ mod tests {
             citation.start_byte + citation.quote.len()
         );
         assert_eq!(citation.end_line, 5);
+    }
+
+    #[test]
+    fn truncated_source_citation_keeps_original_exact_coordinates() {
+        let mut citation = crate::model::SourceClaimCitation {
+            source_id: "source".into(),
+            source_key: "key".into(),
+            revision_id: "revision".into(),
+            source_kind: "article".into(),
+            origin: None,
+            title: None,
+            author: None,
+            published_at_ms: None,
+            captured_at_ms: 1,
+            start_byte: 20,
+            end_byte: 50,
+            start_line: 3,
+            end_line: 5,
+            quote: "Moon 🌙\nuses SQLite\n".into(),
+        };
+        super::truncate_source_citation_quote(&mut citation, 7);
+        assert_eq!(citation.quote, "Moon 🌙\n");
+        assert_eq!(citation.end_byte, 20 + citation.quote.len());
+        assert_eq!(citation.end_line, 3);
+        assert_eq!(citation.source_id, "source");
+        assert_eq!(citation.revision_id, "revision");
+    }
+
+    #[test]
+    fn source_citation_tracks_a_later_chunk_and_each_context_budget_cut() {
+        let prefix = "earlier source statement\n".repeat(80);
+        let excerpt = "🌙 Later source evidence\ncontinues with exact wording.";
+        let claim = format!("{prefix}{excerpt}\nlast statement");
+        let source = format!("Source heading\n{claim}");
+        let source_start = "Source heading\n".len();
+        let mut citation = crate::model::SourceClaimCitation {
+            source_id: "source".into(),
+            source_key: "key".into(),
+            revision_id: "revision".into(),
+            source_kind: "reference".into(),
+            origin: None,
+            title: None,
+            author: None,
+            published_at_ms: None,
+            captured_at_ms: 1,
+            start_byte: source_start,
+            end_byte: source_start + claim.len(),
+            start_line: 2,
+            end_line: 83,
+            quote: claim,
+        };
+        super::align_source_citation(
+            &mut citation,
+            prefix.len(),
+            prefix.len() + excerpt.len(),
+            excerpt,
+        )
+        .expect("align later chunk");
+        assert_eq!(citation.quote, excerpt);
+        assert_eq!(citation.start_line, 82);
+        assert_eq!(citation.end_line, 83);
+        let mut reference = ContextReference {
+            document_id: 1,
+            chunk_id: 2,
+            source_uri: "moon-source-claim://claim".into(),
+            source_kind: "source_claim".into(),
+            scope: "moon".into(),
+            title: None,
+            content: excerpt.into(),
+            relevance_score: 1.0,
+            start_byte: prefix.len(),
+            end_byte: prefix.len() + excerpt.len(),
+            source_claim: Some(crate::model::SourceClaimContext {
+                claim_id: "claim".into(),
+                kind: "author_statement".into(),
+                citations: vec![citation],
+            }),
+            topic: None,
+        };
+        for max_chars in [500, 30, 24, 4] {
+            truncate_reference_content(&mut reference, max_chars);
+            let citation = &reference.source_claim.as_ref().unwrap().citations[0];
+            assert_eq!(citation.quote, reference.content);
+            assert_eq!(
+                &source[citation.start_byte..citation.end_byte],
+                reference.content
+            );
+            assert_eq!(
+                citation.start_line,
+                1 + source[..citation.start_byte].matches('\n').count()
+            );
+            assert_eq!(
+                citation.end_line,
+                1 + source.as_bytes()[..citation.end_byte - 1]
+                    .iter()
+                    .filter(|&&byte| byte == b'\n')
+                    .count()
+            );
+        }
+    }
+
+    fn topic_reference_fixture() -> ContextReference {
+        let text = "Withdrawal is not deletion; the retained source remains available for review.";
+        ContextReference {
+            document_id: 1,
+            chunk_id: 2,
+            source_uri: "moon-topic://topic".into(),
+            source_kind: "topic_summary".into(),
+            scope: "moon".into(),
+            title: None,
+            content: text.into(),
+            relevance_score: 1.0,
+            start_byte: 0,
+            end_byte: text.len(),
+            source_claim: None,
+            topic: Some(crate::topics::TopicContext {
+                topic_id: "topic".into(),
+                key: "lifecycle".into(),
+                revision_id: "topic-revision".into(),
+                review_complete: false,
+                statements: vec![crate::topics::TopicContextStatement {
+                    kind: "fact".into(),
+                    text: text.into(),
+                    input_ids: vec!["claim".into()],
+                    citations: vec![crate::model::SourceClaimCitation {
+                        source_id: "source".into(),
+                        source_key: "policy".into(),
+                        revision_id: "revision".into(),
+                        source_kind: "reference".into(),
+                        origin: None,
+                        title: None,
+                        author: None,
+                        published_at_ms: None,
+                        captured_at_ms: 1,
+                        start_byte: 10,
+                        end_byte: 10 + text.len(),
+                        start_line: 2,
+                        end_line: 2,
+                        quote: text.into(),
+                    }],
+                }],
+            }),
+        }
+    }
+
+    #[test]
+    fn topic_budget_omits_whole_blocks_instead_of_cutting_qualifications() {
+        let reference = topic_reference_fixture();
+        let rendered_chars = crate::model::render_context_reference(&reference)
+            .chars()
+            .count();
+        let mut packet = crate::ContextPacket {
+            query: "withdrawal".into(),
+            scope: Some("moon".into()),
+            max_chars: rendered_chars * 4 - 1,
+            used_chars: 0,
+            truncated: false,
+            memories: Vec::new(),
+            references: Vec::new(),
+        };
+        let mut topic_chars = 0;
+        assert!(!super::push_topic_if_fits(
+            &mut packet,
+            reference.clone(),
+            &mut topic_chars
+        ));
+        assert!(packet.references.is_empty());
+        assert_eq!(topic_chars, 0);
+        packet.max_chars = rendered_chars * 4;
+        assert!(super::push_topic_if_fits(
+            &mut packet,
+            reference.clone(),
+            &mut topic_chars
+        ));
+        assert_eq!(topic_chars, rendered_chars);
+        assert!(packet.render_markdown().contains(&reference.content));
+        assert!(!super::push_topic_if_fits(
+            &mut packet,
+            reference,
+            &mut topic_chars
+        ));
+        assert_eq!(packet.references.len(), 1);
+    }
+
+    #[test]
+    fn topic_dedup_requires_exact_fact_wording_and_the_same_source_support() {
+        let topic = topic_reference_fixture();
+        let citations = topic.topic.as_ref().unwrap().statements[0]
+            .citations
+            .clone();
+        let mut claim = topic.clone();
+        claim.topic = None;
+        claim.source_kind = "source_claim".into();
+        claim.source_claim = Some(crate::model::SourceClaimContext {
+            claim_id: "claim".into(),
+            kind: "author_statement".into(),
+            citations,
+        });
+        let mut packet = crate::ContextPacket {
+            query: "withdrawal".into(),
+            scope: Some("moon".into()),
+            max_chars: 10_000,
+            used_chars: 0,
+            truncated: false,
+            memories: Vec::new(),
+            references: vec![topic],
+        };
+        assert!(super::topic_already_quotes_reference(&packet, &claim));
+        claim.content.push_str(" Different qualification.");
+        assert!(!super::topic_already_quotes_reference(&packet, &claim));
+        claim.content = packet.references[0].content.clone();
+        claim.source_claim.as_mut().unwrap().citations[0].revision_id = "other-revision".into();
+        assert!(!super::topic_already_quotes_reference(&packet, &claim));
+        claim.source_claim.as_mut().unwrap().citations[0].revision_id = "revision".into();
+        packet.references[0].topic.as_mut().unwrap().statements[0].kind = "interpretation".into();
+        assert!(!super::topic_already_quotes_reference(&packet, &claim));
     }
 }

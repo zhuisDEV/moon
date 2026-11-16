@@ -312,10 +312,12 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.6.1 or newer, back up the database and configuration,
-rehearse schema 8 on a copy, and retain the prior binary with its matching
-database backup. The release schema range is 6–8. Do not change live
-configuration, install the adapter, restart the gateway, or enable daily L2
-merely because source tests pass. Those are deployment actions requiring their
-own authorised scope. `moon.toml` remains in the runtime root across release
-switches.
+Before deploying Moon 2.7.0, back up with the installed pre-upgrade binary,
+retain configuration and rehearse schema 13 on a copy. Preserve the prior binary
+with its matching database backup. The signed release schema range is 6–13;
+schema 8 was the earlier 2.6.x target. Follow the
+[upgrade checklist](updating.md#upgrade-checklist) and refresh the changed
+skill. Do not change live configuration, install the adapter, restart the
+gateway, or enable daily L2 merely because source tests pass. Those are
+deployment actions requiring their own authorised scope. `moon.toml` remains in
+the runtime root across release switches.

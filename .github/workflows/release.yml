@@ -83,7 +83,8 @@ jobs:
           --binary target/release/moon
           --minimum-os-version "${{ matrix.minimum_os_version }}"
           --database-schema-min 6
-          --database-schema-max 8
+          --database-schema-max 13
+          --legacy-skill-only
           --output-dir "target/release-input/${{ matrix.target }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -173,6 +174,15 @@ jobs:
             echo "Refusing to overwrite existing release ${GITHUB_REF_NAME}" >&2
             exit 1
           fi
+          awk -v version="${{ needs.validate-tag.outputs.version }}" '
+            $1 == "##" && $2 == version { found = 1; next }
+            found && $1 == "##" { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > target/release-publish/release-notes.md
+          printf '\nGuides: [Getting started](https://github.com/%s/blob/%s/docs/getting-started.md) · [Upgrading and refreshing SKILL.md](https://github.com/%s/blob/%s/docs/updating.md)\n' \
+            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
+            "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" >> target/release-publish/release-notes.md
           gh release create "${GITHUB_REF_NAME}" \
             target/release-publish/moon-*.tar.gz \
             target/release-publish/release-manifest.json \
@@ -180,4 +190,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --title "Moon ${{ needs.validate-tag.outputs.version }}" \
+            --notes-file target/release-publish/release-notes.md \
             --generate-notes

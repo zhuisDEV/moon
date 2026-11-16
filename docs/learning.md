@@ -1,13 +1,31 @@
-# L1 distillation and daily L2 synthesis
+# Session learning and reviewed source claims
 
 L1 extracts small, cited memories after a completed OpenClaw turn. L2 revisits
 unprocessed evidence in daily batches, compares it with related memories and
 their original evidence, and proposes confirmations, corrections, exact-content
 merges, or review items. L2 is disabled by default.
 
-These commands require Moon 2.6.1 or newer. Upgrading does not automatically
-enable daily synthesis. For a source checkout, run `cargo build --locked` and
-use `./target/debug/moon` in place of `moon` in the isolated examples below.
+For first installation, use [getting started](getting-started.md). For an
+existing runtime, use [updating](updating.md), including the skill refresh step.
+This guide explains configuration and maintenance after installation. It covers
+three distinct paths:
+
+| Path                                  | Trigger                         | Review boundary                                                   |
+| ------------------------------------- | ------------------------------- | ----------------------------------------------------------------- |
+| Session L1                            | An eligible completed chat turn | Conservative automatic validation                                 |
+| Session L2                            | Daily, only after you enable it | Supported actions can commit; uncertain cases remain review items |
+| Source extraction and topic synthesis | Explicit tool or CLI invocation | A separate reviewer must accept the exact proposal hash           |
+
+The session-learning commands require Moon 2.6.1 or newer. Upgrading does not
+automatically enable daily synthesis. For a source checkout, run
+`cargo build --locked` and use `./target/debug/moon` in place of `moon` in the
+isolated examples below.
+
+The source-learning workflow in Moon 2.7.0 is separate: eligible immutable
+source captures create durable jobs, and explicitly reviewed verbatim claims can
+later join recall. It is accessed through `source learning` and `source claims`
+and does not run on the L1/L2 scheduler. See the source workflow below and
+[source storage](source-storage.md) for its schema-10 contract.
 
 ## Configure the two stages independently
 
@@ -260,6 +278,29 @@ checks; it does not imply that the model timed out. An apply failure means the
 SQLite transaction was rejected, which can also happen when L1 changed the
 memory scope while a longer L2 request was running.
 
+The schema-13 adapter additionally distinguishes `runtime_unavailable`,
+`runtime_setup_failed`, `authentication_failed`, `model_unavailable` and
+`model_route_mismatch`. Known setup/auth/route failures do not try Moon's
+fallback model. Locally detectable setup is checked before acquiring a source,
+topic or daily-L2 lease. Source/topic jobs persist these codes as terminal
+failures until explicit retry; daily session-L2 retains its existing bounded
+daily-run policy.
+
+Every helper response is checked against the selected provider/model. A
+confirmed mismatch or unexpected host fallback prevents submission/application.
+Successful daily-L2 `learning apply` metadata may include `execution`,
+separating requested provider/model/reasoning from observed identity/backend.
+Source and topic tools expose the same receipt as `model_execution`. Missing
+observations remain `null`; they are not inferred from request settings.
+`identity=verified` means both provider and model matched host metadata, not
+independent server attestation. The current host does not expose reliable
+transport reasoning effort; absence of fallback metadata is unknown, not a zero
+count.
+
+Use the [source-learning canary](source-learning-canary.md) for repeatable
+isolated integration checks. It does not exercise the next scheduled session-L2
+run or demonstrate general synthesis quality.
+
 Grounding codes include `question_only`, `unsupported_number`, `lost_qualifier`
 and `insufficient_overlap`. These are conservative checks, not proof that a
 rejected sentence is false. For example, a useful paraphrase can fail wording
@@ -384,13 +425,72 @@ reports that the scope changed. Manual `apply` accepts at most 32 actions and
 enforces storage invariants; model-level correction and uncertainty checks also
 run in the adapter, so manually authored proposals still require human review.
 
+## Reviewed learning from captured sources
+
+Completed-session evidence and external sources carry different authority. An
+article is not a user instruction, and a captured author's statement is not a
+verified fact merely because a model extracted it. Source learning therefore
+uses its own durable job and approval contract; it does not submit external text
+to the conservative session-L2 action validator.
+
+An import with explicit `--allow-learning` creates its source revision and
+required pending work in the same transaction. `source learning prepare` leases
+one bounded packet for an authorised caller; `--preview` inspects it read-only.
+The caller may use its configured host model to propose useful verbatim quotes.
+The optional OpenClaw `moon_source_learn` tool provides this explicit step using
+the enabled L1 route, reasoning, fallback and timeout. It requires trusted owner
+authority and an explicit configured Moon home, caps the body at 64 KiB, and
+submits review proposals only. No source timer is registered. Moon's CLI
+performs no inference and stores no provider credentials.
+
+`source learning submit` accepts version-1 JSON with a `claims` array. Each
+entry contains an exact `quote`, optional `start_byte`, and optional
+`valid_until_ms`. Unknown fields, unsupported versions, altered quotations and
+invalid ranges are rejected. The submission is tied to the prepared job and
+lease; revision, eligibility and lifecycle changes invalidate late results. It
+remains a proposal until a reviewer inspects `source learning status
+--job-id`
+and approves the exact result hash using `accept --yes`. Model output cannot
+supply this caller-side approval.
+
+Accepted source claims retain attribution and exact source support. Recall
+checks current support and expiry; source withdrawal stops learning and normal
+recall immediately. Restoring a source can reactivate previously accepted
+current/eligible quotes, but does not approve new claims. Rejected proposals,
+failed attempts and expired leases remain inspectable and recoverable under
+bounded retry rules. Failure reporting takes a fixed code rather than a provider
+error body.
+
+Use `source claims list/get` to inspect claims, `source state` for lifecycle
+state, and `source delete-preview` before any explicitly authorised
+`delete-apply --yes`. A changed deletion plan is rejected. Deletion affects the
+working database; it cannot erase backup copies or retract text previously
+provided to a model.
+
+The
+[source-storage workflow](source-storage.md#extract-and-review-source-claims)
+contains examples in a temporary home. Source extraction has no automatic
+service and only proposes verbatim claims. Existing L1/L2 model configuration
+continues to govern completed-session learning; the explicit source tool reuses
+L1 routing with its own fixed verbatim-extraction prompt.
+
+The subsequent schema-11 [topic workflow](topics.md) adds revision-bound
+cross-source compilation and transitive freshness checks. It has separate jobs
+and typed statements; optional `moon_topic_compile` reuses enabled L2 routing
+with a fixed prompt and submits review only. The completed-session L2 scheduler
+does not compile topics.
+
 ## Before deploying to an existing runtime
 
-This implementation migrates SQLite to schema 8. Its release compatibility range
-is schema 6 through 8. Back up the live database, export memories, and preserve
-the existing OpenClaw configuration and any `moon.toml` before an authorised
-deployment. Keep the previous binary and its matching database backup: an older
-binary must not open a migrated schema-8 database.
+Moon 2.7.0 accepts supported databases from schema 6 through 13 and migrates
+them to schema 13. L1/L2 introduced schema 8; source storage, reviewed learning
+and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
+job diagnostics adds schema 13. Back up with the currently installed pre-upgrade
+executable, export memories, and preserve the existing OpenClaw configuration
+and any `moon.toml` before an authorised deployment. The export is a generated
+view, not a replacement for the complete SQLite backup. Keep the previous binary
+and its matching database backup: an older binary must not open the newer
+schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

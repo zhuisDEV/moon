@@ -4,6 +4,39 @@ This adapter registers the `moon` context engine, supplies one bounded SQLite
 context packet for the current user message, and records completed turns for
 selective durable-memory learning.
 
+This is the Moon 2.7.0 adapter and must be installed with the matching binary
+and `SKILL.md` (database schema 13). For a first installation, use
+[getting started](../../docs/getting-started.md). For an existing installation,
+use [updating](../../docs/updating.md); do not copy this file over a running
+plugin or link a mutable development checkout into production.
+
+## Installation and upgrade checks
+
+The signed updater treats the binary, adapter, skill and database as one
+compatibility set. Moon 2.7.0 is the six-file bridge for older updaters; its
+companion documentation must be installed from the same reviewed release tag
+when an agent needs local references. Refresh separately installed skill copies
+as well. The upgrade guide explains which skill files are updated automatically
+and how to preserve local edits.
+
+After installation, check the following before relying on automatic memory:
+
+1. The configured `moonPath` resolves to the intended binary and `moonHome`
+   identifies the intended runtime. Inspect `moon --json --version` and health.
+2. Moon owns the context-engine slot and the plugin has the required recall hook
+   permissions. A loaded plugin alone does not prove native recall.
+3. A new real chat turn receives the expected recalled context. Use the
+   [isolated canary](../../docs/openclaw-canary.md) before live changes.
+4. L1 and, if enabled, L2 can use their configured routes. A healthy database
+   does not prove model authentication or account access.
+
+The recommended context cap is `maxChars: 8000`; the compiled fallback remains
+3,500 for compatibility. The cap is a ceiling, so small results do not get
+padded. Source/topic preparation has a separate input budget. See
+[packet selection](../../docs/packet-selection.md) for the measured trade-off.
+
+## Recall and ownership
+
 With an explicit `plugins.entries.moon.hooks.allowConversationAccess=true` grant
 and prompt injection allowed, recall uses `before_prompt_build` for both native
 and stock runtimes. The hook returns a defensive `prependContext` packet;
@@ -49,6 +82,9 @@ The adapter keeps strict ownership boundaries:
   occurrence, also after a restart. Fixed failure phases and codes never include
   generated claims or provider error bodies.
 - Greetings and irrelevant queries inject no context packet.
+- The optional `moon_source_learn` tool explicitly processes one queued eligible
+  source and submits verbatim proposals for separate operator review. It does
+  not approve claims or run from the scheduler.
 - Non-trivial context requests update a local, content-free metric row with
   injection state. Logs expose only its opaque request ID and numeric summary
   for optional human review.
@@ -70,6 +106,32 @@ existing route and L2 is disabled. The Astra starter uses `low` for L1 and
 `xhigh` for L2. Custom prompts supplement fixed evidence guards and must be
 readable UTF-8 files no larger than 64 KiB. Config is reloaded per completed
 turn and scheduler tick; in-flight work keeps its initial settings.
+
+To use source extraction, the owner must allow the optional `moon_source_learn`
+tool in the host tool policy and configure an explicit `moonHome`. Invoke it
+with `{"scope":"project:canary","source_key":"canary-learning"}`; the key is
+optional and scope is mandatory. The tool is available only to trusted owner
+contexts with V2 current-invocation authority. It reloads L1's enabled state,
+model, reasoning, fallback and timeout for each invocation; its fixed source
+prompt does not reuse the optional session-L1 prompt file. It reads at most 64
+KiB of body plus bounded provenance, disables model tools, and accepts only
+strict bounded JSON with exact verbatim quotes. It returns a review job ID and
+result hash without the captured text or lease token. Failures use fixed codes
+and release the current attempt when possible. Review through
+`source learning status` and explicit `source learning accept --yes` remains a
+separate operator action. No login, automatic source worker or source lifecycle
+action is added. See the [source workflow](../../docs/source-storage.md).
+
+The optional `moon_topic_compile` tool uses the same owner authority, explicit
+home, current-invocation, cancellation and review boundaries for topic jobs.
+Invoke it with `{"scope":"project:canary","topic_key":"canary-storage"}` after
+allowing it in host tool policy. It uses enabled L2 settings and a fixed typed
+statement prompt, with a 64 KiB full-snapshot bound. Factual blocks must match
+an accepted source claim or parent fact exactly; generated statements cannot be
+promoted to facts. Interpretation/disagreement/question blocks stay labelled.
+The tool submits a review result and never calls `topic accept`. See
+[reviewed topics](../../docs/topics.md). Both optional tools are declared in the
+plugin manifest; neither adds scheduled source/topic processing.
 
 On the verified native Codex setup, the `openai` provider uses OpenClaw's Codex
 plugin, the app's Codex binary, and `homeScope: "user"` with the existing user
@@ -100,6 +162,17 @@ implicitly routed OpenAI models. Explicit stock runtimes and ordinary local
 providers retain the hint. Moon leaves route and authentication selection to
 OpenClaw instead of forcing a runtime or changing credentials. L1 and L2
 failures report fixed phase/code diagnostics without provider error bodies.
+
+Moon 2.7.0 verifies the returned provider/model for each model helper, rejecting
+confirmed route mismatches or unexpected host fallback before submission.
+Source/topic results include `model_execution`; daily-L2 apply records the same
+optional `metadata.execution`. Requested reasoning is kept separate from
+observed execution, with missing values represented as `null`. In particular,
+missing fallback metadata does not mean zero fallback attempts. Known
+setup/auth/route failures stop Moon fallback; source/topic jobs retain a
+terminal fixed diagnostic until explicit retry. The binary and adapter must be
+deployed together for schema-13 diagnostic codes. See
+[the reusable canary](../../docs/source-learning-canary.md).
 
 Moon retains its existing configured model routing through this API. Switching
 to OpenClaw's session-bound `llm.complete` API requires a separate operator
@@ -137,8 +210,7 @@ compaction policy. Moon installs no wall-clock compaction timer.
 
 Use the repository's [`SKILL.md`](../../SKILL.md) for agent operations and
 [`docs/learning.md`](../../docs/learning.md) for configuration, daily
-scheduling, freshness, review limits, schema-8 migration, and isolated CLI
-rehearsals. See
-[`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md) for
-the metrics commands, privacy boundary, and multi-day recall evaluation before
-changing retrieval policy.
+scheduling, freshness, review limits, migrations, and isolated CLI rehearsals.
+See [`docs/memory-improvement-plan.md`](../../docs/memory-improvement-plan.md)
+for the metrics commands, privacy boundary, and multi-day recall evaluation
+before changing retrieval policy.

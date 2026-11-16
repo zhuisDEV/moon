@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 2.7.0 - 2026-11-17
+
+- Refresh vulnerable locked dependencies before publication: bundled SQLite is
+  now 3.54.1 through rusqlite 0.41.1, with patched TLS, certificate roots, QUIC
+  and I/O dependencies. The database schema remains 13.
+- Avoid repeated SQLite 3.54 metadata-query recompilation while preserving
+  read-time validity checks. The patched-engine 8,000-character benchmark meets
+  50 ms warm lexical p95 at 1k and 10k references with exact packet parity.
+
+- Add SQLite source capture with immutable revisions, provenance, exact
+  citations, reviewed verbatim claims, withdrawal/restoration and explicit
+  deletion plans.
+- Add recoverable source-learning and topic-compilation jobs. Optional OpenClaw
+  tools use independent L1/L2 routes and leave proposals pending separate
+  review. Typed topics retain revision-bound evidence and exclude stale support.
+- Apply numbered migrations 9–13 transactionally. Use FULL SQLite durability,
+  bounded fixed job diagnostics and explicit retry for setup/authentication
+  failures.
+- Improve evidence selection while keeping qualifications and independent
+  premises. Optimise validity lookup without relaxing freshness or scope checks.
+  Document 1,000/10,000-reference measurements and the 8,000-character
+  recommendation; the compiled packet default remains 3,500.
+- Verify returned model identity while distinguishing requested effort from
+  unknown execution metadata. Add a resumable isolated real-model canary with
+  review gates.
+- Harden updater preservation of learning jobs and complete skill directories;
+  refuse automatic restoration over newer learning or conflicting skill edits.
+- Rewrite first-install and upgrade guides and update `SKILL.md`. **Refresh all
+  separately installed skill copies.** This first release retains six signed
+  payloads for compatibility with 2.6.6; copy supporting guides from tag
+  `v2.7.0`. Future releases can use the new documentation-aware bundle reader.
+
 ## 2.6.6 - 2026-10-03
 
 - Allow up to two minutes for OpenClaw gateway startup and the full plugin

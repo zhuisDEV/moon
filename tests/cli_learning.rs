@@ -82,6 +82,71 @@ fn input_with_deferred(actions: Vec<Value>, deferred: Vec<String>) -> ApplyInput
 }
 
 #[test]
+fn model_execution_provenance_preserves_unknowns_and_rejects_false_verification() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(
+        &mut store,
+        "provenance",
+        "global",
+        "The rehearsal requires approval.",
+        100,
+    );
+    let prepared = store.learning_prepare(&request("day:provenance")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    let metadata = json!({
+        "model":"openai/gpt-6.1-terra", "reasoning":"max", "prompt_hash":"ab".repeat(32),
+        "execution":{
+            "requested":{"provider":"openai","model":"gpt-6.1-terra","reasoning":"max"},
+            "observed":{"provider":"openai","model":"gpt-6.1-terra","backend":"openclaw","reasoning":null,"fallback_attempts":null},
+            "identity":"verified"
+        }
+    });
+    for (pointer, invalid) in [
+        ("/execution/requested/model", json!("another-model")),
+        ("/execution/requested/reasoning", json!("low")),
+        ("/execution/observed/provider", json!("different-provider")),
+        ("/execution/observed/model", json!("different-model")),
+        (
+            "/execution/observed/backend",
+            json!("private-provider-diagnostic"),
+        ),
+        ("/execution/observed/fallback_attempts", json!(1)),
+        ("/execution/identity", json!("unknown")),
+    ] {
+        let mut bad = metadata.clone();
+        *bad.pointer_mut(pointer).unwrap() = invalid;
+        let input: ApplyInput =
+            serde_json::from_value(json!({"actions":[],"metadata":bad})).unwrap();
+        let error = store.learning_apply(run, input, false).unwrap_err();
+        assert_eq!(error.to_string(), "invalid model execution metadata");
+    }
+    for (provider, model, identity) in [
+        (Value::Null, Value::Null, "unknown"),
+        (json!("openai"), Value::Null, "partial"),
+        (Value::Null, json!("gpt-6.1-terra"), "partial"),
+    ] {
+        let mut partial = metadata.clone();
+        partial["execution"]["observed"]["provider"] = provider;
+        partial["execution"]["observed"]["model"] = model;
+        partial["execution"]["identity"] = json!(identity);
+        let input: ApplyInput =
+            serde_json::from_value(json!({"actions":[],"metadata":partial})).unwrap();
+        store.learning_apply(run, input, true).unwrap();
+    }
+    let input: ApplyInput =
+        serde_json::from_value(json!({"actions":[],"metadata":metadata})).unwrap();
+    let outcome = store.learning_apply(run, input.clone(), false).unwrap();
+    assert_eq!(outcome["metadata"], metadata);
+    assert!(outcome["metadata"]["execution"]["observed"]["reasoning"].is_null());
+    assert!(outcome["metadata"]["execution"]["observed"]["fallback_attempts"].is_null());
+    drop(store);
+    let mut reopened = Store::open(temp.path().join("state/moon.sqlite"), 64).unwrap();
+    assert_eq!(reopened.learning_apply(run, input, false).unwrap(), outcome);
+    assert!(reopened.health().unwrap().ok);
+}
+
+#[test]
 fn preview_is_read_only_and_scope_cutoff_is_frozen() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);

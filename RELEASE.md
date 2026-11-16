@@ -4,7 +4,10 @@ This document describes the release process for Moon.
 
 ## Scope
 
-Use this process for tagged public releases (for example `v2.2.0`).
+Use this process for tagged public releases. The current release is **2.7.0**,
+schema **13**, with signed input compatibility **6–13**. User installation and
+upgrade instructions are in [Getting started](docs/getting-started.md) and
+[Updating](docs/updating.md).
 
 ## Pre-release Checklist
 
@@ -19,6 +22,7 @@ Use this process for tagged public releases (for example `v2.2.0`).
    - `README.md`
    - `SKILL.md`
    - `docs/how-it-works.md`
+   - `docs/getting-started.md`, `docs/updating.md` and `docs/migration.md`
    - `SECURITY.md`
    - `SUPPORT.md`
 4. Run validation:
@@ -33,7 +37,12 @@ Use this process for tagged public releases (for example `v2.2.0`).
    - `sh tools/test-openclaw-adapter.sh "$PWD/target/release/moon"` (requires
      all four real-binary integration tests in a temporary synthetic runtime)
    - an isolated migration and real-binary adapter canary
-   - a consistent live backup plus `moon --json health`
+   - review existing migration/restoration and real-model evidence against the
+     unchanged runtime; do not repeat paid calls for documentation-only changes
+5. Keep development/release validation isolated with a temporary home.
+   Publishing a release does not authorise deployment to an operator's live
+   runtime. A live deployment separately requires database/configuration backups
+   and checks.
 
 ## Signed Bundle Inputs
 
@@ -49,7 +58,8 @@ cargo run --locked --example moon-release -- bundle \
   --binary target/release/moon \
   --minimum-os-version 13.0 \
   --database-schema-min 6 \
-  --database-schema-max 8 \
+  --database-schema-max 13 \
+  --legacy-skill-only \
   --output-dir /path/to/release-staging
 ```
 
@@ -59,6 +69,25 @@ the release produces. For example, Moon 2.6.1 migrates schema 6 or 7 to schema 8
 and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
+
+Moon 2.7.0 produces schema 13. **Keep `--legacy-skill-only` in both CI and the
+release workflow for this bridge release**: the 2.6.6 reader rejects additional
+payload files. The six signed payloads include binary, adapter and `SKILL.md`.
+Users copy supporting guides from the same tag; the skill has pinned online
+links and the release notes must flag the skill update.
+
+The new reader also supports bounded optional `skill/docs/*.md`. A later release
+can remove the bridge flag once the supported upgrade path includes 2.7.0. All
+included documents are signed payloads; unsupported paths, symlinks,
+case-colliding names or oversized documents fail bundle validation. Existing
+six-file bundles remain valid for compatibility. Keep the job-preservation,
+skill-directory rollback and isolated
+[model canary](docs/source-learning-canary.md) checks with release evidence.
+
+Do not point an old reader directly at an extended manifest; it rejects it
+before staging. Test both bridge and extended payloads. Advancing the stable
+release to an extended bundle later must explicitly document the pinned 2.7.0
+intermediate upgrade for older clients.
 
 Moon 2.5.1 requires OpenClaw 2026.9.2 for detached model sessions. The bundle
 operator defaults `--openclaw-min-version` to that floor; keep it aligned with
@@ -79,7 +108,7 @@ cargo run --locked --example moon-release -- manifest \
   --asset /path/to/macos-x64/release-asset.json \
   --asset /path/to/linux-arm64/release-asset.json \
   --asset /path/to/linux-x64/release-asset.json \
-  --published-at 2026-08-12T00:00:00Z \
+  --published-at 2026-11-16T00:00:00Z \
   --output /path/to/release-manifest.json
 ```
 
@@ -116,17 +145,23 @@ environment.
 
 ## Tag and Publish
 
-1. Commit and push release changes to `main`.
-2. Create and push an annotated tag:
+1. Commit and push the reviewed release branch, open a pull request and wait for
+   all required CI checks. Merge to `main`; fetch and fast-forward the local
+   checkout without rewriting history. Confirm the release versions match.
+2. Create and push an annotated tag at the merged commit:
    - `git tag -a vX.Y.Z -m "moon vX.Y.Z"`
-   - `git push origin main --follow-tags`
    - `git push origin vX.Y.Z`
 3. Start the workflow at the exact tag:
    - `gh workflow run release.yml --ref vX.Y.Z`
-4. Approve the `production-release` deployment after reviewing its tag and
-   unsigned build evidence. The workflow creates the release with generated
-   notes, the signed canonical manifest, detached signature set, and four
-   platform archives. It refuses an existing release.
+4. Review and approve the `production-release` deployment after reviewing its
+   tag and unsigned build evidence. The workflow creates the release with the
+   version's changelog, pinned user guides and generated commit notes, the
+   signed canonical manifest, detached signature set, and four platform
+   archives. It refuses an existing release.
+5. Include the 2.7.0 highlights from `CHANGELOG.md`, schema compatibility, the
+   six-file bridge boundary and **the instruction to refresh separately
+   installed `SKILL.md` copies** in the release notes. Generated commit notes
+   alone are insufficient upgrade guidance.
 
 ## Post-release
 
