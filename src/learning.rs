@@ -204,13 +204,13 @@ impl Store {
                 return Ok(json!({"status":"committed", "run_key": request.run_key, "run_id":run_id,"deferred_evidence":deferred_evidence}));
             }
             if transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM learning_runs WHERE status = 'prepared' AND lease_until_ms > ?1)",
+                "SELECT EXISTS(SELECT 1 FROM learning_runs WHERE status = 'prepared' AND run_id NOT IN (SELECT run_id FROM privacy_legacy_runs) AND lease_until_ms > ?1)",
                 [now_ms()], |row| row.get::<_, bool>(0),
             )? {
                 return Ok(json!({"status":"busy", "run_key":request.run_key}));
             }
             transaction.execute(
-                "UPDATE learning_runs SET status = 'failed', lease_until_ms = NULL, completed_at_ms = ?1 WHERE status = 'prepared' AND lease_until_ms <= ?1",
+                "UPDATE learning_runs SET status = 'failed', lease_until_ms = NULL, completed_at_ms = ?1 WHERE status = 'prepared' AND run_id NOT IN (SELECT run_id FROM privacy_legacy_runs) AND lease_until_ms <= ?1",
                 [now_ms()],
             )?;
             let failed: i64 = transaction.query_row(
@@ -242,9 +242,11 @@ impl Store {
                 LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id
                 LEFT JOIN learning_evidence_retries r ON r.evidence_session_id=e.id
                 LEFT JOIN evidence_sessions support ON support.id=r.support_id
+                    AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=support.document_id)
                     AND (?1 IS NULL OR support.completed_at_ms<=?1)
                 LEFT JOIN documents sd ON sd.id=support.document_id AND sd.active=1 AND sd.scope=d.scope
                 WHERE p.evidence_session_id IS NULL AND d.active=1
+                  AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
                   AND (?1 IS NULL OR e.completed_at_ms<=?1) AND (?2 IS NULL OR e.completed_at_ms>=?2)
                   AND (?3 IS NULL OR (r.attempts IS NOT NULL AND e.session_id=?3))
                   AND (?3 IS NOT NULL OR r.attempts IS NULL OR
@@ -470,7 +472,7 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (status, scope, lease, snapshot_json, outcome) = transaction.query_row(
-            "SELECT status,scope,lease_until_ms,snapshot_json,outcome_json FROM learning_runs WHERE run_id = ?1",
+            "SELECT status,scope,lease_until_ms,snapshot_json,outcome_json FROM learning_runs WHERE run_id = ?1 AND run_id NOT IN (SELECT run_id FROM privacy_legacy_runs)",
             [run_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?)),
         ).optional()?.context("learning run does not exist")?;
         if status == "committed" {
@@ -613,6 +615,7 @@ impl Store {
              FROM learning_evidence_retries r JOIN evidence_sessions e ON e.id=r.evidence_session_id
              JOIN documents d ON d.id=e.document_id
              WHERE r.evidence_session_id>?1 AND d.active=1
+               AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
              ORDER BY r.evidence_session_id LIMIT ?2",
         )?;
         let mut rows = statement.query_map(params![after_id,(limit+1) as i64], |row| {
@@ -640,10 +643,11 @@ impl Store {
             "status":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?,"completed_at_ms":row.get::<_,Option<i64>>(5)?,"lease_until_ms":row.get::<_,Option<i64>>(6)?,
             "deferred_evidence":row.get::<_,i64>(7)?
         })))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL", [], |row| row.get(0))?;
+        let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id)", [], |row| row.get(0))?;
         let (retry_pending, parked): (i64, i64) = self.connection.query_row(
             "SELECT count(*) FILTER (WHERE attempts=1),count(*) FILTER (WHERE attempts=2)
-             FROM learning_evidence_retries",
+             FROM learning_evidence_retries r JOIN evidence_sessions e ON e.id=r.evidence_session_id
+             WHERE NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id)",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -792,6 +796,9 @@ fn related_memories(
         "SELECT m.document_id,m.canonical_key,m.memory_kind,d.title,d.body,m.importance,m.confidence,m.observed_at_ms,m.last_confirmed_at_ms,m.valid_until_ms,
                 EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
          FROM memory_items m JOIN documents d ON d.id=m.document_id WHERE d.scope=?1 AND d.active=1
+           AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
+           AND (NOT EXISTS (SELECT 1 FROM privacy_audiences WHERE scope=?1)
+                OR d.id IN (SELECT document_id FROM audience_recallable_memories WHERE scope=?1))
            AND m.superseded_by IS NULL AND m.canonical_key IS NOT NULL AND length(d.body)<=32000
          ORDER BY m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT 512",
     )?;
@@ -833,10 +840,12 @@ fn related_memories(
     for (_, mut memory) in rows.into_iter().take(limit) {
         let mut citations = connection.prepare(
             "SELECT e.session_id,c.quote FROM memory_citations c JOIN evidence_sessions e ON e.id=c.evidence_session_id
-             WHERE c.memory_document_id=?1 ORDER BY e.completed_at_ms DESC,c.id DESC LIMIT 8",
+             JOIN documents evidence ON evidence.id=e.document_id
+             WHERE c.memory_document_id=?1 AND evidence.scope=?2 AND c.evidence_document_id=e.document_id
+             ORDER BY e.completed_at_ms DESC,c.id DESC LIMIT 8",
         )?;
         memory.citations = citations
-            .query_map([memory.document_id], |row| {
+            .query_map(params![memory.document_id, scope], |row| {
                 Ok(EvidenceQuote {
                     session_id: row.get(0)?,
                     quote: row.get(1)?,
@@ -1117,7 +1126,12 @@ fn merge_identical(
            WHEN valid_until_ms IS NULL THEN ?3 ELSE min(valid_until_ms,?3) END WHERE document_id=?1",
         params![previous, retained, now_ms()],
     )?;
-    transaction.execute("INSERT INTO memory_aliases(canonical_key,document_id,created_at_ms) VALUES(?1,?2,?3) ON CONFLICT(canonical_key) DO UPDATE SET document_id=excluded.document_id",params![old_key,retained,now_ms()])?;
+    transaction.execute(
+        "INSERT INTO memory_aliases(scope,canonical_key,document_id,created_at_ms)
+         SELECT scope,?1,?2,?3 FROM documents WHERE id=?2
+         ON CONFLICT(scope,canonical_key) DO UPDATE SET document_id=excluded.document_id",
+        params![old_key, retained, now_ms()],
+    )?;
     transaction.execute(
         "UPDATE memory_aliases SET document_id=?2 WHERE document_id=?1",
         params![previous, retained],

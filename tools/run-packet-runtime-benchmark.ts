@@ -583,7 +583,7 @@ try {
       const health = await cli(binary, homes[variant], ["health"]);
       check(
         health.ok === true &&
-          [11, 12, 13, 14].includes(health.schema_version) &&
+          [11, 12, 13, 14, 15, 16, 17, 18].includes(health.schema_version) &&
           health.documents === size + 4,
         "Benchmark database unhealthy or wrong corpus size",
       );

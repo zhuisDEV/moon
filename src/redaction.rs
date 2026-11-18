@@ -19,6 +19,7 @@ pub fn redact_text(input: &str) -> Redacted<String> {
         (private_key_pattern(), "<redacted-private-key>"),
         (database_url_pattern(), "<redacted-database-url>"),
         (cookie_pattern(), "${label}: <redacted>"),
+        (prose_credential_pattern(), "<redacted-credential>"),
         (assignment_pattern(), "${label}=<redacted>"),
         (bearer_pattern(), "Bearer <redacted>"),
         (openai_key_pattern(), "<redacted>"),
@@ -173,6 +174,15 @@ fn is_sensitive_key(key: &str) -> bool {
             | "slackbottoken"
             | "webhookurl"
     )
+}
+
+// A conversational credential can contain spaces. Redact the remainder of
+// that line instead of preserving part of a passphrase or a recovery-code list.
+fn prose_credential_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| Regex::new(
+        r"(?im)(?:\b(?:password|passphrase|recovery codes?|backup codes?|one[- ]time (?:code|password)|(?:api|private) key|access token)\s+(?:is|are)\s+|\b(?:passphrase|recovery codes?|backup codes?|one[- ]time code)\s*[:=]\s*|(?:密码|密碼|恢复码|恢復碼|验证码|驗證碼)\s*(?:是|为|為|[:：=])\s*)[^\r\n]+"
+    ).expect("valid conversational credential regex"))
 }
 
 fn assignment_pattern() -> &'static Regex {

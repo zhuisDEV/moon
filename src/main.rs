@@ -45,6 +45,8 @@ enum Command {
     Init,
     /// Inspect or initialise learning settings in the selected home's moon.toml.
     Config(ConfigArgs),
+    /// Manage audience-bound memory, explicit publication, and legacy quarantine.
+    Privacy(PrivacyArgs),
     /// Store one structured canonical memory.
     Remember(RememberArgs),
     /// Record one completed session as immutable, secret-scrubbed evidence.
@@ -452,6 +454,119 @@ enum TopicCommand {
 }
 
 #[derive(Debug, Args)]
+struct PrivacyArgs {
+    #[command(subcommand)]
+    command: PrivacyCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PrivacyCommand {
+    /// Publish only the exact approved fact or sanitised skill text from stdin.
+    Publish {
+        #[arg(long)]
+        actor: String,
+        #[arg(long, value_parser = ["fact", "skill"])]
+        kind: String,
+        #[arg(long)]
+        request_key: Option<String>,
+    },
+    /// Withdraw a publication created by the same verified actor.
+    Withdraw {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        id: i64,
+    },
+    /// Read recent role-labelled private turns for a verified destination audience.
+    History {
+        #[arg(long)]
+        audience_json: String,
+        #[arg(long, default_value_t = 4)]
+        limit: usize,
+    },
+    /// Trusted host observation of an accepted final or a confirmed Discord delivery.
+    #[command(hide = true)]
+    ReplyHistory {
+        #[arg(long)]
+        admission_key: String,
+        #[arg(long)]
+        discord_message_id: Option<String>,
+        #[arg(long, requires_all = ["discord_message_id", "owners_json"])]
+        audience_json: Option<String>,
+        #[arg(long, requires_all = ["discord_message_id", "audience_json"])]
+        owners_json: Option<String>,
+    },
+    /// Page through active public statements.
+    List {
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Local operator only: list attributed evidence for a verified author, oldest first.
+    BySender {
+        #[arg(long)]
+        sender: String,
+        /// Evidence ID of the last record on the previous page.
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Assign the complete pre-cutover global memory collection to its private owner.
+    AssignLegacy {
+        #[arg(long)]
+        owner: String,
+    },
+    /// Content-free legacy quarantine inventory for the local operator.
+    Inventory,
+    /// Local operator only: page through legacy memory IDs without their content.
+    Candidates {
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Local operator only: inspect provenance for a single legacy memory.
+    Review {
+        #[arg(long)]
+        id: i64,
+    },
+    /// Recover a reviewed verbatim user quote, supplied on stdin, into a verified audience.
+    Recover {
+        #[arg(long)]
+        document_id: i64,
+        #[arg(long)]
+        audience_json: String,
+        /// Confirm original audience and user authorship were verified by the operator.
+        #[arg(long, required = true)]
+        verified: bool,
+    },
+    /// Trusted adapter bridge between prompt preparation and durable commit.
+    #[command(hide = true)]
+    BindRoom {
+        #[arg(long)]
+        sender: String,
+        #[arg(long)]
+        admission_key: String,
+        #[arg(long)]
+        audience_json: String,
+        #[arg(long)]
+        owners_json: String,
+    },
+    #[command(hide = true)]
+    Audience {
+        #[arg(long)]
+        admission_key: String,
+    },
+}
+
+fn parse_audience(json: &str) -> Result<Vec<String>> {
+    serde_json::from_str(json)
+        .map_err(|_| anyhow::anyhow!("expected a JSON array of reader identifiers"))
+}
+
+#[derive(Debug, Args)]
 struct RememberArgs {
     #[arg(long, conflicts_with = "file")]
     content: Option<String>,
@@ -479,8 +594,14 @@ struct RecordArgs {
     content: Option<String>,
     #[arg(long, conflicts_with = "content")]
     file: Option<PathBuf>,
-    #[arg(long, default_value = "global")]
-    scope: String,
+    #[arg(long, conflicts_with = "audience_json")]
+    scope: Option<String>,
+    /// Verified admission for an accepted human turn.
+    #[arg(long, conflicts_with_all = ["audience_json", "scope"])]
+    admission_key: Option<String>,
+    /// Verified reader set provided by the local host.
+    #[arg(long)]
+    audience_json: Option<String>,
     #[arg(long)]
     title: Option<String>,
     /// Unix timestamp in milliseconds; defaults to the current time.
@@ -576,8 +697,14 @@ enum LearningCommand {
         run_id: String,
     },
     Related {
+        #[arg(
+            long,
+            required_unless_present = "query_stdin",
+            conflicts_with = "query_stdin"
+        )]
+        query: Option<String>,
         #[arg(long)]
-        query: String,
+        query_stdin: bool,
         #[arg(long)]
         scope: String,
         #[arg(long, default_value_t = 32)]
@@ -605,14 +732,23 @@ struct DistillBatchArgs {
 
 #[derive(Debug, Args)]
 struct ContextArgs {
+    #[arg(
+        long,
+        required_unless_present = "query_stdin",
+        conflicts_with = "query_stdin"
+    )]
+    query: Option<String>,
+    /// Read the query privately from stdin.
     #[arg(long)]
-    query: String,
+    query_stdin: bool,
     #[arg(long, default_value = "hybrid")]
     mode: SearchMode,
     #[arg(long, default_value_t = 8)]
     limit: usize,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "audience_json")]
     scope: Option<String>,
+    #[arg(long)]
+    audience_json: Option<String>,
     #[arg(long, default_value_t = 3_500)]
     max_chars: usize,
     #[arg(long, default_value_t = 2)]
@@ -989,7 +1125,19 @@ fn run(cli: Cli) -> Result<()> {
                 | LearningCommand::Prepare { preview: true, .. }
         })
     );
-    let mut store = if read_only_learning {
+    let privacy_read = matches!(
+        &cli.command,
+        Command::Privacy(PrivacyArgs {
+            command: PrivacyCommand::Candidates { .. }
+                | PrivacyCommand::Review { .. }
+                | PrivacyCommand::Inventory
+                | PrivacyCommand::BySender { .. }
+                | PrivacyCommand::History { .. }
+                | PrivacyCommand::Audience { .. }
+                | PrivacyCommand::List { .. }
+        })
+    );
+    let mut store = if read_only_learning || privacy_read {
         Store::open_existing(&database, cli.dimensions)?
     } else {
         Store::open(&database, cli.dimensions)?
@@ -1005,6 +1153,107 @@ fn run(cli: Cli) -> Result<()> {
             }),
             cli.json,
         ),
+        Command::Privacy(args) => {
+            let result = match args.command {
+                PrivacyCommand::BySender {
+                    sender,
+                    after,
+                    limit,
+                } => serde_json::to_value(store.evidence_by_sender(&sender, after, limit)?)?,
+                PrivacyCommand::Inventory => store.legacy_memory_inventory()?,
+                PrivacyCommand::AssignLegacy { owner } => store.assign_legacy_collection(&owner)?,
+                PrivacyCommand::Candidates { after, limit } => {
+                    serde_json::to_value(store.legacy_memory_candidates(after, limit)?)?
+                }
+                PrivacyCommand::Review { id } => store.legacy_memory_review(id)?,
+
+                PrivacyCommand::Recover {
+                    document_id,
+                    audience_json,
+                    verified,
+                } => {
+                    anyhow::ensure!(
+                        verified,
+                        "the operator must attest the original readers and wording"
+                    );
+                    let text = read_bounded_stdin("reviewed user quote")?;
+                    let id = store.recover_legacy_memory(
+                        document_id,
+                        &parse_audience(&audience_json)?,
+                        &text,
+                    )?;
+                    serde_json::json!({"document_id":id})
+                }
+                PrivacyCommand::Publish {
+                    actor,
+                    kind,
+                    request_key,
+                } => {
+                    let text = read_bounded_stdin("public wording")?;
+                    store.publish_memory(&actor, &kind, &text, request_key.as_deref())?
+                }
+                PrivacyCommand::Withdraw { actor, id } => store.withdraw_publication(&actor, id)?,
+                PrivacyCommand::History {
+                    audience_json,
+                    limit,
+                } => serde_json::to_value(
+                    store.private_turn_history(&parse_audience(&audience_json)?, limit)?,
+                )?,
+                PrivacyCommand::ReplyHistory {
+                    admission_key,
+                    discord_message_id,
+                    audience_json,
+                    owners_json,
+                } => {
+                    let readers = audience_json.as_deref().map(parse_audience).transpose()?;
+                    let owners = owners_json.as_deref().map(parse_audience).transpose()?;
+                    let delivery = match (
+                        discord_message_id.as_deref(),
+                        readers.as_deref(),
+                        owners.as_deref(),
+                    ) {
+                        (None, None, None) => None,
+                        (Some(message_id), Some(readers), Some(owners)) => {
+                            Some(moon::history::ReplyDelivery {
+                                message_id,
+                                readers,
+                                owners,
+                            })
+                        }
+                        _ => anyhow::bail!(
+                            "delivery requires a verified destination and owner snapshot"
+                        ),
+                    };
+                    store.observe_private_reply(
+                        &admission_key,
+                        &read_bounded_stdin("reply text")?,
+                        delivery,
+                    )?;
+                    serde_json::json!({"received":true})
+                }
+                PrivacyCommand::List { after, limit } => {
+                    serde_json::to_value(store.public_memories(after, limit)?)?
+                }
+                PrivacyCommand::BindRoom {
+                    sender,
+                    admission_key,
+                    audience_json,
+                    owners_json,
+                } => {
+                    let owners = store.bind_turn_owners(
+                        &admission_key,
+                        &parse_audience(&audience_json)?,
+                        &sender,
+                        &parse_audience(&owners_json)?,
+                    )?;
+                    serde_json::json!({"bound":true,"owners":owners})
+                }
+                PrivacyCommand::Audience { admission_key } => {
+                    serde_json::to_value(store.turn_admission(&admission_key)?)?
+                }
+            };
+            emit(&result, cli.json)
+        }
         Command::Remember(args) => {
             let content = read_explicit_content(args.content, args.file.as_deref())?;
             let outcome = store.remember(MemoryInput {
@@ -1020,15 +1269,41 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Record(args) => {
             let content = read_explicit_content(args.content, args.file.as_deref())?;
-            let outcome = store.record_evidence(EvidenceInput {
-                session_id: args.session_id,
-                scope: args.scope,
-                title: args.title,
-                content,
-                completed_at_ms: args.completed_at_ms.unwrap_or_else(current_time_ms),
-                metadata_json: args.metadata_json,
-            })?;
-            emit(&outcome, cli.json)
+            let scope = if let Some(key) = args.admission_key.as_deref() {
+                let Some(owners) = store.turn_admission(key)?.owners else {
+                    anyhow::bail!("admission lacks verified owners");
+                };
+                store.register_private_audience(&owners)?
+            } else if let Some(json) = args.audience_json.as_deref() {
+                store.register_private_audience(&parse_audience(json)?)?
+            } else {
+                args.scope.unwrap_or_else(|| "global".into())
+            };
+            // Do not retain a partly redacted multi-line secret or send the original
+            // turn to an L1 helper. The host treats this receipt as a completed no-op.
+            if (args.audience_json.is_some() || args.admission_key.is_some())
+                && redact_text(&content).count > 0
+            {
+                return emit(
+                    &serde_json::json!({"session_id":args.session_id,"changed":false,
+                    "redactions":1,"scope":scope}),
+                    cli.json,
+                );
+            }
+            let outcome = store.record_turn_evidence(
+                EvidenceInput {
+                    session_id: args.session_id,
+                    scope: scope.clone(),
+                    title: args.title,
+                    content,
+                    completed_at_ms: args.completed_at_ms.unwrap_or_else(current_time_ms),
+                    metadata_json: args.metadata_json,
+                },
+                args.admission_key.as_deref(),
+            )?;
+            let mut response = serde_json::to_value(outcome)?;
+            response["scope"] = scope.into();
+            emit(&response, cli.json)
         }
         Command::Distill(args) => {
             let (content, evidence_quote, title) = if args.proposal_json {
@@ -1145,10 +1420,16 @@ fn run(cli: Cli) -> Result<()> {
                 LearningCommand::Fail { run_id } => store.learning_fail(&run_id)?,
                 LearningCommand::Related {
                     query,
+                    query_stdin: _,
                     scope,
                     limit,
                     max_chars,
-                } => store.learning_related(&scope, &query, limit, max_chars)?,
+                } => store.learning_related(
+                    &scope,
+                    &read_explicit_content(query, None)?,
+                    limit,
+                    max_chars,
+                )?,
                 LearningCommand::Deferred { after_id, limit } => {
                     store.learning_deferred(after_id, limit)?
                 }
@@ -1162,17 +1443,23 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 Some(build_provider(&args.provider, cli.dimensions, &home)?)
             };
-            let observation = store.observe_context(
-                &ContextRequest {
-                    query: args.query,
-                    mode: args.mode,
-                    limit: args.limit,
-                    scope: args.scope,
-                    max_chars: args.max_chars,
-                    evidence_per_memory: args.evidence_per_memory,
-                },
-                provider.as_deref(),
-            )?;
+            let request = ContextRequest {
+                query: read_explicit_content(args.query, None)?,
+                mode: args.mode,
+                limit: args.limit,
+                scope: args.scope,
+                max_chars: args.max_chars,
+                evidence_per_memory: args.evidence_per_memory,
+            };
+            let checked_audience = args.audience_json.is_some();
+            let observation = match args.audience_json {
+                Some(json) => store.observe_audience_context(
+                    &request,
+                    provider.as_deref(),
+                    &parse_audience(&json)?,
+                )?,
+                None => store.observe_context(&request, provider.as_deref())?,
+            };
             let packet = observation.packet;
             if args.adapter {
                 if !cli.json {
@@ -1183,6 +1470,7 @@ fn run(cli: Cli) -> Result<()> {
                     &serde_json::json!({
                         "request_id": observation.request_id,
                         "packet": rendered,
+                        "public_only": checked_audience && store.packet_is_public(&packet)?,
                         "memory_count": packet.memories.len(),
                         "reference_count": packet.references.len(),
                         "packet_chars": packet.used_chars,

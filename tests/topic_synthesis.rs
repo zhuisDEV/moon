@@ -1427,7 +1427,7 @@ fn genuine_schema_ten_migration_failure_rolls_back_and_retry_preserves_claims_an
         .unwrap();
     drop(connection);
     let mut migrated = Store::open(&database, 64).unwrap();
-    assert_eq!(migrated.health().unwrap().schema_version, 14);
+    assert_eq!(migrated.health().unwrap().schema_version, 18);
     assert_eq!(migrated.source_claim_get(SCOPE, &claim).unwrap(), original);
     put(&mut migrated, "retention", &[&claim], &[]);
     compile(&mut migrated, "retention", "fact", QUOTE, &[&claim]);

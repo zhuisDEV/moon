@@ -1,6 +1,7 @@
 {
   "id": "moon",
   "kind": "context-engine",
+  "commandAliases": [{ "name": "moonpublic", "kind": "runtime-slash" }],
   "contracts": {
     "tools": ["moon_source_learn", "moon_topic_compile"]
   },
@@ -108,6 +109,7 @@
         "maximum": 4096
       },
       "scope": {
+        "description": "Legacy configuration accepted for upgrades. Chat recall now uses verified reader audiences.",
         "type": "string"
       },
       "limit": {
@@ -142,6 +144,7 @@
         "maximum": 300000
       },
       "learningScope": {
+        "description": "Legacy configuration accepted for upgrades. Chat learning now uses verified reader audiences.",
         "type": "string"
       },
       "learningMaxMemories": {

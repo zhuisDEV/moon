@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 18;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -293,6 +293,41 @@ impl Store {
             crate::learning::index_migrated_deferrals(&transaction)?;
             transaction.execute(
                 "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(14, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 15 {
+            transaction.execute_batch(include_str!("../migrations/0015_memory_audiences.sql"))?;
+            crate::privacy::initialise_public_audience(&transaction)?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(15, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 16 {
+            transaction.execute_batch(include_str!("../migrations/0016_evidence_senders.sql"))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(16, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 17 {
+            transaction.execute_batch(include_str!(
+                "../migrations/0017_conversation_ownership.sql"
+            ))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(17, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 18 {
+            transaction.execute_batch(include_str!("../migrations/0018_reply_owners.sql"))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(18, ?1)",
                 [now_ms()],
             )?;
         }
@@ -696,7 +731,7 @@ impl Store {
         request: &SearchRequest,
         provider: Option<&dyn EmbeddingProvider>,
     ) -> Result<Vec<SearchHit>> {
-        self.search_inner(request, provider, false)
+        self.search_inner(request, provider, false, None)
     }
 
     pub(crate) fn search_without_topics(
@@ -704,14 +739,15 @@ impl Store {
         request: &SearchRequest,
         provider: Option<&dyn EmbeddingProvider>,
     ) -> Result<Vec<SearchHit>> {
-        self.search_inner(request, provider, true)
+        self.search_inner(request, provider, true, None)
     }
 
-    fn search_inner(
+    pub(crate) fn search_inner(
         &self,
         request: &SearchRequest,
         provider: Option<&dyn EmbeddingProvider>,
         exclude_topics: bool,
+        audience_scopes: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         if request.query.trim().is_empty() {
             anyhow::bail!("search query must not be empty");
@@ -721,20 +757,27 @@ impl Store {
         }
         let limit = request.limit.clamp(1, 100);
         match request.mode {
-            SearchMode::Lexical => self.lexical_search(request, limit, exclude_topics),
+            SearchMode::Lexical => {
+                self.lexical_search(request, limit, exclude_topics, audience_scopes)
+            }
             SearchMode::Semantic => {
                 let vector = self.embed_query(provider, &request.query)?;
-                self.semantic_search(request, &vector, limit, exclude_topics)
+                self.semantic_search(request, &vector, limit, exclude_topics, audience_scopes)
             }
             SearchMode::Hybrid => {
-                let lexical =
-                    self.lexical_search(request, limit.saturating_mul(4), exclude_topics)?;
+                let lexical = self.lexical_search(
+                    request,
+                    limit.saturating_mul(4),
+                    exclude_topics,
+                    audience_scopes,
+                )?;
                 let vector = self.embed_query(provider, &request.query)?;
                 let semantic = self.semantic_search(
                     request,
                     &vector,
                     limit.saturating_mul(4),
                     exclude_topics,
+                    audience_scopes,
                 )?;
                 Ok(fuse_rankings(lexical, semantic, limit))
             }
@@ -783,22 +826,39 @@ impl Store {
         request: &SearchRequest,
         limit: usize,
         exclude_topics: bool,
+        audience_scopes: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         let (strict_query, relaxed_query) = safe_fts_queries(&request.query)?;
-        let hits = self.lexical_search_query(request, limit, &strict_query, exclude_topics)?;
+        let hits = self.lexical_search_query(
+            request,
+            limit,
+            &strict_query,
+            exclude_topics,
+            audience_scopes,
+        )?;
         if hits.is_empty() && relaxed_query != strict_query {
-            let relaxed =
-                self.lexical_search_query(request, limit, &relaxed_query, exclude_topics)?;
+            let relaxed = self.lexical_search_query(
+                request,
+                limit,
+                &relaxed_query,
+                exclude_topics,
+                audience_scopes,
+            )?;
             if !relaxed.is_empty() {
                 return Ok(relaxed);
             }
         } else if !hits.is_empty() {
             return Ok(hits);
         }
-        self.fuzzy_memory_search(request, limit)
+        self.fuzzy_memory_search(request, limit, audience_scopes)
     }
 
-    fn fuzzy_memory_search(&self, request: &SearchRequest, limit: usize) -> Result<Vec<SearchHit>> {
+    fn fuzzy_memory_search(
+        &self,
+        request: &SearchRequest,
+        limit: usize,
+        audience_scopes: Option<&str>,
+    ) -> Result<Vec<SearchHit>> {
         if request
             .source_kind
             .as_deref()
@@ -816,26 +876,30 @@ impl Store {
                AND m.superseded_by IS NULL
                AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?1)
                AND (?2 IS NULL OR d.scope = ?2)
+               AND (?3 IS NULL OR d.id IN (SELECT document_id FROM chat_recallable_memories WHERE scope IN (SELECT value FROM json_each(?3))))
              ORDER BY m.pinned DESC, m.importance DESC,
                       m.last_confirmed_at_ms DESC, c.id
              LIMIT 2000",
         )?;
         let mut hits = statement
-            .query_map(params![now_ms(), request.scope.as_deref()], |row| {
-                Ok(SearchHit {
-                    document_id: row.get(0)?,
-                    chunk_id: row.get(1)?,
-                    source_uri: row.get(2)?,
-                    source_kind: row.get(3)?,
-                    scope: row.get(4)?,
-                    title: row.get(5)?,
-                    content: row.get(6)?,
-                    score: 0.0,
-                    lexical_rank: None,
-                    vector_rank: None,
-                    vector_distance: None,
-                })
-            })?
+            .query_map(
+                params![now_ms(), request.scope.as_deref(), audience_scopes],
+                |row| {
+                    Ok(SearchHit {
+                        document_id: row.get(0)?,
+                        chunk_id: row.get(1)?,
+                        source_uri: row.get(2)?,
+                        source_kind: row.get(3)?,
+                        scope: row.get(4)?,
+                        title: row.get(5)?,
+                        content: row.get(6)?,
+                        score: 0.0,
+                        lexical_rank: None,
+                        vector_rank: None,
+                        vector_distance: None,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         hits.retain_mut(|hit| {
             if let Some(score) = fuzzy_context_score(&request.query, &hit.content) {
@@ -864,6 +928,7 @@ impl Store {
         limit: usize,
         fts_query: &str,
         exclude_topics: bool,
+        audience_scopes: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         // This ID is always bound as i64. The explicit type also prevents
         // SQLite 3.54 from recompiling this cached lookup for every candidate.
@@ -893,6 +958,7 @@ impl Store {
                )
                AND (?2 IS NULL OR d.scope = ?2)
                AND (?3 IS NULL OR d.source_kind = ?3)
+               AND (?6 IS NULL OR d.id IN (SELECT document_id FROM chat_recallable_memories WHERE scope IN (SELECT value FROM json_each(?6))))
                AND (?5 = 0 OR d.source_kind <> 'topic_summary')",
         )?;
 
@@ -924,6 +990,7 @@ impl Store {
                        )
                        AND (?2 IS NULL OR d.scope = ?2)
                        AND (?3 IS NULL OR d.source_kind = ?3)
+                       AND (?7 IS NULL OR c.document_id IN (SELECT document_id FROM chat_recallable_memories WHERE scope IN (SELECT value FROM json_each(?7))))
                        AND (?6 = 0 OR d.source_kind <> 'topic_summary')
                      ORDER BY lexical_score, chunk_fts.rowid
                      LIMIT ?5",
@@ -937,6 +1004,7 @@ impl Store {
                             now_ms(),
                             limit.saturating_mul(4).clamp(1, 400) as i64,
                             exclude_topics,
+                            audience_scopes,
                         ],
                         |row| row.get::<_, i64>(0),
                     )?
@@ -956,6 +1024,7 @@ impl Store {
                        ))
                        AND (?2 IS NULL OR chunk_fts.scope = ?2)
                        AND (?3 IS NULL OR chunk_fts.source_kind = ?3)
+                       AND (?7 IS NULL OR c.document_id IN (SELECT document_id FROM chat_recallable_memories WHERE scope IN (SELECT value FROM json_each(?7))))
                        AND (?6 = 0 OR chunk_fts.source_kind <> 'topic_summary')
                        AND (m.document_id IS NULL OR (
                            m.superseded_by IS NULL
@@ -973,6 +1042,7 @@ impl Store {
                             now_ms(),
                             candidate_limit as i64,
                             exclude_topics,
+                            audience_scopes,
                         ],
                         |row| row.get::<_, i64>(0),
                     )?
@@ -990,6 +1060,7 @@ impl Store {
                             request.source_kind.as_deref(),
                             now_ms(),
                             exclude_topics,
+                            audience_scopes,
                         ],
                         |row| {
                             Ok(SearchHit {
@@ -1032,6 +1103,7 @@ impl Store {
         query_vector: &[f32],
         limit: usize,
         exclude_topics: bool,
+        audience_scopes: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         // sqlite-vec applies rowid IN during KNN selection. A post-join expiry
         // filter would let stale cached vectors consume k before fresh hits.
@@ -1048,6 +1120,7 @@ impl Store {
                    JOIN documents eligible_document ON eligible_document.id = eligible_chunk.document_id
                    LEFT JOIN memory_items m ON m.document_id = eligible_document.id
                    WHERE eligible_document.active = 1
+                     AND (?5 IS NULL OR eligible_document.id IN (SELECT document_id FROM chat_recallable_memories WHERE scope IN (SELECT value FROM json_each(?5))))
                      AND (?4 = 0 OR eligible_document.source_kind <> 'topic_summary')
                      AND (eligible_document.source_kind <> 'source_claim' OR EXISTS (
                          SELECT 1 FROM source_valid_claims sc
@@ -1068,6 +1141,7 @@ impl Store {
             Value::Integer(candidate_limit),
             Value::Integer(now_ms()),
             Value::Integer(i64::from(exclude_topics)),
+            audience_scopes.map_or(Value::Null, |scopes| Value::Text(scopes.to_owned())),
         ];
         if let Some(scope) = request.scope.as_ref() {
             sql.push_str(&format!(" AND v.scope = ?{}", values.len() + 1));
@@ -1143,6 +1217,7 @@ impl Store {
              FROM memory_heads h
              LEFT JOIN memory_items m ON m.document_id = h.document_id
              WHERE m.document_id IS NULL
+                OR m.identity_scope IS NOT h.scope
                 OR m.canonical_key <> h.canonical_key
                 OR m.superseded_by IS NOT NULL",
             [],
@@ -1153,7 +1228,7 @@ impl Store {
                  SELECT canonical_key
                  FROM memory_items
                  WHERE canonical_key IS NOT NULL AND superseded_by IS NULL
-                 GROUP BY canonical_key
+                 GROUP BY identity_scope, canonical_key
                  HAVING count(*) > 1
              )",
             [],
@@ -1163,7 +1238,7 @@ impl Store {
             "SELECT count(*)
              FROM memory_items m
              LEFT JOIN memory_heads h
-               ON h.canonical_key = m.canonical_key AND h.document_id = m.document_id
+               ON h.scope = m.identity_scope AND h.canonical_key = m.canonical_key AND h.document_id = m.document_id
              WHERE m.canonical_key IS NOT NULL
                AND m.superseded_by IS NULL
                AND h.document_id IS NULL",
@@ -1286,8 +1361,8 @@ impl Store {
         let invalid_aliases = self.connection.query_row(
             "SELECT count(*) FROM memory_aliases a
              LEFT JOIN memory_items m ON m.document_id=a.document_id
-             LEFT JOIN memory_heads h ON h.canonical_key=a.canonical_key
-             WHERE m.document_id IS NULL OR m.superseded_by IS NOT NULL OR m.canonical_key IS NULL OR h.document_id IS NOT NULL",
+             LEFT JOIN memory_heads h ON h.scope=a.scope AND h.canonical_key=a.canonical_key
+             WHERE a.scope IS NOT m.identity_scope OR m.document_id IS NULL OR m.superseded_by IS NOT NULL OR m.canonical_key IS NULL OR h.document_id IS NOT NULL",
             [], |row|row.get::<_,i64>(0),
         )? as usize;
         let invalid_learning_ledger = self.connection.query_row(
@@ -1736,6 +1811,20 @@ pub(crate) fn ingest_prepared(
     }
 
     let document_id = if let Some((document_id, _, _, _, _, _)) = existing {
+        // Reusing a URI must not replace approved wording, alter a conversation's
+        // evidence, reactivate a withdrawn publication, or edit a legacy original.
+        let protected: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM privacy_legacy_documents WHERE document_id=?1)
+                 OR EXISTS(SELECT 1 FROM documents d JOIN privacy_audiences a ON a.scope=d.scope
+                           WHERE d.id=?1 AND (EXISTS(SELECT 1 FROM memory_items WHERE document_id=d.id)
+                            OR EXISTS(SELECT 1 FROM evidence_sessions WHERE document_id=d.id)))",
+            [document_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !protected,
+            "managed or quarantined memory and evidence are immutable"
+        );
         let mut statement = transaction.prepare("SELECT id FROM chunks WHERE document_id = ?1")?;
         let old_chunk_ids = statement
             .query_map([document_id], |row| row.get::<_, i64>(0))?

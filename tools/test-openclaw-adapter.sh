@@ -18,6 +18,10 @@ env -u MOON_DATABASE -u MOON_HOME -u MOON_EMBEDDING_DIMENSIONS \
   --database "$fixture_root/home/state/moon.sqlite" --dimensions 384 --json \
   import-legacy --source-home "$fixture_root/legacy" > /dev/null
 
+printf '%s' 'The public fixture technique uses a coral compass to align the telescope.' |
+  "$moon_binary" --home "$fixture_root/home" --database "$fixture_root/home/state/moon.sqlite" \
+    privacy publish --actor discord:10000000000000001 --kind skill > /dev/null
+
 # These deliberately hostile overrides must not escape the configured test home.
 MOON_DATABASE="$fixture_root/ambient.sqlite" \
 MOON_HOME="$fixture_root/unintended-home" \
@@ -25,8 +29,8 @@ MOON_EMBEDDING_DIMENSIONS=64 \
 MOON_TEST_BINARY="$moon_binary" \
 MOON_TEST_HOME="$fixture_root/home" \
 MOON_TEST_MODE=lexical \
-MOON_TEST_QUERY='roomKey redemptionKey participant reenter' \
-MOON_TEST_EXPECTED='redemptionKey' \
+MOON_TEST_QUERY='coral compass telescope' \
+MOON_TEST_EXPECTED='coral compass' \
 MOON_REQUIRE_REAL_BINARY=1 \
 deno test --node-modules-dir=none \
   --allow-read="$repo_root/assets/openclaw-plugin,$fixture_root" \

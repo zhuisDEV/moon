@@ -33,14 +33,16 @@ examples to another database.
 
 ### 1. After a completed turn: record immutable evidence
 
-After OpenClaw successfully completes a non-heartbeat turn, the adapter keeps
-the user request and final assistant answer, discards intermediate tool chatter,
-and records that pair as evidence. OpenClaw's `commitTurn` callback supplies
-only the closed, accepted transcript range. A SHA-256 identity derived from its
-advancement key is committed with the evidence in one SQLite transaction. This
-makes retries and concurrent acknowledgements idempotent. The parent session and
-channel identity stay in sanitized metadata. Moon does not read the growing
-transcript during assembly or commit.
+After OpenClaw completes an eligible turn with a verified audience, the adapter
+records the accepted human message as private evidence. The final assistant
+answer marks completion. A matching successful Discord delivery can retain the
+answer as role-labelled private history. L1 and L2 learn from accepted human
+words; tool traffic stays outside the turn history. OpenClaw's `commitTurn`
+callback supplies only the closed, accepted transcript range. A SHA-256 identity
+derived from its advancement key is committed with the evidence in one SQLite
+transaction. This makes retries and concurrent acknowledgements idempotent. The
+parent session and channel identity stay in sanitized metadata. Moon does not
+read the growing transcript during assembly or commit.
 
 Storage failures remain in OpenClaw's durable retry queue. Extraction runs only
 after a new evidence commit and is best effort: a crash between the commit and
@@ -71,8 +73,10 @@ historical evidence or its citations. Replaying old content whose sanitised form
 has changed can therefore produce an immutable-evidence conflict.
 
 OpenClaw calls the hook only after the turn has finished. Heartbeats and turns
-without both a user request and final answer are skipped. Evidence can include
-ordinary turns, but only durable candidates proceed to distillation.
+without a verified admission, a user request or a visible final answer are
+skipped. A recognised credential also skips the evidence write. Only durable
+candidates proceed to distillation. See
+[public and private memory](memory-privacy.md).
 
 ### 2. Distill evidence into a durable memory
 

@@ -1688,6 +1688,7 @@ const LEARNING_JOB_TABLES: &[(&str, &str, &str)] = &[
 // Supporting ledgers/dependencies are part of recoverable jobs too: preserving
 // a proposal while losing its dependency snapshot would not preserve its work.
 const LEARNING_CHECKPOINT_TABLES: &[(&str, &str)] = &[
+    ("privacy_revision", "CAST(id AS TEXT)"),
     ("learning_runs", "run_id"),
     ("source_learning_jobs", "job_id"),
     ("topic_jobs", "job_id"),
@@ -3581,7 +3582,7 @@ mod tests {
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 14,
+            database_schema_max: 18,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -3996,7 +3997,7 @@ if [ -z "$version_arg" ] && [ -z "$database_arg" ]; then exit 91; fi
             r#"#!/bin/sh
 for value in "$@"; do
   if [ "$value" = health ]; then
-    printf '%s\n' '{"ok":true,"schema_version":14,"failed_embeddings":0,"dead_embeddings":0}'
+    printf '%s\n' '{"ok":true,"schema_version":18,"failed_embeddings":0,"dead_embeddings":0}'
     exit 0
   fi
 done
@@ -4087,7 +4088,7 @@ done
             ""
         };
         let script = format!(
-            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":14,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":18,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
             current_target()
         );
         let script = require_explicit_database(&script).into_bytes();
@@ -4142,7 +4143,7 @@ done
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 14,
+            database_schema_max: 18,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -4279,7 +4280,7 @@ done
         assert!(result.ok && result.changed && result.gateway_reachable);
         assert_eq!(result.from_version, "2.1.0");
         assert_eq!(result.to_version, "2.2.0");
-        assert_eq!(result.schema_after, Some(14));
+        assert_eq!(result.schema_after, Some(18));
         assert_eq!(result.verified_key_ids, ["test-release-key"]);
         assert!(fixture.context.home.join("current").is_symlink());
         assert!(fixture.context.home.join("bin/moon").is_symlink());
@@ -5064,6 +5065,9 @@ done
         seed_review_jobs(&fixture);
         let database = fixture.context.home.join("state/moon.sqlite");
         let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(include_str!("../tests/fixtures/pre_audience_schema.sql"))
+            .unwrap();
         // Recreate schema 12 to check both added columns and the new retry tables.
         connection
             .execute_batch(

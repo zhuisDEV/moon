@@ -1,0 +1,20 @@
+{
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "mode": "all",
+        "scope": "session",
+        "workspaceAccess": "none"
+      }
+    }
+  },
+  "acp": { "enabled": false },
+  "tools": {
+    "profile": "minimal",
+    "allow": ["session_status"],
+    "sessions": { "visibility": "self" },
+    "agentToAgent": { "enabled": false },
+    "elevated": { "enabled": false }
+  },
+  "messages": { "groupChat": { "visibleReplies": "automatic" } }
+}

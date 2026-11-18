@@ -58,7 +58,7 @@ cargo run --locked --example moon-release -- bundle \
   --binary target/release/moon \
   --minimum-os-version 13.0 \
   --database-schema-min 6 \
-  --database-schema-max 14 \
+  --database-schema-max 18 \
   --legacy-skill-only \
   --output-dir /path/to/release-staging
 ```

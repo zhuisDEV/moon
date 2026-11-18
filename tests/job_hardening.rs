@@ -323,6 +323,9 @@ fn schema_thirteen_is_additive_atomic_and_preserves_jobs_and_accepted_topic() {
         let path = store.path().to_owned();
         drop(store);
         let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("fixtures/pre_audience_schema.sql"))
+            .unwrap();
         connection.execute_batch("DROP TABLE learning_retry_terms; DROP TABLE learning_evidence_retries; ALTER TABLE source_learning_jobs DROP COLUMN failure_code; ALTER TABLE topic_jobs DROP COLUMN failure_code; DELETE FROM schema_migrations WHERE version>=13; PRAGMA user_version=12;").unwrap();
         let before = ["source_learning_jobs", "topic_jobs"].map(|t| snapshot(&connection, t, None));
         if fail_ledger {
@@ -346,7 +349,7 @@ fn schema_thirteen_is_additive_atomic_and_preserves_jobs_and_accepted_topic() {
                 .unwrap();
         }
         let store = Store::open(&path, 64).unwrap();
-        assert_eq!(store.health().unwrap().schema_version, 14);
+        assert_eq!(store.health().unwrap().schema_version, 18);
         assert!(store.health().unwrap().ok);
         assert_eq!(
             store.topic_get(SCOPE, "published-topic").unwrap(),

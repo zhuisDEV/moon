@@ -345,6 +345,7 @@ function acceptedTurn() {
     effectiveParentId: null,
     activeMessagePosition: 0,
     logicalTurnId: "turn-1",
+    idempotencyKey: "admission-1",
     role: "user",
   };
   return {
@@ -395,8 +396,20 @@ Deno.test("L1 reports safe phase and code while preserving evidence and replay i
             let result: unknown = {
               event_id: "0123456789abcdef0123456789abcdef",
             };
-            if (argv.includes("record")) {
-              result = { session_id: evidenceId, changed: ++records === 1 };
+            if (argv.includes("reply-history")) {
+              result = { received: true };
+            } else if (argv.includes("audience")) {
+              result = {
+                owners: ["discord:111111111111111111"],
+                audience: ["discord:111111111111111111"],
+                sender: "discord:111111111111111111",
+              };
+            } else if (argv.includes("record")) {
+              result = {
+                session_id: evidenceId,
+                scope: "private:test",
+                changed: ++records === 1,
+              };
             } else if (argv.includes("config")) {
               result = failure === "config" ? { privateText } : {
                 learning: {
@@ -405,7 +418,7 @@ Deno.test("L1 reports safe phase and code while preserving evidence and replay i
                   l2: { enabled: false, timezone: "Australia/Sydney" },
                 },
               };
-            } else if (argv.includes("context")) {
+            } else if (argv.includes("related")) {
               if (failure === "context") throw new Error(privateText);
               result = { memories: [], references: [] };
             }

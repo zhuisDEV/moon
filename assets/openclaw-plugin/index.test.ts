@@ -2,6 +2,17 @@ import moonPlugin, { __moonTest } from "./index.js";
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 
+const TEST_READERS = ["discord:111111111111111111"];
+const testAudience = {
+  code: 0,
+  stdout: JSON.stringify({
+    audience: TEST_READERS,
+    owners: TEST_READERS,
+    sender: TEST_READERS[0],
+  }),
+  stderr: "",
+};
+const testScope = "private:" + "a".repeat(64);
 const METRIC_REQUEST_ID = "0123456789abcdef0123456789abcdef";
 
 async function optionalTestEnv(name: string) {
@@ -33,6 +44,7 @@ function acceptedParams(messages: Array<Record<string, unknown>>) {
     storePath: "/tmp/openclaw-agent.sqlite",
     generation: "generation-1",
     entryId: "user-1",
+    idempotencyKey: "host-test-admission",
     rawSeq: 1,
     effectiveParentId: null,
     activeMessagePosition: 0,
@@ -131,6 +143,10 @@ function createApi(
           argv: string[],
           options: { timeoutMs: number; input?: string; signal?: AbortSignal },
         ): typeof result | Promise<typeof result> {
+          if (argv.includes("reply-history")) {
+            return { code: 0, stdout: '{"received":true}', stderr: "" };
+          }
+          if (argv.includes("audience")) return testAudience;
           calls.push({
             argv,
             timeoutMs: options.timeoutMs,
@@ -176,10 +192,11 @@ Deno.test("adapter retrieves and injects context before the latest user message"
       "--dimensions",
       "384",
       "context",
-      "--query",
+      "--query-stdin",
     ],
   );
-  assert(calls[0].argv.includes("Recall SQLite plan"));
+  assertEquals(calls[0].input, "Recall SQLite plan");
+  assert(!calls[0].argv.includes("Recall SQLite plan"));
   assert(calls[0].argv.includes("--adapter"));
   assert(calls[1].argv.includes("mark-injection"));
   assert(calls[1].argv.includes("--injected"));
@@ -372,6 +389,10 @@ Deno.test("adapter records one completed turn and distills a validated durable m
           argv: string[],
           options: { timeoutMs: number; input?: string },
         ) {
+          if (argv.includes("reply-history")) {
+            return { code: 0, stdout: '{"received":true}', stderr: "" };
+          }
+          if (argv.includes("audience")) return testAudience;
           calls.push({
             argv,
             timeoutMs: options.timeoutMs,
@@ -382,15 +403,17 @@ Deno.test("adapter records one completed turn and distills a validated durable m
               code: 0,
               stdout: JSON.stringify({
                 session_id: expectedEvidenceId,
+                scope: testScope,
                 changed: true,
               }),
               stderr: "",
             };
           }
-          if (argv.includes("context")) {
+          if (argv.includes("related")) {
+            assert(argv.includes(testScope));
             return {
               code: 0,
-              stdout: JSON.stringify({ memories: [], references: [] }),
+              stdout: JSON.stringify({ memories: [] }),
               stderr: "",
             };
           }
@@ -460,9 +483,12 @@ Deno.test("adapter records one completed turn and distills a validated durable m
   assertEquals(modelCalls, 1);
   assertEquals(calls.length, 5);
   assert(calls[0].argv.includes("record"));
+  assert(calls[0].argv.includes("--admission-key"));
+  assert(!calls[0].argv.includes("--audience-json"));
+  assert(!calls[0].argv.includes("--sender"));
   assertEquals(
     calls[0].input,
-    "User:\nI prefer concise answers.\n\nAssistant:\nUnderstood. I will keep answers concise.",
+    "User:\nI prefer concise answers.",
   );
   assert(!calls[0].argv.includes("I prefer concise answers."));
   assert(calls[1].argv.includes("config"));
@@ -482,7 +508,7 @@ Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
     { code: 0, stdout: "", stderr: "" },
     [],
   ));
-  const argv = __moonTest.contextArguments(settings, "query");
+  const argv = __moonTest.contextArguments(settings);
   assert(!argv.includes("--provider"));
   assert(!argv.includes("--api-key-env"));
 });
@@ -513,7 +539,8 @@ Deno.test("hybrid mode uses the private local stdio worker", () => {
     "Recall my Moon plan",
     false,
   );
-  assertEquals(request.op, "context");
+  assertEquals(request.op, "audience_context");
+  assertEquals(request.audience, []);
   assertEquals(request.mode, "hybrid");
   assertEquals(request.structured, false);
   assertEquals(request.observe, false);
@@ -541,9 +568,9 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   };
   for (
     const argv of [
-      __moonTest.contextArguments(settings, "query"),
+      __moonTest.contextArguments(settings),
       __moonTest.stdioWorkerArguments(settings),
-      __moonTest.recordArguments(settings, turn),
+      __moonTest.recordArguments(settings, turn, "a".repeat(64)),
       __moonTest.distillBatchArguments(settings, turn.evidenceSessionId),
       __moonTest.metricInjectionArguments(settings, METRIC_REQUEST_ID, true),
       __moonTest.runtimeMetricArguments(settings, {
@@ -562,7 +589,7 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   }
   const implicit = { ...settings, moonHome: null };
   assert(
-    !__moonTest.contextArguments(implicit, "query").includes("--database"),
+    !__moonTest.contextArguments(implicit).includes("--database"),
   );
   assert(!__moonTest.stdioWorkerArguments(implicit).includes("--database"));
 });
@@ -1875,12 +1902,20 @@ Deno.test({
       },
       runtime: {
         system: {
-          async runCommandWithTimeout(argv: string[]) {
-            const output = await new Deno.Command(argv[0], {
+          async runCommandWithTimeout(
+            argv: string[],
+            options: { input?: string },
+          ) {
+            const child = new Deno.Command(argv[0], {
+              stdin: "piped",
               args: argv.slice(1),
               stdout: "piped",
               stderr: "piped",
-            }).output();
+            }).spawn();
+            const writer = child.stdin.getWriter();
+            await writer.write(new TextEncoder().encode(options.input ?? ""));
+            await writer.close();
+            const output = await child.output();
             return {
               code: output.code,
               stdout: new TextDecoder().decode(output.stdout),
@@ -1908,12 +1943,8 @@ Deno.test({
     assertEquals(result.messages.length, 2);
     const packet = result.messages[0].content[0].text;
     assert(packet.startsWith("# Moon Context"));
-    if (mode === "lexical") {
-      assert(packet.includes("## Retrieved references"));
-      assert(packet.includes("legacy://"));
-    } else {
-      assert(packet.includes("## Canonical memories"));
-    }
+    assert(packet.includes("## Canonical memories"));
+    assert(!packet.includes("legacy://"));
     if (expected) {
       for (const phrase of expected.split("|")) {
         assert(
@@ -2017,6 +2048,7 @@ Deno.test("durable duplicate acknowledgement never repeats learning", async () =
     code: 0,
     stdout: JSON.stringify({
       session_id: turn.evidenceSessionId,
+      scope: testScope,
       changed: false,
     }),
     stderr: "",
@@ -2083,6 +2115,37 @@ Deno.test({
         stderr: new TextDecoder().decode(output.stderr),
       };
     };
+    const bind = async (turn: typeof params) => {
+      const bindingKey = __moonTest.admissionKey(
+        turn.admission.agentId,
+        turn.sessionId,
+        turn.sessionKey,
+        turn.admission.idempotencyKey,
+      );
+      assert(bindingKey);
+      const bound = await api.runtime.system.runCommandWithTimeout([
+        binary,
+        "--home",
+        home,
+        "--database",
+        `${home}/state/moon.sqlite`,
+        "--dimensions",
+        "384",
+        "--json",
+        "privacy",
+        "bind-room",
+        "--admission-key",
+        bindingKey,
+        "--sender",
+        TEST_READERS[0],
+        "--audience-json",
+        JSON.stringify(TEST_READERS),
+        "--owners-json",
+        JSON.stringify(TEST_READERS),
+      ], { timeoutMs: 10000 });
+      assertEquals(bound.code, 0);
+    };
+    await bind(params);
     let rejected = false;
     try {
       await __moonTest.createMoonContextEngine(api).commitTurn(params);
@@ -2110,7 +2173,9 @@ Deno.test({
     const next = {
       ...params,
       advancementKey: `${params.advancementKey}-concurrent`,
+      admission: { ...params.admission, idempotencyKey: crypto.randomUUID() },
     };
+    await bind(next);
     const outcomes = await Promise.all([
       __moonTest.createMoonContextEngine(api).commitTurn(next),
       __moonTest.createMoonContextEngine(api).commitTurn(next),
@@ -2134,12 +2199,17 @@ Deno.test("optional extraction failure does not undo an accepted evidence commit
     failOpen: false,
   });
   api.runtime.system.runCommandWithTimeout = (argv) => {
+    if (argv.includes("reply-history")) {
+      return { code: 0, stdout: '{"received":true}', stderr: "" };
+    }
+    if (argv.includes("audience")) return testAudience;
     if (argv.includes("record")) {
       records += 1;
       return {
         code: 0,
         stdout: JSON.stringify({
           session_id: evidenceId,
+          scope: testScope,
           changed: records === 1,
         }),
         stderr: "",
@@ -3669,6 +3739,7 @@ Deno.test({
       return result;
     };
     const engine = __moonTest.createMoonContextEngine(api);
+    const group = [TEST_READERS[0], "discord:222222222222222222"];
     for (const [index, quote] of [oldQuote, newQuote].entries()) {
       const time = Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000;
       const params = acceptedParams([{
@@ -3681,11 +3752,41 @@ Deno.test({
         timestamp: time + 1000,
       }]);
       params.advancementKey = `l2-sqlite-${index}`;
+      params.admission.idempotencyKey = `synthetic-turn-${index}`;
+      await cli([
+        "privacy",
+        "bind-room",
+        "--admission-key",
+        __moonTest.admissionKey(
+          params.admission.agentId,
+          params.sessionId,
+          params.sessionKey,
+          params.admission.idempotencyKey,
+        )!,
+        "--sender",
+        group[index],
+        "--audience-json",
+        JSON.stringify(group),
+        "--owners-json",
+        JSON.stringify(group),
+      ]);
       assertEquals(await engine.commitTurn(params), { status: "committed" });
     }
     const before = await cli(["health"]);
     assertEquals(before.evidence_sessions, 2);
     assertEquals(before.active_memories, 1);
+    // Both accepted messages have the same private audience. The operator can
+    // identify each speaker across restarts without exposing their wording.
+    for (const [index, sender] of group.entries()) {
+      const rows = await cli(["privacy", "by-sender", "--sender", sender]);
+      assertEquals(rows.length, 1);
+      assertEquals(rows[0].reader_count, 2);
+      assertEquals(
+        rows[0].completed_at_ms,
+        Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000 + 1000,
+      );
+      assert(!JSON.stringify(rows).includes("Project Canary"));
+    }
     const config = await cli(["config", "show"]);
     config.learning.l2.enabled = true;
     config.learning.l2.fallback_enabled = false;
@@ -3713,6 +3814,8 @@ Deno.test({
       "context",
       "--query",
       "Project Canary release colour",
+      "--audience-json",
+      JSON.stringify(TEST_READERS),
       "--mode",
       "lexical",
     ]);

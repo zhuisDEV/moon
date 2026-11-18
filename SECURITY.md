@@ -39,9 +39,13 @@ Moon stores local memory that may contain sensitive information.
   Withdrawal invalidates recall support immediately; deletion is logical and
   does not securely erase storage or retained backups. See the
   [lifecycle policy](docs/source-storage.md#approved-lifecycle-policy).
-- Schema-13 migrations preserve prior rows and run transactionally. Use the
-  installed pre-upgrade binary for backups and retain its matching database.
-  Recovery refuses to overwrite learning completed after candidate restart.
+- The Discord adapter verifies the human readers of a destination before private
+  recall. Administrative commands and direct SQLite access require a trusted
+  local operator. See [public and private memory](docs/memory-privacy.md) for
+  host isolation, legacy quarantine and delivery limitations.
+- Schema migrations run transactionally. Use the installed pre-upgrade binary
+  for backups and retain its matching database. Recovery refuses to overwrite
+  learning completed after candidate restart.
 
 ## Reporting a vulnerability
 

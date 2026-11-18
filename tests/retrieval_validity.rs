@@ -452,6 +452,9 @@ fn schema_eleven_fixture(path: &Path) -> (String, Value, Value, Value) {
     // Remove later additive diagnostics and restore migration 10's view so this
     // remains a genuine schema-11 fixture as the current schema advances.
     let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch(include_str!("fixtures/pre_audience_schema.sql"))
+        .unwrap();
     connection.execute_batch("DROP TABLE learning_retry_terms; DROP TABLE learning_evidence_retries; ALTER TABLE source_learning_jobs DROP COLUMN failure_code; ALTER TABLE topic_jobs DROP COLUMN failure_code;").unwrap();
     connection
         .execute_batch("DROP VIEW source_valid_claims;")
@@ -491,7 +494,7 @@ fn schema_eleven_migration_preserves_source_topic_and_packet_then_reopens() {
     let path = temp.path().join("state/moon.sqlite");
     let (claim, claim_before, topic_before, packet_before) = schema_eleven_fixture(&path);
     let store = Store::open(&path, 64).unwrap();
-    assert_eq!(store.health().unwrap().schema_version, 14);
+    assert_eq!(store.health().unwrap().schema_version, 18);
     assert!(store.health().unwrap().ok);
     assert_eq!(store.source_claim_get(SCOPE, &claim).unwrap(), claim_before);
     assert_eq!(store.topic_get(SCOPE, "retention").unwrap(), topic_before);

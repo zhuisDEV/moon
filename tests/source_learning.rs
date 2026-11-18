@@ -1115,7 +1115,7 @@ fn schema_nine_upgrade_queues_only_current_eligible_heads_and_preserves_old_cita
     drop(upgraded);
     let reopened = Store::open(&old_database, 64).unwrap();
     assert_eq!(count(&old_database, "source_learning_jobs"), 1);
-    assert_eq!(reopened.health().unwrap().schema_version, 14);
+    assert_eq!(reopened.health().unwrap().schema_version, 18);
 }
 
 #[test]
@@ -1582,7 +1582,7 @@ fn failed_schema_ten_migration_rolls_back_backfill_and_preserves_schema_nine_sou
         .unwrap();
     drop(connection);
     let recovered = Store::open(&database, 64).unwrap();
-    assert_eq!(recovered.health().unwrap().schema_version, 14);
+    assert_eq!(recovered.health().unwrap().schema_version, 18);
     assert_eq!(count(&database, "source_lifecycle"), 1);
     assert_eq!(count(&database, "source_lifecycle_events"), 1);
     assert_eq!(count(&database, "source_learning_jobs"), 1);

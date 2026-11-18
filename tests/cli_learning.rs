@@ -928,7 +928,7 @@ fn legacy_identical_heads_merge_with_citations_and_aliases_preserved() {
          SELECT ?2,memory_kind,importance,confidence,valid_from_ms,pinned,'atlas:legacy',last_confirmed_at_ms,observed_at_ms FROM memory_items WHERE document_id=?1",
         rusqlite::params![first.document_id,duplicate],
     ).unwrap();
-    connection.execute("INSERT INTO memory_heads(canonical_key,document_id,updated_at_ms) VALUES('atlas:legacy',?1,100)",[duplicate]).unwrap();
+    connection.execute("INSERT INTO memory_heads(scope,canonical_key,document_id,updated_at_ms) VALUES('global','atlas:legacy',?1,100)",[duplicate]).unwrap();
     connection.execute(
         "INSERT INTO memory_citations(memory_document_id,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms)
          SELECT ?2,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms FROM memory_citations WHERE memory_document_id=?1",
@@ -1049,7 +1049,7 @@ fn superseding_an_expired_observation_does_not_extend_its_historical_validity() 
 }
 
 #[test]
-fn l1_rejects_scope_and_kind_collisions() {
+fn l1_scopes_keys_and_rejects_cross_scope_evidence_and_kind_collisions() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);
     record(&mut store, "one", "global", "Atlas uses SQLite.", 100);
@@ -1061,11 +1061,13 @@ fn l1_rejects_scope_and_kind_collisions() {
     assert!(store.distill_memory(cross.clone()).is_err());
     cross.scope = "private".into();
     cross.canonical_key = "atlas:database".into();
-    assert!(store.distill_memory(cross).is_err());
+    store
+        .distill_memory(cross)
+        .expect("the same key in a different scope is independent");
     let mut kind = proposal("atlas:database", "one", "Atlas uses SQLite.");
     kind.memory_kind = "preference".into();
     assert!(store.distill_memory(kind).is_err());
-    assert_eq!(store.health().unwrap().active_memories, 1);
+    assert_eq!(store.health().unwrap().active_memories, 2);
 }
 
 #[test]

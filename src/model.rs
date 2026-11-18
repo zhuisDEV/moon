@@ -209,6 +209,8 @@ pub struct ContextCitation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextMemory {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_attested_legacy: bool,
     pub document_id: i64,
     pub canonical_key: Option<String>,
     pub memory_kind: String,
@@ -495,6 +497,9 @@ fn render_context_memory(memory: &ContextMemory) -> String {
             .map_or_else(|| "none".into(), |v| v.to_string()),
         untrusted_fence(&memory.content),
     );
+    if memory.owner_attested_legacy {
+        output.push_str("\nOwnership was assigned during migration. Original speaker and authorship are unverified.\n");
+    }
     if memory.review_required {
         output.push_str(
             "\n- review_required: unresolved evidence conflict; do not present as settled fact\n",
@@ -726,6 +731,7 @@ mod tests {
             used_chars: 0,
             truncated: false,
             memories: vec![ContextMemory {
+                owner_attested_legacy: false,
                 document_id: 1,
                 canonical_key: Some("audit:prompt".to_string()),
                 memory_kind: "fact".to_string(),

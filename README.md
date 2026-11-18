@@ -23,12 +23,18 @@ Copy those from the same release using the
 
 ## What runs automatically
 
-In a configured OpenClaw installation, Moon retrieves memory before a turn,
-records the accepted user request and final answer, extracts eligible durable
-memories through L1, and drains local embedding work. Daily L2 reconciliation is
-optional and **disabled by default**. L1 and L2 have independent model and
-reasoning settings in `~/.moon/moon.toml`. OpenClaw owns authentication and
-model execution; Moon creates no provider login or API-key store.
+In the development build, Moon retrieves public and audience-permitted private
+memories before a turn. Each newly recorded private chat turn keeps the verified
+sender ID, question owners and potential readers. Confirmed replies have
+separate delivery owners. Moon extracts eligible durable memories through L1,
+and drains local embedding work. Daily L2 reconciliation is optional and
+**disabled by default**. L1 and L2 have independent model and reasoning settings
+in `~/.moon/moon.toml`. OpenClaw owns authentication and model execution; Moon
+creates no provider login or API-key store.
+
+The new public collection starts empty. Assign a known owner or review legacy
+global memories using the
+[audience and migration guide](docs/memory-privacy.md).
 
 In the development build, daily L2 gives rejected session evidence one routine
 retry on a later occurrence. Evidence that still lacks support stays pending.
@@ -51,7 +57,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Development schema: **14**. Signed 2.7.0 updates accept schemas **6–13** and
+- Development schema: **18**. Signed 2.7.0 updates accept schemas **6–13** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
