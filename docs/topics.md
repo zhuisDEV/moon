@@ -7,8 +7,7 @@ owner instructions. The [reviewed baseline](topic-baseline.md) establishes why
 qualifications, disagreement, expiry and packet budgets need explicit checks.
 Its synthetic comparison is not a production quality or performance claim.
 
-Topics are available in Moon 2.7.0, whose current database schema is 13; topic
-storage was introduced by schema 11. Start with
+Moon 2.8.0 uses schema 19. Topic storage was introduced by schema 11. Start with
 [getting started](getting-started.md) or [updating](updating.md) if the
 installed command does not expose `moon topic`. Updating does not enable
 automatic source or topic processing.

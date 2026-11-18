@@ -6,10 +6,17 @@ is for an existing Moon runtime. For the data changes, see
 
 ## Upgrade checklist
 
-Moon **2.7.0** adds source learning, topics and hardening, and advances the
-database to **schema 13**. Its signed compatibility range is **6–13**. L2 and
-source/topic tools are not enabled by upgrading; existing model configuration is
-preserved.
+Moon **2.8.0** adds public and private chat memory and migrates supported
+databases from **schemas 6–19** to **schema 19**. On the first audience
+migration, old global memories enter operator review and the public collection
+starts empty. The operator may explicitly assign the frozen legacy collection to
+one verified owner when its ownership is known. The assignment preserves
+archived records and leaves historical authorship unverified. See the
+[legacy memory procedure](memory-privacy.md#reviewing-the-old-global-collection).
+
+Moon filters what it supplies to a chat. OpenClaw session history, shell and
+filesystem tools have their own access controls. Review those permissions for
+shared agents as part of the cutover. Existing model settings are preserved.
 
 1. Confirm the current binary and runtime before changing anything:
 
@@ -29,8 +36,8 @@ preserved.
    new private paths:
 
    ```bash
-   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.7.0.sqlite
-   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.7.0.md
+   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.8.0.sqlite
+   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.8.0.md
    ```
 
    Create the destination directory with mode `0700`. Copy `~/.moon/moon.toml`
@@ -41,9 +48,9 @@ preserved.
 3. Review the signed plan, then apply when ready for a Gateway restart:
 
    ```bash
-   ~/.moon/bin/moon update --version=2.7.0 --check
-   ~/.moon/bin/moon update --version=2.7.0 --dry-run
-   ~/.moon/bin/moon update --version=2.7.0
+   ~/.moon/bin/moon update --version=2.8.0 --check
+   ~/.moon/bin/moon update --version=2.8.0 --dry-run
+   ~/.moon/bin/moon update --version=2.8.0
    ```
 
    Read the plan and confirmation. If active leases are reported, allow work to
@@ -60,37 +67,34 @@ preserved.
    openclaw plugins doctor
    ```
 
-   Expect version `2.7.0`, schema `13`, integrity `ok`, zero logical violations
+   Expect version `2.8.0`, schema `19`, integrity `ok`, zero logical violations
    and the loaded adapter from the selected release. Verify a fresh conversation
    and current injection evidence separately from storage health. See
    [verification](getting-started.md#verify-the-installation).
 5. **Refresh your skill and its guides** as described below. Retain backup,
    journal and old release until recovery is no longer needed.
 
-### Compatibility bridge in 2.7.0
+### Six-file compatibility bridge
 
-The published 2.6.6 updater accepts exactly six payload files. Therefore **2.7.0
-ships six signed payloads**, including the new `SKILL.md` and a reader that can
-accept documentation in future releases. The supporting Markdown guides are in
-the tagged source, not this binary archive. This packaging keeps ordinary signed
-upgrades from 2.6.6 working; it does not skip verification. A later release can
-bundle guides after users have crossed the bridge. Local development builds may
-report `2.6.6` while already using schema 13; inspect actual provenance and
-schema rather than assuming the package version describes their data.
+Moon 2.8.0 retains the six signed payloads introduced by the 2.7.0 bridge. The
+published 2.6.6 updater accepts this archive shape. The binary, adapter files
+and `SKILL.md` are in the signed archive. Install the supporting Markdown guides
+from the matching release tag. For local development builds, check both the
+commit reported by `moon --json --version` and the database schema.
 
 ## Refresh the agent skill
 
-**`SKILL.md` changed in 2.7.0. Update it wherever you previously copied it.**
+**`SKILL.md` changed in 2.8.0. Update it wherever you previously copied it.**
 The native updater refreshes its managed OpenClaw skill; it does not find or
 update separate Codex/other-agent copies. Verify the installed
-`moon-version: 2.7.0` marker. The updated skill has pinned online links so it
+`moon-version: 2.8.0` marker. The updated skill has pinned online links so it
 works without local guides.
 
 To install the complete guide set, use a reviewed checkout of the **same tag**:
 
 ```bash
-git clone --branch v2.7.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.7.0-guides
-cd moon-2.7.0-guides
+git clone --branch v2.8.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.8.0-guides
+cd moon-2.8.0-guides
 ```
 
 For an existing skill, first preserve its entire directory in a new private
@@ -301,7 +305,7 @@ OpenClaw configuration or infer provider credentials.
 
 ```bash
 moon update
-moon update --version=2.7.0
+moon update --version=2.8.0
 moon --json update --yes
 ```
 
@@ -424,7 +428,7 @@ add the newer updater's rollback behaviour to an old executable.
 ```text
 ~/.moon/
   bin/moon -> ../current/bin/moon
-  current -> releases/2.7.0
+  current -> releases/2.8.0
   openclaw-plugin -> current/openclaw-plugin
   releases/<version>/
   state/moon.sqlite

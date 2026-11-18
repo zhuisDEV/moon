@@ -1,8 +1,8 @@
 # SQLite source storage
 
-Moon 2.7.0 retains selected text and provenance in SQLite, then supports
+Moon 2.8.0 retains selected text and provenance in SQLite, then supports
 reviewed extraction of verbatim source claims. Source storage and learning were
-added by schemas 9 and 10; the release uses schema 13. For first installation,
+added by schemas 9 and 10; the release uses schema 19. For first installation,
 start with [getting started](getting-started.md); for an existing runtime,
 follow [updating](updating.md) before using these commands. Editing or building
 a checkout does not update an installed runtime.

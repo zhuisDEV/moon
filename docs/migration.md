@@ -2,23 +2,23 @@
 
 For normal Moon v2 updates, use the signed transaction in
 [updating](updating.md). You do not need to export and reimport your knowledge
-or convert Markdown files to use Moon 2.7.0. New users should follow
+or convert Markdown files to use Moon 2.8.0. New users should follow
 [getting started](getting-started.md). The
 [v1 migration](#legacy-v1-to-v2-migration) below applies only to the retired
 QMD/watcher runtime.
 
-Moon 2.7.0 uses database **schema 13** and accepts supported databases from
-schema 6 through 13. The runtime remains `~/.moon`, the database remains
+Moon 2.8.0 uses database **schema 19** and accepts supported databases from
+schema 6 through 19. The runtime remains `~/.moon`, the database remains
 `~/.moon/state/moon.sqlite`, and the OpenClaw plugin ID remains `moon`. Runtime
 settings in `moon.toml` survive updates; migration does not enable L2, call a
 model or create a new login.
 
-This release also updates bundled SQLite from 3.51.3 to patched 3.54.1. The
-engine upgrade does not add a Moon schema migration or change the vector model.
-Keep earlier engine timings historical and validate the actual release before
-making performance claims.
+Moon 2.7.0 updated bundled SQLite from 3.51.3 to patched 3.54.1. The engine
+upgrade does not add a Moon schema migration or change the vector model. Keep
+earlier engine timings historical and validate the actual release before making
+performance claims.
 
-The development build migrates session learning to schema 14. It recovers known
+Schema 14 introduces a retry ledger for session learning. It recovers known
 deferrals for still-pending sessions from committed learning runs. A migration
 does not generate proposals or mark those sessions processed.
 
@@ -45,8 +45,8 @@ does not generate proposals or mark those sessions processed.
    upgrade guide, including any separately installed agent copies.
 6. Retain the previous immutable release and its matching database, plugin,
    skill and configuration backups. Rehearse restoration before relying on them.
-   Restore a schema-12 backup with a schema-12 executable; never test a
-   downgrade by opening schema 13 with an older binary.
+   For an upgrade from 2.7.0, restore its schema-13 backup with its matching
+   executable.
 
 ## Schema 15 audience migration
 
@@ -88,7 +88,7 @@ assignment.
 
 ## SQLite migrations
 
-Moon applies numbered migrations transactionally. Moon 2.7.0 uses schema v13.
+Moon applies numbered migrations transactionally. Moon 2.8.0 uses schema v19.
 Opening a normal write command migrates older supported Moon v2 databases
 forward; `health` and source inspection (`get`, `list`, `history`, `cite`,
 `state`, deletion preview, learning status/preview, and claim inspection) never
@@ -136,11 +136,11 @@ old errors remain readable. Configuration failures stop until explicit retry,
 while timeouts use the existing retry budget. Both alterations and the migration
 ledger commit are one transaction. No model is called during migration.
 
-Before deploying schema v13, rehearse migration, integrity checks and backup
+Before deploying schema v19, rehearse migration, integrity checks and backup
 restoration with a temporary `--home`. Obtain a consistent online SQLite backup
 and configuration backup before the authorised live migration. Preserve the
 previous binary with its matching database backup: an older binary must not open
-schema v13 as a rollback attempt. Building the checkout does not authorise
+schema v19 as a rollback attempt. Building the checkout does not authorise
 replacing the installed binary, plugin or live database.
 
 ## Embedding model changes
