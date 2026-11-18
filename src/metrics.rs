@@ -18,10 +18,29 @@ impl Store {
         request: &ContextRequest,
         provider: Option<&dyn EmbeddingProvider>,
     ) -> Result<ContextObservation> {
+        self.observe_context_with(request, || self.assemble_context(request, provider))
+    }
+
+    pub fn observe_audience_context(
+        &self,
+        request: &ContextRequest,
+        provider: Option<&dyn EmbeddingProvider>,
+        readers: &[String],
+    ) -> Result<ContextObservation> {
+        self.observe_context_with(request, || {
+            self.assemble_audience_context(request, provider, readers)
+        })
+    }
+
+    fn observe_context_with(
+        &self,
+        request: &ContextRequest,
+        assemble: impl FnOnce() -> Result<crate::ContextPacket>,
+    ) -> Result<ContextObservation> {
         let request_id = format!("{:032x}", rand::random::<u128>());
         let occurred_at_ms = now_ms();
         let started = Instant::now();
-        let result = self.assemble_context(request, provider);
+        let result = assemble();
         let duration_us = elapsed_us(started);
 
         match result {

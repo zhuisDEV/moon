@@ -33,14 +33,16 @@ examples to another database.
 
 ### 1. After a completed turn: record immutable evidence
 
-After OpenClaw successfully completes a non-heartbeat turn, the adapter keeps
-the user request and final assistant answer, discards intermediate tool chatter,
-and records that pair as evidence. OpenClaw's `commitTurn` callback supplies
-only the closed, accepted transcript range. A SHA-256 identity derived from its
-advancement key is committed with the evidence in one SQLite transaction. This
-makes retries and concurrent acknowledgements idempotent. The parent session and
-channel identity stay in sanitized metadata. Moon does not read the growing
-transcript during assembly or commit.
+After OpenClaw completes an eligible turn with a verified audience, the adapter
+records the accepted human message as private evidence. The final assistant
+answer marks completion. A matching successful Discord delivery can retain the
+answer as role-labelled private history. L1 and L2 learn from accepted human
+words; tool traffic stays outside the turn history. OpenClaw's `commitTurn`
+callback supplies only the closed, accepted transcript range. A SHA-256 identity
+derived from its advancement key is committed with the evidence in one SQLite
+transaction. This makes retries and concurrent acknowledgements idempotent. The
+parent session and channel identity stay in sanitized metadata. Moon does not
+read the growing transcript during assembly or commit.
 
 Storage failures remain in OpenClaw's durable retry queue. Extraction runs only
 after a new evidence commit and is best effort: a crash between the commit and
@@ -71,8 +73,10 @@ historical evidence or its citations. Replaying old content whose sanitised form
 has changed can therefore produce an immutable-evidence conflict.
 
 OpenClaw calls the hook only after the turn has finished. Heartbeats and turns
-without both a user request and final answer are skipped. Evidence can include
-ordinary turns, but only durable candidates proceed to distillation.
+without a verified admission, a user request or a visible final answer are
+skipped. A recognised credential also skips the evidence write. Only durable
+candidates proceed to distillation. See
+[public and private memory](memory-privacy.md).
 
 ### 2. Distill evidence into a durable memory
 
@@ -277,13 +281,16 @@ one date key. Restart catch-up includes older pending evidence without creating
 a separate model job for every missed day. Each date's batches share one fixed
 evidence cutoff.
 
-`learning prepare` leases a bounded snapshot of the oldest unprocessed evidence
-in one scope, related active memories, and their original source evidence. It
-reports partial comparison context explicitly. The default daily budget is eight
-batches of at most 32 selected records and 64,000 packet characters, with at
-most 16 proposed actions per batch. A batch key permits three failed attempts
-before that occurrence stops; each attempt can use one primary and one enabled
-fallback. Lease expiry and committed run keys survive restarts.
+In the development build, `learning prepare` selects fresh evidence before
+eligible retries. Each snapshot stays within one scope and includes related
+active memories and their original source evidence. A second unsuccessful review
+parks the evidence until related new evidence, changed grounding rules, or an
+explicit session review makes it eligible again. It reports partial comparison
+context explicitly. The default daily budget is eight batches of at most 32
+selected records and 64,000 packet characters, with at most 16 proposed actions
+per batch. A batch key permits three failed attempts before that occurrence
+stops; each attempt can use one primary and one enabled fallback. Lease expiry
+and committed run keys survive restarts.
 
 L2 can create, confirm, supersede, merge, or request review. Every action needs
 an exact citation from selected evidence, and new claims must be grounded in the

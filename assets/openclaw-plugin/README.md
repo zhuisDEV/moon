@@ -4,11 +4,13 @@ This adapter registers the `moon` context engine, supplies one bounded SQLite
 context packet for the current user message, and records completed turns for
 selective durable-memory learning.
 
-This is the Moon 2.7.0 adapter and must be installed with the matching binary
-and `SKILL.md` (database schema 13). For a first installation, use
-[getting started](../../docs/getting-started.md). For an existing installation,
-use [updating](../../docs/updating.md); do not copy this file over a running
-plugin or link a mutable development checkout into production.
+This development adapter requires the matching schema-19 binary and skill. The
+published 2.7.0 adapter uses schema 13. See
+[audience rules and legacy review](../../docs/memory-privacy.md). For a first
+installation, use [getting started](../../docs/getting-started.md). For an
+existing installation, use [updating](../../docs/updating.md); do not copy this
+file over a running plugin or link a mutable development checkout into
+production.
 
 ## Installation and upgrade checks
 
@@ -42,14 +44,15 @@ and prompt injection allowed, recall uses `before_prompt_build` for both native
 and stock runtimes. The hook returns a defensive `prependContext` packet;
 `assemble` then passes messages through to prevent duplicate injection. This
 fixes OpenClaw 2026.9.7 native-owned routes, which omit context-engine assembly.
-Without the hook API or permission, Moon retains its legacy assembly path and
-logs a compatibility warning. That fallback does not repair native recall. See
+Without the hook API or permission, stock assembly can retrieve public memories
+only. Native routes that skip assembly require the authorised prompt hook. See
 [native recall compatibility](../../docs/openclaw-canary.md#native-recall-compatibility)
 for the concrete deployment settings and synthetic acceptance check.
 
 The adapter keeps strict ownership boundaries:
 
-- Moon retrieves canonical memories and cited source references.
+- Chat recall retrieves eligible public and private memories with
+  audience-checked evidence.
 - The selected agent harness continues to own automatic transcript compaction.
   Moon delegates explicit compaction only for an identified stock OpenClaw
   harness and safely refuses the lossy generic fallback for Codex or an unknown
@@ -59,10 +62,13 @@ The adapter keeps strict ownership boundaries:
   safeguard summarization call. OpenClaw still chooses safe transcript and tool
   boundaries, preserves recent turns, writes checkpoints, and owns rollback.
 - Retrieval failures fail open by default and preserve the original messages.
-- The durable `commitTurn` hook stores only the accepted user request and final
-  assistant answer. OpenClaw supplies the closed transcript range; Moon never
-  rereads the growing transcript. Its advancement identity and evidence commit
-  in one SQLite transaction, so retries cannot duplicate evidence or learning.
+- The durable `commitTurn` hook stores the accepted human message for its
+  recorded owners with the original sender’s verified Discord ID. It excludes
+  assistant answers and tool traffic from learning. Confirmed Discord replies
+  can be recalled as role-labelled history by their verified delivery owners.
+  OpenClaw supplies the closed transcript range; Moon never rereads the growing
+  transcript. Its advancement identity and evidence commit in one SQLite
+  transaction, so retries cannot duplicate evidence or learning.
 - Storage failures reject the commit for OpenClaw's durable retry queue, even
   with `failOpen` enabled. Model-based extraction is best effort after the
   commit; a crash after the evidence write can skip extraction, but preserves
@@ -78,9 +84,11 @@ The adapter keeps strict ownership boundaries:
   per batch key. It retains review items for uncertain conflicts, preserves
   evidence, and never merges differently worded claims automatically.
   Independent candidates that pass validation can commit while sources behind
-  rejected candidates remain pending. A partial commit stops the daily
-  occurrence, also after a restart. Fixed failure phases and codes never include
-  generated claims or provider error bodies.
+  rejected candidates remain pending. With schema 14, the scheduler continues
+  through fresh batches and gives rejected evidence one routine retry on a later
+  occurrence. Further attempts require related new evidence, changed grounding
+  rules, or an explicit session review. Fixed failure phases and codes never
+  include generated claims or provider error bodies.
 - Greetings and irrelevant queries inject no context packet.
 - The optional `moon_source_learn` tool explicitly processes one queued eligible
   source and submits verbatim proposals for separate operator review. It does

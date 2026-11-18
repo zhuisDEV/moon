@@ -1,12 +1,15 @@
 pub mod chunking;
 pub mod config;
 pub mod embedding;
+pub mod history;
 pub mod job_failure;
 pub mod learning;
 pub mod legacy;
 pub mod memory;
 pub mod metrics;
 pub mod model;
+pub mod privacy;
+pub mod publication;
 pub mod redaction;
 pub mod release;
 pub mod server;

@@ -18,6 +18,36 @@ const MAX_EVIDENCE_QUOTE_BYTES: usize = 8 * 1024;
 
 impl Store {
     pub fn record_evidence(&mut self, input: EvidenceInput) -> Result<EvidenceOutcome> {
+        self.record_turn_evidence(input, None)
+    }
+
+    /// The admission and evidence are linked in the same transaction. Replays cannot
+    /// attach a new author to an existing record or record two turns for one admission.
+    pub fn record_turn_evidence(
+        &mut self,
+        mut input: EvidenceInput,
+        admission: Option<&str>,
+    ) -> Result<EvidenceOutcome> {
+        if let Some(key) = admission {
+            let scope = self.admitted_memory_scope(key, &input.session_id)?;
+            if input.scope != scope {
+                // Older direct callers supply the owner-set scope. It must match
+                // the verified ACL before storing into the speaker's namespace.
+                let parent: Option<String> = self
+                    .connection
+                    .query_row(
+                        "SELECT audience_scope FROM speaker_memory_scopes WHERE scope=?1",
+                        [&scope],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                anyhow::ensure!(
+                    parent.as_deref() == Some(&input.scope),
+                    "evidence scope differs from admission owners"
+                );
+                input.scope = scope;
+            }
+        }
         validate_session_id(&input.session_id)?;
         validate_identifier("scope", &input.scope, 2_048)?;
         if input.content.trim().is_empty() {
@@ -35,6 +65,10 @@ impl Store {
             + redacted_title.as_ref().map_or(0, |redacted| redacted.count);
         let sanitized_title = redacted_title.map(|redacted| redacted.value);
         let metadata_value: serde_json::Value = serde_json::from_str(&redacted_metadata.value)?;
+        let from_openclaw = metadata_value["source"] == "openclaw";
+        let has_reserved_attribution = ["verified_sender", "verified_audience", "admission_key"]
+            .iter()
+            .any(|key| metadata_value.get(key).is_some());
         let document_metadata = serde_json::json!({
             "session_id": input.session_id,
             "completed_at_ms": input.completed_at_ms,
@@ -44,6 +78,16 @@ impl Store {
         let content_hash = sha256_hex(&redacted_content.value);
 
         let session_hash = sha256_hex(&input.session_id);
+        if admission.is_none() {
+            anyhow::ensure!(
+                !self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM speaker_memory_scopes WHERE scope=?1)",
+                    [&input.scope],
+                    |r| r.get::<_, bool>(0),
+                )?,
+                "speaker evidence requires a verified admission"
+            );
+        }
         let prepared = prepare_ingest(IngestDocument {
             source_uri: format!("evidence://session/{}", &session_hash[..24]),
             source_kind: "evidence".to_string(),
@@ -60,7 +104,8 @@ impl Store {
             .query_row(
                 "SELECT e.document_id, d.content_hash, d.scope, d.title, e.completed_at_ms,
                         e.metadata_json, e.redactions,
-                        (SELECT count(*) FROM chunks c WHERE c.document_id = d.id)
+                        (SELECT count(*) FROM chunks c WHERE c.document_id = d.id),
+                        (SELECT admission_key FROM evidence_admissions WHERE evidence_id=e.id)
                  FROM evidence_sessions e
                  JOIN documents d ON d.id = e.document_id
                  WHERE e.session_id = ?1",
@@ -75,6 +120,7 @@ impl Store {
                         row.get::<_, String>(5)?,
                         row.get::<_, i64>(6)?,
                         row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -89,6 +135,7 @@ impl Store {
             metadata_json,
             existing_redactions,
             chunks,
+            previous_admission,
         )) = existing
         {
             if existing_hash != content_hash
@@ -96,6 +143,7 @@ impl Store {
                 || existing_title != sanitized_title
                 || completed_at_ms != input.completed_at_ms
                 || metadata_json != redacted_metadata.value
+                || previous_admission.as_deref() != admission
             {
                 anyhow::bail!(
                     "evidence session `{}` is immutable and already has different content or metadata",
@@ -113,6 +161,16 @@ impl Store {
             return Ok(outcome);
         }
 
+        anyhow::ensure!(
+            !has_reserved_attribution,
+            "evidence metadata contains a reserved attribution field"
+        );
+        // Old adapters could write directly to a private scope or to global.
+        // Preserve exact historical replays above, but require proof on new host writes.
+        anyhow::ensure!(
+            admission.is_some() || !from_openclaw,
+            "OpenClaw evidence requires a verified admission"
+        );
         let outcome = ingest_prepared(&transaction, prepared)?;
         transaction.execute(
             "INSERT INTO evidence_sessions(
@@ -127,6 +185,14 @@ impl Store {
                 redacted_metadata.value,
             ],
         )?;
+        let evidence_id = transaction.last_insert_rowid();
+        if let Some(key) = admission {
+            transaction.execute(
+                "INSERT INTO evidence_admissions(evidence_id,admission_key) VALUES(?1,?2)",
+                params![evidence_id, key],
+            )?;
+        }
+        crate::learning::match_new_retry_support(&transaction, evidence_id, &input.scope)?;
         transaction.commit()?;
 
         Ok(EvidenceOutcome {
@@ -167,6 +233,51 @@ impl Store {
         request: &ContextRequest,
         provider: Option<&dyn EmbeddingProvider>,
     ) -> Result<ContextPacket> {
+        // Exact reads performed by the learner must stay in their own audience.
+        // Preserve the legacy operator context behaviour for unregistered scopes.
+        if let Some(scope) = &request.scope
+            && self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_audiences WHERE scope=?1)",
+                [scope],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            let snapshot = self.connection.unchecked_transaction()?;
+            let permitted = serde_json::to_string(&[scope])?;
+            let packet = self.assemble_context_inner(request, provider, Some(&permitted))?;
+            snapshot.commit()?;
+            return Ok(packet);
+        }
+        self.assemble_context_inner(request, provider, None)
+    }
+
+    /// Compose a single bounded packet from memories available to every reader.
+    /// Take a single SQLite snapshot for the eligibility check, candidate search
+    /// and citation loading. Imported references and raw evidence aren't memories.
+    pub fn assemble_audience_context(
+        &self,
+        request: &ContextRequest,
+        provider: Option<&dyn EmbeddingProvider>,
+        readers: &[String],
+    ) -> Result<ContextPacket> {
+        anyhow::ensure!(
+            request.scope.is_none(),
+            "choose an audience or an operator scope"
+        );
+        let snapshot = self.connection.unchecked_transaction()?;
+        let scopes = self.readable_memory_scopes(readers)?;
+        let permitted = serde_json::to_string(&scopes)?;
+        let packet = self.assemble_context_inner(request, provider, Some(&permitted))?;
+        snapshot.commit()?;
+        Ok(packet)
+    }
+
+    fn assemble_context_inner(
+        &self,
+        request: &ContextRequest,
+        provider: Option<&dyn EmbeddingProvider>,
+        audience_scopes: Option<&str>,
+    ) -> Result<ContextPacket> {
         if request.query.trim().is_empty() {
             anyhow::bail!("context query must not be empty");
         }
@@ -176,15 +287,23 @@ impl Store {
         let limit = request.limit.clamp(1, 64);
         let evidence_limit = request.evidence_per_memory.clamp(0, 8);
         let hits = self
-            .search(
+            .search_inner(
                 &SearchRequest {
                     query: request.query.clone(),
                     mode: request.mode,
                     limit: limit.saturating_mul(4).min(100),
-                    scope: request.scope.clone(),
+                    // Audience scopes include virtual ownership of assigned legacy rows.
+                    // Filtering their original document scope would hide them in exact private reads.
+                    scope: if audience_scopes.is_some() {
+                        None
+                    } else {
+                        request.scope.clone()
+                    },
                     source_kind: Some("memory".to_string()),
                 },
                 provider,
+                false,
+                audience_scopes,
             )?
             .into_iter()
             .filter(|hit| is_relevant_search_hit(&request.query, hit))
@@ -201,7 +320,9 @@ impl Store {
                 .and_modify(|score| *score = score.max(hit.score))
                 .or_insert(hit.score);
         }
-        for document_id in self.pinned_summary_ids(request.scope.as_deref(), limit)? {
+        for document_id in
+            self.pinned_summary_ids(request.scope.as_deref(), limit, audience_scopes)?
+        {
             candidates
                 .entry(document_id)
                 .and_modify(|score| *score += 1.0)
@@ -211,7 +332,12 @@ impl Store {
         let mut memories = candidates
             .into_iter()
             .map(|(document_id, score)| {
-                self.load_context_memory(document_id, score, evidence_limit)
+                self.load_context_memory(
+                    document_id,
+                    score,
+                    evidence_limit,
+                    audience_scopes.is_some(),
+                )
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
@@ -273,6 +399,7 @@ impl Store {
             scope: request
                 .scope
                 .as_deref()
+                .or(audience_scopes.map(|_| "audience"))
                 .map(|scope| truncate_chars(scope, 80)),
             max_chars: request.max_chars,
             used_chars: 0,
@@ -325,7 +452,7 @@ impl Store {
             packet.truncated = true;
         }
         let remaining_slots = limit.saturating_sub(packet.memories.len());
-        if remaining_slots > 0 {
+        if remaining_slots > 0 && audience_scopes.is_none() {
             // References may answer one part of a multi-part question. Keep the
             // stricter personal-memory/correction matcher above unchanged.
             let topic_limit = (remaining_slots / 3).min(2);
@@ -651,7 +778,12 @@ impl Store {
         Ok(references)
     }
 
-    fn pinned_summary_ids(&self, scope: Option<&str>, limit: usize) -> Result<Vec<i64>> {
+    fn pinned_summary_ids(
+        &self,
+        scope: Option<&str>,
+        limit: usize,
+        audience_scopes: Option<&str>,
+    ) -> Result<Vec<i64>> {
         let mut statement = self.connection.prepare(
             "SELECT m.document_id
              FROM memory_items m
@@ -662,17 +794,21 @@ impl Store {
                AND m.superseded_by IS NULL
                AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?2)
                AND (
-                   (?1 IS NULL AND d.scope = 'global')
-                   OR (?1 IS NOT NULL AND (d.scope = ?1 OR d.scope = 'global'))
+                   (?4 IS NULL AND (d.scope = ?1 OR d.scope = 'global'))
+                   OR (?4 IS NOT NULL AND d.id IN (
+                       SELECT document_id FROM chat_recallable_memories
+                       WHERE scope IN (SELECT value FROM json_each(?4))
+                   ))
                )
              ORDER BY (m.memory_kind = 'summary') DESC,
                       m.importance DESC, m.last_confirmed_at_ms DESC, m.document_id
              LIMIT ?3",
         )?;
         Ok(statement
-            .query_map(params![scope, now_ms(), limit as i64], |row| {
-                row.get::<_, i64>(0)
-            })?
+            .query_map(
+                params![scope, now_ms(), limit as i64, audience_scopes],
+                |row| row.get::<_, i64>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -681,24 +817,30 @@ impl Store {
         document_id: i64,
         relevance_score: f64,
         evidence_limit: usize,
+        audience_filtered: bool,
     ) -> Result<Option<ContextMemory>> {
         let memory = self
             .connection
             .query_row(
-                "SELECT d.id, m.canonical_key, m.memory_kind, d.scope, d.title, d.body,
+                "SELECT d.id, m.canonical_key, m.memory_kind, COALESCE(o.scope,d.scope), d.title, d.body,
                         m.importance, m.confidence, m.pinned, m.observed_at_ms,
                         m.last_confirmed_at_ms, m.valid_until_ms,
                         EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id
-                            OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
+                            OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key)), o.scope IS NOT NULL, s.sender,
+                     EXISTS(SELECT 1 FROM privacy_audiences a WHERE a.scope=d.scope AND a.kind='private')
                  FROM memory_items m
                  JOIN documents d ON d.id = m.document_id
+                 LEFT JOIN speaker_memory_scopes s ON s.scope=d.scope
+                 LEFT JOIN owned_legacy_memories o ON ?3 AND o.document_id=d.id
                  WHERE d.id = ?1
                    AND d.active = 1
                    AND m.superseded_by IS NULL
                    AND (m.valid_until_ms IS NULL OR m.valid_until_ms > ?2)",
-                params![document_id, now_ms()],
+                params![document_id, now_ms(), audience_filtered],
                 |row| {
                     Ok(ContextMemory {
+                        source_speakers: row.get::<_,Option<String>>(14)?.into_iter().collect(),
+                        source_speaker_unverified: row.get::<_,bool>(15)?,
                         document_id: row.get(0)?,
                         canonical_key: row.get(1)?,
                         memory_kind: row.get(2)?,
@@ -712,6 +854,7 @@ impl Store {
                         last_confirmed_at_ms: row.get(10)?,
                         valid_until_ms: row.get(11)?,
                         review_required: row.get(12)?,
+                        owner_attested_legacy: row.get(13)?,
                         relevance_score,
                         citations: Vec::new(),
                     })
@@ -721,7 +864,30 @@ impl Store {
         let Some(mut memory) = memory else {
             return Ok(None);
         };
-        memory.citations = self.load_context_citations(document_id, evidence_limit)?;
+        if memory.source_speaker_unverified && !memory.owner_attested_legacy {
+            // A parent scope has no single writer. Inspect *all* original citations,
+            // independently of the packet's quote budget. Missing evidence cannot
+            // turn one known contributor into an assertion of sole authorship.
+            let mut statement = self.connection.prepare(
+                "SELECT DISTINCT t.sender FROM memory_citations c
+                 JOIN evidence_sessions e ON e.id=c.evidence_session_id
+                 JOIN documents ed ON ed.id=c.evidence_document_id AND ed.id=e.document_id
+                 LEFT JOIN evidence_admissions b ON b.evidence_id=e.id
+                 LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key
+                 WHERE c.memory_document_id=?1 AND ed.scope=?2 ORDER BY t.sender",
+            )?;
+            let contributors = statement
+                .query_map(params![document_id, memory.scope], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            memory.source_speaker_unverified =
+                contributors.is_empty() || contributors.iter().any(Option::is_none);
+            memory.source_speakers = contributors.into_iter().flatten().collect();
+        }
+        if !memory.owner_attested_legacy {
+            memory.citations = self.load_context_citations(document_id, evidence_limit)?;
+        }
         Ok(Some(memory))
     }
 
@@ -735,17 +901,22 @@ impl Store {
         }
         let mut statement = self.connection.prepare(
             "SELECT e.session_id, d.source_uri, c.start_byte, c.end_byte,
-                    c.start_line, c.end_line, c.quote
+                    c.start_line, c.end_line, c.quote, t.sender
              FROM memory_citations c
              JOIN evidence_sessions e ON e.id = c.evidence_session_id
              JOIN documents d ON d.id = c.evidence_document_id
-             WHERE c.memory_document_id = ?1
+             JOIN documents memory ON memory.id = c.memory_document_id
+             LEFT JOIN evidence_admissions b ON b.evidence_id=e.id
+             LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key
+             WHERE c.memory_document_id = ?1 AND e.document_id = d.id AND d.scope = memory.scope
+               AND NOT EXISTS (SELECT 1 FROM memory_publications p WHERE p.document_id = memory.id)
              ORDER BY c.created_at_ms DESC, c.id DESC
              LIMIT ?2",
         )?;
         Ok(statement
             .query_map(params![document_id, limit as i64], |row| {
                 Ok(ContextCitation {
+                    verified_sender: row.get(7)?,
                     session_id: row.get(0)?,
                     source_uri: row.get(1)?,
                     start_byte: row.get::<_, i64>(2)? as usize,
@@ -763,6 +934,14 @@ pub(crate) fn distill_in_transaction(
     transaction: &Transaction<'_>,
     mut input: DistillInput,
 ) -> Result<DistillOutcome> {
+    anyhow::ensure!(
+        !transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM historic_speaker_scopes WHERE scope=?1)",
+            [&input.scope],
+            |r| r.get::<_, bool>(0),
+        )?,
+        "historical shared learning scope is read-only"
+    );
     validate_canonical_key(&input.canonical_key)?;
     validate_identifier("memory_kind", &input.memory_kind, 128)?;
     validate_identifier("scope", &input.scope, 2_048)?;
@@ -801,8 +980,8 @@ pub(crate) fn distill_in_transaction(
 
     // An alias names the same claim; revisions retain its original canonical key.
     if let Some(key) = transaction.query_row(
-        "SELECT m.canonical_key FROM memory_aliases a JOIN memory_items m ON m.document_id = a.document_id WHERE a.canonical_key = ?1",
-        [&input.canonical_key], |row| row.get::<_, String>(0),
+        "SELECT m.canonical_key FROM memory_aliases a JOIN memory_items m ON m.document_id = a.document_id WHERE a.canonical_key = ?1 AND a.scope = ?2",
+        params![input.canonical_key, input.scope], |row| row.get::<_, String>(0),
     ).optional()? {
         input.canonical_key = key;
     }
@@ -813,10 +992,10 @@ pub(crate) fn distill_in_transaction(
              FROM memory_heads h
              JOIN documents d ON d.id = h.document_id
              JOIN memory_items m ON m.document_id = h.document_id
-             WHERE h.canonical_key = ?1
+             WHERE h.canonical_key = ?1 AND h.scope = ?2
                AND d.active = 1
                AND m.superseded_by IS NULL",
-            [&input.canonical_key],
+            params![input.canonical_key, input.scope],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -848,7 +1027,10 @@ pub(crate) fn distill_in_transaction(
         None
     };
     if let Some((document_id, key)) = duplicate {
-        transaction.execute("INSERT INTO memory_aliases(canonical_key, document_id, created_at_ms) VALUES(?1, ?2, ?3)", params![input.canonical_key, document_id, now_ms()])?;
+        transaction.execute(
+            "INSERT INTO memory_aliases(scope, canonical_key, document_id, created_at_ms) VALUES(?1, ?2, ?3, ?4)",
+            params![input.scope, input.canonical_key, document_id, now_ms()],
+        )?;
         input.canonical_key = key;
         return distill_in_transaction(transaction, input);
     }
@@ -928,7 +1110,7 @@ pub(crate) fn distill_in_transaction(
     let prepared = prepare_ingest(IngestDocument {
         source_uri: format!("memory://canonical/{}/revision/{}", &key_hash[..20], nonce),
         source_kind: "memory".to_string(),
-        scope: input.scope,
+        scope: input.scope.clone(),
         title: redacted_title.map(|redacted| redacted.value),
         content: redacted_content.value,
         modified_at_ms: now_ms(),
@@ -1010,12 +1192,17 @@ pub(crate) fn distill_in_transaction(
         )?;
     }
     transaction.execute(
-        "INSERT INTO memory_heads(canonical_key, document_id, updated_at_ms)
-         VALUES(?1, ?2, ?3)
-         ON CONFLICT(canonical_key) DO UPDATE SET
+        "INSERT INTO memory_heads(scope, canonical_key, document_id, updated_at_ms)
+         VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(scope, canonical_key) DO UPDATE SET
              document_id = excluded.document_id,
              updated_at_ms = excluded.updated_at_ms",
-        params![input.canonical_key, outcome.document_id, now_ms()],
+        params![
+            input.scope,
+            input.canonical_key,
+            outcome.document_id,
+            now_ms()
+        ],
     )?;
     insert_citation(
         transaction,
@@ -1302,7 +1489,7 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2fa1f)
 }
 
-fn reference_terms(value: &str) -> Vec<String> {
+pub(crate) fn reference_terms(value: &str) -> Vec<String> {
     // Generic question/request words are neither subjects nor evidence. CJK
     // bigrams permit overlap inside an unsegmented Chinese question; no fuzzy
     // edit matching is used for these two-character terms.
@@ -1778,7 +1965,7 @@ fn validate_canonical_key(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_session_id(value: &str) -> Result<()> {
+pub(crate) fn validate_session_id(value: &str) -> Result<()> {
     validate_identifier("session_id", value, 256)?;
     if !value.chars().all(|character| {
         character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '/' | '-' | '@')
@@ -1891,6 +2078,7 @@ mod tests {
     #[test]
     fn truncated_citation_keeps_exact_bytes_and_lines() {
         let mut citation = ContextCitation {
+            verified_sender: None,
             session_id: "session".to_string(),
             source_uri: "evidence://session".to_string(),
             start_byte: 20,

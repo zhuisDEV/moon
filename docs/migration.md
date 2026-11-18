@@ -18,6 +18,10 @@ engine upgrade does not add a Moon schema migration or change the vector model.
 Keep earlier engine timings historical and validate the actual release before
 making performance claims.
 
+The development build migrates session learning to schema 14. It recovers known
+deferrals for still-pending sessions from committed learning runs. A migration
+does not generate proposals or mark those sessions processed.
+
 ## Before an existing v2 runtime is upgraded
 
 1. Verify `command -v moon` and `moon --json --version` identify the currently
@@ -43,6 +47,44 @@ making performance claims.
    skill and configuration backups. Rehearse restoration before relying on them.
    Restore a schema-12 backup with a schema-12 executable; never test a
    downgrade by opening schema 13 with an older binary.
+
+## Schema 15 audience migration
+
+Schema 15 creates fresh public and private audiences and preserves original
+global documents in quarantine. A migration and recovery rehearsal, operator
+review commands and cutover considerations are documented in
+[Public and private memory](memory-privacy.md).
+
+## Schema 16 sender attribution
+
+New private chat evidence records the verified sender independently of the
+original reader set. The migration preserves existing evidence and audience
+bindings and leaves their authors unknown. Existing global memories remain in
+quarantine.
+
+## Schema 17 conversation ownership
+
+New admissions distinguish owners from potential readers. Historical admissions
+retain the provenance originally recorded. An operator may assign the frozen
+legacy global memory collection to one private owner. See the
+[assignment procedure](memory-privacy.md#reviewing-the-old-global-collection).
+
+## Schema 18 room-access snapshots
+
+Schema 18 preserves existing question ownership, legacy assignments and original
+records. New questions use verified room access. A reply needs its own verified
+delivery snapshot for private history recall. The migration leaves the owner
+fields of old replies unknown. Future room permissions cannot supply that
+missing historical evidence.
+
+## Schema 19 speaker attribution
+
+New private learning distinguishes speakers who share the same room and the same
+audience. A correction by one speaker can update that speaker’s earlier
+statement. Audience checks still apply to every reader before recall. The
+migration preserves historical records and does not infer a missing speaker from
+a quotation, a room’s current membership, or the operator’s legacy ownership
+assignment.
 
 ## SQLite migrations
 

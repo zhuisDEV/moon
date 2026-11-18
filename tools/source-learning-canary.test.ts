@@ -4,6 +4,7 @@ import {
   assertExecution,
   assertModelRequest,
   CanaryError,
+  checkAuthoredProvider,
   cleanEnvironment,
   credentialGuard,
   executionOwnerInput,
@@ -163,6 +164,28 @@ Deno.test("Moon commands cannot escape temporary storage, source keys or scope",
     () => guardCommand([...base, "--key", "other"], base[0], "/canary"),
     "unexpected_source_or_topic",
   );
+});
+Deno.test("account catalogue permits picker metadata and refuses authored routing", () => {
+  const row = {
+    id: "gpt-6.1-terra",
+    api: "openai-chatgpt-responses",
+    compat: { supportedReasoningEfforts: ["medium", "max"] },
+  };
+  checkAuthoredProvider(undefined);
+  checkAuthoredProvider({ models: [row] });
+  for (
+    const provider of [
+      { baseUrl: "https://example.invalid", models: [row] },
+      { models: [{ ...row, api: "openai-responses" }] },
+      { models: [{ ...row, headers: {} }] },
+      { models: [{ ...row, compat: { custom: true } }] },
+    ]
+  ) {
+    fails(
+      () => checkAuthoredProvider(provider),
+      "authored_provider_requires_review",
+    );
+  }
 });
 Deno.test("private config credential guard and clean env omit provider override injection", () => {
   for (

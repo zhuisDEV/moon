@@ -185,11 +185,12 @@ it does not measure memory accuracy or representative synthesis performance.
 
 ## Evidence, corrections, and freshness
 
-The accepted user request and final answer are committed as immutable evidence
-before L1 starts. OpenClaw retries storage failures. L1 model failures do not
-erase evidence; an enabled L2 can later revisit it. The default L1 limit is
-three proposals per eligible turn, adjustable through the existing
-`learningMaxMemories` plugin setting.
+For verified chat audiences, Moon commits the accepted human message as
+immutable private evidence before L1 starts. Assistant replies and tool results
+are excluded. See [public and private memory](memory-privacy.md). OpenClaw
+retries storage failures. L1 model failures do not erase evidence; an enabled L2
+can later revisit it. The default L1 limit is three proposals per eligible turn,
+adjustable through the existing `learningMaxMemories` plugin setting.
 
 L1 compares correction candidates with related active memories. L2 receives
 selected unprocessed evidence, related claims, and the original evidence behind
@@ -241,31 +242,39 @@ keys such as `l2:2026-09-13:0` prevent a committed batch from running again
 after a restart. Evidence newer than that day's cutoff waits for a later
 occurrence.
 
-Each batch selects the oldest pending evidence in one scope and respects the
-record and packet budgets. The scheduler commits at most `max_batches_per_day`
-batches. A database-wide lease prevents overlapping prepared runs. Expired
-leases become failed attempts, and three failed attempts for a daily batch key
-exhaust that key and stop work for that occurrence. Each attempt can call the
-configured primary and, if enabled, one fallback. Failed input remains available
-for the next due date; exhaustion does not delete or mark it processed.
+With schema 14, each batch gives fresh evidence priority and respects the record
+and packet budgets. The scheduler commits at most `max_batches_per_day` batches.
+A database-wide lease prevents overlapping prepared runs. Expired leases become
+failed attempts, and three failed attempts for a daily batch key exhaust that
+key and stop work for that occurrence. Each attempt can call the configured
+primary and, if enabled, one fallback. Failed input remains available for the
+next due date; exhaustion does not delete or mark it processed.
 
-From Moon 2.6.2, the adapter checks independent model candidates separately. It
-can keep valid candidates while rejecting others; evidence cited by a rejected
-candidate stays pending. If a rejected candidate's sources cannot be identified
-safely, all selected evidence stays pending. Conflicting keys or overlapping
-targets reject the entire proposal. A proposal whose candidates all fail still
-uses the ordinary bounded failure policy.
+Moon checks each proposed memory against its cited evidence. A batch can save
+supported claims and defer the sources of rejected claims. If every candidate
+fails grounding, Moon records the attributable deferrals. A transport error,
+malformed proposal, conflicting targets, or a citation that cannot be traced to
+selected evidence fails the batch and preserves each session’s retry allowance.
 
 SQLite validates the prepared snapshot and accepted actions again before
 applying. A changed memory scope, stale target, expired lease, invalid citation,
 or invalid accepted action rejects the transaction. Successful application
 commits accepted memories, citations, indexes, embedding work, and the
-non-deferred evidence ledger together. Any deferred evidence stops synthesis for
-that due date, including after a restart; it can be revisited at the next daily
-occurrence. This preserves rejected corrections without repeatedly processing
-the same partial batch that day. A genuinely empty model action list still marks
-all selected evidence processed. Cancellation stops routing without starting
-another fallback.
+non-deferred evidence ledger together. With schema 14, deferred sessions get one
+routine retry on a later scheduled occurrence. Other batches continue on the
+same day, including after a restart. If the retry still yields no accepted
+action citing a previously deferred session, the session stays pending and
+parks. An empty model response can finish fresh evidence without creating a
+memory. It preserves a prior deferral.
+
+Parked evidence becomes eligible for another review when Moon finds related new
+evidence in the same scope, the L2 grounding rules change, or an operator
+requests the specific session. Moon matches distinctive words from the new
+evidence against the deferred turn and includes the matched turn in the review
+packet. This lexical check can miss a paraphrase. A manual review can still
+select the session. Each trigger permits one reconsideration under the usual
+citation and grounding checks. If the evidence still lacks support, it stays
+parked.
 
 From Moon 2.6.2, gateway diagnostics distinguish fixed failure phases and codes,
 for example `phase=normalise code=lost_qualifier` or `phase=model code=timeout`.
@@ -340,11 +349,11 @@ moon --home "$learning_home" --database "$learning_home/state/moon.sqlite" \
   --limit 32 --max-chars 64000 --preview
 ```
 
-`status`, `related`, and `prepare --preview` require an existing current-schema
-database and do not create, migrate, lease, or change it. Preview returns the
-candidate packet with no `run_id`. `related` requires an explicit scope and
-returns bounded claims with source citations. Treat this content as private
-conversation data, unlike content-free runtime metrics.
+`status`, `deferred`, `related`, and `prepare --preview` require an existing
+current-schema database and do not create, migrate, lease, or change it. Preview
+returns the candidate packet with no `run_id`. `related` requires an explicit
+scope and returns bounded claims with source citations. Treat this content as
+private conversation data, unlike content-free runtime metrics.
 
 To rehearse applying a reviewed proposal, prepare a real lease in the same
 fixture and copy its returned `run_id`:
@@ -359,6 +368,16 @@ Preparation is a write. `--before-ms` and `--after-ms` optionally bound evidence
 completion times inclusively in Unix milliseconds. Lease length may be
 1,000–86,400,000 ms, and manual `--max-attempts` may be 1–10. Keep a stable run
 key when retrying; changing it bypasses that key's retry count.
+
+Use `learning deferred --limit 32` to list session IDs and retry states. Page
+forward using `--after-id`. The list omits conversation text.
+
+To review one deferred session on request, supply
+`--review-session <session-id>` and a new operation-specific `--run-key`. Add
+`--preview` to inspect the selection without taking a lease. Preparing the
+review does not approve a memory. The scheduler supplies `--occurrence` to group
+its daily batches and `--rule-version` to identify the grounding policy. An
+ordinary CLI review can omit the version to retain the existing policy identity.
 
 For the fixture above, save this as `$learning_home/proposal.json`:
 
@@ -485,12 +504,14 @@ does not compile topics.
 Moon 2.7.0 accepts supported databases from schema 6 through 13 and migrates
 them to schema 13. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
-job diagnostics adds schema 13. Back up with the currently installed pre-upgrade
-executable, export memories, and preserve the existing OpenClaw configuration
-and any `moon.toml` before an authorised deployment. The export is a generated
-view, not a replacement for the complete SQLite backup. Keep the previous binary
-and its matching database backup: an older binary must not open the newer
-schema.
+job diagnostics adds schema 13. The development build adds the session retry
+ledger in schema 14, audience-bound learning in schema 15, and verified per-turn
+sender records in schema 16. Existing global evidence stays in the operator
+review collection. Back up with the currently installed pre-upgrade executable,
+export memories, and preserve the existing OpenClaw configuration and any
+`moon.toml` before an authorised deployment. The export is a generated view, not
+a replacement for the complete SQLite backup. Keep the previous binary and its
+matching database backup: an older binary must not open the newer schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

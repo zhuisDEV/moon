@@ -2,6 +2,17 @@ import moonPlugin, { __moonTest } from "./index.js";
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 
+const TEST_READERS = ["discord:111111111111111111"];
+const testAudience = {
+  code: 0,
+  stdout: JSON.stringify({
+    audience: TEST_READERS,
+    owners: TEST_READERS,
+    sender: TEST_READERS[0],
+  }),
+  stderr: "",
+};
+const testScope = "private:" + "a".repeat(64);
 const METRIC_REQUEST_ID = "0123456789abcdef0123456789abcdef";
 
 async function optionalTestEnv(name: string) {
@@ -33,6 +44,7 @@ function acceptedParams(messages: Array<Record<string, unknown>>) {
     storePath: "/tmp/openclaw-agent.sqlite",
     generation: "generation-1",
     entryId: "user-1",
+    idempotencyKey: "host-test-admission",
     rawSeq: 1,
     effectiveParentId: null,
     activeMessagePosition: 0,
@@ -131,6 +143,10 @@ function createApi(
           argv: string[],
           options: { timeoutMs: number; input?: string; signal?: AbortSignal },
         ): typeof result | Promise<typeof result> {
+          if (argv.includes("reply-history")) {
+            return { code: 0, stdout: '{"received":true}', stderr: "" };
+          }
+          if (argv.includes("audience")) return testAudience;
           calls.push({
             argv,
             timeoutMs: options.timeoutMs,
@@ -176,10 +192,11 @@ Deno.test("adapter retrieves and injects context before the latest user message"
       "--dimensions",
       "384",
       "context",
-      "--query",
+      "--query-stdin",
     ],
   );
-  assert(calls[0].argv.includes("Recall SQLite plan"));
+  assertEquals(calls[0].input, "Recall SQLite plan");
+  assert(!calls[0].argv.includes("Recall SQLite plan"));
   assert(calls[0].argv.includes("--adapter"));
   assert(calls[1].argv.includes("mark-injection"));
   assert(calls[1].argv.includes("--injected"));
@@ -372,6 +389,10 @@ Deno.test("adapter records one completed turn and distills a validated durable m
           argv: string[],
           options: { timeoutMs: number; input?: string },
         ) {
+          if (argv.includes("reply-history")) {
+            return { code: 0, stdout: '{"received":true}', stderr: "" };
+          }
+          if (argv.includes("audience")) return testAudience;
           calls.push({
             argv,
             timeoutMs: options.timeoutMs,
@@ -382,15 +403,17 @@ Deno.test("adapter records one completed turn and distills a validated durable m
               code: 0,
               stdout: JSON.stringify({
                 session_id: expectedEvidenceId,
+                scope: testScope,
                 changed: true,
               }),
               stderr: "",
             };
           }
-          if (argv.includes("context")) {
+          if (argv.includes("related")) {
+            assert(argv.includes(testScope));
             return {
               code: 0,
-              stdout: JSON.stringify({ memories: [], references: [] }),
+              stdout: JSON.stringify({ memories: [] }),
               stderr: "",
             };
           }
@@ -421,6 +444,11 @@ Deno.test("adapter records one completed turn and distills a validated durable m
       agent: {
         runEmbeddedAgent(params: Record<string, unknown>) {
           modelCalls += 1;
+          assert(
+            String(params.prompt).includes(
+              `Verified source speaker: ${TEST_READERS[0]}`,
+            ),
+          );
           assertEquals(params.provider, "vllm");
           assertEquals(params.model, "qwen3.8-27b-uncensored-fp8");
           assertEquals(params.thinkLevel, "high");
@@ -460,9 +488,12 @@ Deno.test("adapter records one completed turn and distills a validated durable m
   assertEquals(modelCalls, 1);
   assertEquals(calls.length, 5);
   assert(calls[0].argv.includes("record"));
+  assert(calls[0].argv.includes("--admission-key"));
+  assert(!calls[0].argv.includes("--audience-json"));
+  assert(!calls[0].argv.includes("--sender"));
   assertEquals(
     calls[0].input,
-    "User:\nI prefer concise answers.\n\nAssistant:\nUnderstood. I will keep answers concise.",
+    "User:\nI prefer concise answers.",
   );
   assert(!calls[0].argv.includes("I prefer concise answers."));
   assert(calls[1].argv.includes("config"));
@@ -482,7 +513,7 @@ Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
     { code: 0, stdout: "", stderr: "" },
     [],
   ));
-  const argv = __moonTest.contextArguments(settings, "query");
+  const argv = __moonTest.contextArguments(settings);
   assert(!argv.includes("--provider"));
   assert(!argv.includes("--api-key-env"));
 });
@@ -513,7 +544,8 @@ Deno.test("hybrid mode uses the private local stdio worker", () => {
     "Recall my Moon plan",
     false,
   );
-  assertEquals(request.op, "context");
+  assertEquals(request.op, "audience_context");
+  assertEquals(request.audience, []);
   assertEquals(request.mode, "hybrid");
   assertEquals(request.structured, false);
   assertEquals(request.observe, false);
@@ -541,9 +573,9 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   };
   for (
     const argv of [
-      __moonTest.contextArguments(settings, "query"),
+      __moonTest.contextArguments(settings),
       __moonTest.stdioWorkerArguments(settings),
-      __moonTest.recordArguments(settings, turn),
+      __moonTest.recordArguments(settings, turn, "a".repeat(64)),
       __moonTest.distillBatchArguments(settings, turn.evidenceSessionId),
       __moonTest.metricInjectionArguments(settings, METRIC_REQUEST_ID, true),
       __moonTest.runtimeMetricArguments(settings, {
@@ -562,7 +594,7 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   }
   const implicit = { ...settings, moonHome: null };
   assert(
-    !__moonTest.contextArguments(implicit, "query").includes("--database"),
+    !__moonTest.contextArguments(implicit).includes("--database"),
   );
   assert(!__moonTest.stdioWorkerArguments(implicit).includes("--database"));
 });
@@ -1875,12 +1907,20 @@ Deno.test({
       },
       runtime: {
         system: {
-          async runCommandWithTimeout(argv: string[]) {
-            const output = await new Deno.Command(argv[0], {
+          async runCommandWithTimeout(
+            argv: string[],
+            options: { input?: string },
+          ) {
+            const child = new Deno.Command(argv[0], {
+              stdin: "piped",
               args: argv.slice(1),
               stdout: "piped",
               stderr: "piped",
-            }).output();
+            }).spawn();
+            const writer = child.stdin.getWriter();
+            await writer.write(new TextEncoder().encode(options.input ?? ""));
+            await writer.close();
+            const output = await child.output();
             return {
               code: output.code,
               stdout: new TextDecoder().decode(output.stdout),
@@ -1908,12 +1948,8 @@ Deno.test({
     assertEquals(result.messages.length, 2);
     const packet = result.messages[0].content[0].text;
     assert(packet.startsWith("# Moon Context"));
-    if (mode === "lexical") {
-      assert(packet.includes("## Retrieved references"));
-      assert(packet.includes("legacy://"));
-    } else {
-      assert(packet.includes("## Canonical memories"));
-    }
+    assert(packet.includes("## Canonical memories"));
+    assert(!packet.includes("legacy://"));
     if (expected) {
       for (const phrase of expected.split("|")) {
         assert(
@@ -2017,6 +2053,7 @@ Deno.test("durable duplicate acknowledgement never repeats learning", async () =
     code: 0,
     stdout: JSON.stringify({
       session_id: turn.evidenceSessionId,
+      scope: testScope,
       changed: false,
     }),
     stderr: "",
@@ -2083,6 +2120,37 @@ Deno.test({
         stderr: new TextDecoder().decode(output.stderr),
       };
     };
+    const bind = async (turn: typeof params) => {
+      const bindingKey = __moonTest.admissionKey(
+        turn.admission.agentId,
+        turn.sessionId,
+        turn.sessionKey,
+        turn.admission.idempotencyKey,
+      );
+      assert(bindingKey);
+      const bound = await api.runtime.system.runCommandWithTimeout([
+        binary,
+        "--home",
+        home,
+        "--database",
+        `${home}/state/moon.sqlite`,
+        "--dimensions",
+        "384",
+        "--json",
+        "privacy",
+        "bind-room",
+        "--admission-key",
+        bindingKey,
+        "--sender",
+        TEST_READERS[0],
+        "--audience-json",
+        JSON.stringify(TEST_READERS),
+        "--owners-json",
+        JSON.stringify(TEST_READERS),
+      ], { timeoutMs: 10000 });
+      assertEquals(bound.code, 0);
+    };
+    await bind(params);
     let rejected = false;
     try {
       await __moonTest.createMoonContextEngine(api).commitTurn(params);
@@ -2110,7 +2178,9 @@ Deno.test({
     const next = {
       ...params,
       advancementKey: `${params.advancementKey}-concurrent`,
+      admission: { ...params.admission, idempotencyKey: crypto.randomUUID() },
     };
+    await bind(next);
     const outcomes = await Promise.all([
       __moonTest.createMoonContextEngine(api).commitTurn(next),
       __moonTest.createMoonContextEngine(api).commitTurn(next),
@@ -2134,12 +2204,17 @@ Deno.test("optional extraction failure does not undo an accepted evidence commit
     failOpen: false,
   });
   api.runtime.system.runCommandWithTimeout = (argv) => {
+    if (argv.includes("reply-history")) {
+      return { code: 0, stdout: '{"received":true}', stderr: "" };
+    }
+    if (argv.includes("audience")) return testAudience;
     if (argv.includes("record")) {
       records += 1;
       return {
         code: 0,
         stdout: JSON.stringify({
           session_id: evidenceId,
+          scope: testScope,
           changed: records === 1,
         }),
         stderr: "",
@@ -2658,7 +2733,7 @@ Deno.test("L2 partial batches retain five valid claims and defer rejected correc
   assertEquals(sharedSource.deferred_evidence, ["source:0"]);
 });
 
-Deno.test("L2 defers every selected source when any rejected citation cannot map safely", () => {
+Deno.test("L2 avoids charging unrelated sources when a mixed response contains an unmappable candidate", () => {
   const { prepared, actions, settings } = synthesisBatchFixture();
   const snapshot = {
     ...prepared,
@@ -2683,21 +2758,27 @@ Deno.test("L2 defers every selected source when any rejected citation cannot map
       [{ session_id: "support:old", quote: actions[1].content }],
     ]
   ) {
-    const result = __moonTest.normalizeSynthesisBatch(
-      { actions: [actions[0], { ...actions[1], evidence, confidence: 0.1 }] },
-      snapshot,
-      settings,
-      16,
-    );
-    assertEquals(result.actions.length, 1);
-    assertEquals(
-      result.deferred_evidence,
-      prepared.evidence.map((item) => item.session_id),
+    let failure;
+    try {
+      __moonTest.normalizeSynthesisBatch(
+        { actions: [actions[0], { ...actions[1], evidence, confidence: 0.1 }] },
+        snapshot,
+        settings,
+        16,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    const diagnostic = __moonTest.failureDiagnostic(failure);
+    assertEquals(diagnostic.phase, "normalise");
+    assert(
+      ["invalid_citation", "unsupported_action", "missing_selected_evidence"]
+        .includes(diagnostic.code),
     );
   }
 });
 
-Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rejected batches", () => {
+Deno.test("L2 defers attributable grounding failures and rejects malformed or conflicting batches", () => {
   const { prepared, actions, settings } = synthesisBatchFixture();
   const first = { ...actions[0], action: "review", target_document_id: 10 };
   const target = {
@@ -2727,10 +2808,13 @@ Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rej
     })),
     {
       raw: {
-        actions: [{ ...actions[0], content: "Entirely invented claim." }],
+        actions: [{
+          ...actions[0],
+          evidence: [{ session_id: "unknown", quote: actions[0].content }],
+        }],
       },
       maximum: 16,
-      code: "insufficient_overlap",
+      code: "invalid_citation",
     },
   ];
   for (const example of cases) {
@@ -2750,38 +2834,58 @@ Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rej
       code: example.code,
     });
   }
+  for (
+    const proposal of [
+      { ...actions[0], content: "Entirely invented claim." },
+      { ...actions[0], confidence: 0.1 },
+    ]
+  ) {
+    assertEquals(
+      __moonTest.normalizeSynthesisBatch(
+        { actions: [proposal] },
+        snapshot,
+        settings,
+        16,
+      ),
+      { actions: [], deferred_evidence: ["source:0"] },
+    );
+  }
   assertEquals(
     __moonTest.normalizeSynthesisBatch({ actions: [] }, snapshot, settings, 16),
     { actions: [], deferred_evidence: [] },
   );
 });
 
-Deno.test("daily L2 commits the accepted subset and stops partial days across restarts", async () => {
+Deno.test("daily L2 continues with fresh batches after partial and wholly deferred commits, including after restart", async () => {
   const { prepared, actions } = synthesisBatchFixture();
+  const fresh = synthesisFixture();
+  const rejected = synthesisFixture();
+  rejected.prepared.evidence[0].session_id = "source:unsupported";
+  rejected.action.evidence[0].session_id = "source:unsupported";
   const secret = "rejected-private-content-do-not-print";
   const logs: string[] = [];
-  const commands: string[][] = [];
-  let appliedPayload: Record<string, unknown> | undefined;
+  const rules: string[] = [];
+  const applied: Array<{ actions: unknown[]; deferred_evidence: string[] }> =
+    [];
   let modelCalls = 0;
-  let embedded = 0;
-  let committed = false;
+  let interrupted = true;
+  const proposals = [
+    actions.map((action, index) =>
+      index === 5 ? { ...action, content: secret } : action
+    ),
+    [{ ...rejected.action, content: secret }],
+    [fresh.action],
+  ];
   const api = {
     ...createApi(
       { code: 0, stdout: "", stderr: "" },
       [],
       {},
-      () => {
-        modelCalls += 1;
-        return {
-          payloads: [{
-            text: JSON.stringify({
-              actions: actions.map((action, index) =>
-                index === 5 ? { ...action, content: secret } : action
-              ),
-            }),
-          }],
-        };
-      },
+      () => ({
+        payloads: [{
+          text: JSON.stringify({ actions: proposals[modelCalls++] }),
+        }],
+      }),
     ),
     logger: {
       info(message: string) {
@@ -2793,63 +2897,88 @@ Deno.test("daily L2 commits the accepted subset and stops partial days across re
     },
   };
   api.runtime.system.runCommandWithTimeout = (argv, options) => {
-    commands.push(argv);
     let output;
     if (argv.includes("config")) {
       output = learningConfig({}, { enabled: true, fallback_enabled: false });
     } else if (argv.includes("prepare")) {
-      assert(argv[argv.indexOf("--run-key") + 1].endsWith(":0"));
-      output = committed
-        ? { status: "committed", deferred_evidence: 1 }
-        : prepared;
+      const day = "2026-09-14";
+      const key = argv[argv.indexOf("--run-key") + 1];
+      const index = Number(key.split(":").at(-1));
+      assertEquals(key, `l2:${day}:${index}`);
+      assertEquals(argv[argv.indexOf("--occurrence") + 1], day);
+      rules.push(argv[argv.indexOf("--rule-version") + 1]);
+      if (index < applied.length) {
+        output = {
+          status: "committed",
+          deferred_evidence: applied[index].deferred_evidence.length,
+        };
+      } else if (index === 2 && interrupted) {
+        output = { status: "busy" };
+      } else if (index < proposals.length) {
+        output = [prepared, rejected.prepared, fresh.prepared][index];
+      } else {
+        output = { status: "empty" };
+      }
     } else if (argv.includes("apply")) {
-      appliedPayload = JSON.parse(options.input ?? "{}");
-      committed = true;
+      const payload = JSON.parse(options.input ?? "{}");
+      applied.push(payload);
       output = {
         status: "committed",
-        action_count: 5,
-        processed_evidence: 5,
-        deferred_evidence: 1,
+        action_count: payload.actions.length,
+        processed_evidence: payload.actions.length,
+        deferred_evidence: payload.deferred_evidence.length,
       };
     } else throw new Error("unexpected command");
     return { code: 0, stdout: JSON.stringify(output), stderr: secret };
   };
-  const onApplied = () => {
-    embedded += 1;
-  };
-  const firstScheduler = __moonTest.createLearningScheduler(api, onApplied);
-  const restartedScheduler = __moonTest.createLearningScheduler(api, onApplied);
+  const first = __moonTest.createLearningScheduler(api);
+  const restarted = __moonTest.createLearningScheduler(api);
+  const now = Date.parse("2026-09-13T19:00:00Z");
   try {
-    assertEquals(await firstScheduler.tick(), {
-      status: "partial",
-      batches: 1,
-    });
-    await firstScheduler.stop();
-    assertEquals(await restartedScheduler.tick(), {
-      status: "partial",
-      batches: 0,
-    });
-    assertEquals(await restartedScheduler.tick(), {
-      status: "partial",
-      batches: 0,
-    });
-    assertEquals(modelCalls, 1);
-    assertEquals(embedded, 1);
-    assertEquals(commands.filter((argv) => argv.includes("apply")).length, 1);
-    assertEquals(appliedPayload?.deferred_evidence, ["source:5"]);
-    assertEquals(Object.keys(appliedPayload ?? {}), [
-      "actions",
-      "deferred_evidence",
-      "metadata",
+    assertEquals(await first.tick(now), { status: "busy", batches: 2 });
+    await first.stop();
+    interrupted = false;
+    assertEquals(await restarted.tick(now), { status: "empty", batches: 1 });
+    assertEquals(await restarted.tick(now), { status: "empty", batches: 0 });
+    assertEquals(modelCalls, 3);
+    assertEquals(applied.map((p) => p.deferred_evidence), [
+      ["source:5"],
+      ["source:unsupported"],
+      [],
     ]);
-    assert(!JSON.stringify(appliedPayload).includes(secret));
+    assertEquals(applied.map((p) => p.actions.length), [5, 0, 1]);
+    assert(!JSON.stringify(applied).includes(secret));
+    assertEquals(new Set(rules).size, 1);
+    assert(/^[a-f0-9]{64}$/.test(rules[0]));
     assertEquals(logs, [
       "moon synthesis status=committed actions=5 evidence=5 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+      "moon synthesis status=committed actions=0 evidence=0 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+      "moon synthesis status=committed actions=1 evidence=1 model_route=primary",
     ]);
   } finally {
-    await firstScheduler.stop();
-    await restartedScheduler.stop();
+    await first.stop();
+    await restarted.stop();
   }
+});
+
+Deno.test("the L2 rule fingerprint changes with owner guidance and acceptance thresholds", () => {
+  const { settings } = synthesisBatchFixture();
+  const version = __moonTest.synthesisRuleVersion(settings);
+  for (
+    const override of [
+      { promptText: "Only retain approved changes." },
+      { learningMinConfidence: 0.97 },
+      { learningMinImportance: 0.91 },
+    ]
+  ) {
+    assert(
+      version !== __moonTest.synthesisRuleVersion({ ...settings, ...override }),
+    );
+  }
+  assertEquals(
+    version,
+    __moonTest.synthesisRuleVersion({ ...settings, modelTimeoutMs: 1000 }),
+  );
 });
 
 Deno.test("L2 prompt states the configured score and existing validation bounds", () => {
@@ -2865,6 +2994,8 @@ Deno.test("L2 prompt states the configured score and existing validation bounds"
   for (
     const bound of [
       "at most 7 actions",
+      "verified_sender on evidence identifies who spoke",
+      "A named third party or a quoted speaker",
       "confidence must be a finite number from 0.93 through 1",
       "importance from 0.67 through 1",
       "Review permits both scores from 0 through 1",
@@ -2952,19 +3083,12 @@ Deno.test("L2 diagnostic codes survive model and normalisation failure without l
     },
     {
       phase: "normalise",
-      code: "insufficient_overlap",
-      result: {
-        payloads: [{
-          text: JSON.stringify({ actions: [{ ...action, content: secret }] }),
-        }],
-      },
-    },
-    {
-      phase: "normalise",
       code: "invalid_claim_or_target",
       result: {
         payloads: [{
-          text: JSON.stringify({ actions: [{ ...action, confidence: 0.1 }] }),
+          text: JSON.stringify({
+            actions: [{ ...action, target_document_id: 99 }],
+          }),
         }],
       },
     },
@@ -3569,23 +3693,32 @@ Deno.test({
         const memories = prepared.memories as Array<Record<string, unknown>>;
         const evidence = prepared.evidence as Array<Record<string, unknown>>;
         const target = memories.find((memory) => memory.canonical_key === key);
+        const primary = evidence[0].verified_sender === TEST_READERS[0];
+        assert(
+          evidence.every((item) =>
+            item.verified_sender === evidence[0].verified_sender
+          ),
+        );
+        const quote = primary ? newQuote : oldQuote;
         const source = evidence.find((item) =>
-          String(item.content).includes(newQuote)
+          String(item.content).includes(quote)
         );
         assert(target && source);
         return {
           payloads: [{
             text: JSON.stringify({
               actions: [{
-                action: "supersede",
+                action: primary ? "supersede" : "confirm",
                 canonical_key: key,
                 kind: "fact",
                 title: "Canary colour",
-                content: "The release colour for Project Canary is violet.",
+                content: primary
+                  ? "The release colour for Project Canary is violet."
+                  : target.content,
                 importance: 0.9,
                 confidence: 0.99,
                 target_document_id: target.document_id,
-                evidence: [{ session_id: source.session_id, quote: newQuote }],
+                evidence: [{ session_id: source.session_id, quote }],
               }],
             }),
           }],
@@ -3597,7 +3730,7 @@ Deno.test({
       return {
         payloads: [{
           text: JSON.stringify(
-            l1Runs === 1
+            l1Runs !== 2
               ? {
                 eligible: true,
                 memories: [{
@@ -3622,7 +3755,8 @@ Deno.test({
       return result;
     };
     const engine = __moonTest.createMoonContextEngine(api);
-    for (const [index, quote] of [oldQuote, newQuote].entries()) {
+    const group = [TEST_READERS[0], "discord:222222222222222222"];
+    for (const [index, quote] of [oldQuote, newQuote, oldQuote].entries()) {
       const time = Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000;
       const params = acceptedParams([{
         role: "user",
@@ -3634,11 +3768,41 @@ Deno.test({
         timestamp: time + 1000,
       }]);
       params.advancementKey = `l2-sqlite-${index}`;
+      params.admission.idempotencyKey = `synthetic-turn-${index}`;
+      await cli([
+        "privacy",
+        "bind-room",
+        "--admission-key",
+        __moonTest.admissionKey(
+          params.admission.agentId,
+          params.sessionId,
+          params.sessionKey,
+          params.admission.idempotencyKey,
+        )!,
+        "--sender",
+        index === 2 ? group[1] : group[0],
+        "--audience-json",
+        JSON.stringify(group),
+        "--owners-json",
+        JSON.stringify(group),
+      ]);
       assertEquals(await engine.commitTurn(params), { status: "committed" });
     }
     const before = await cli(["health"]);
-    assertEquals(before.evidence_sessions, 2);
-    assertEquals(before.active_memories, 1);
+    assertEquals(before.evidence_sessions, 3);
+    assertEquals(before.active_memories, 2);
+    // All three messages have the same readers. The operator can
+    // identify each speaker across restarts without exposing their wording.
+    for (const [index, sender] of group.entries()) {
+      const rows = await cli(["privacy", "by-sender", "--sender", sender]);
+      assertEquals(rows.length, index === 0 ? 2 : 1);
+      assertEquals(rows[0].reader_count, 2);
+      assertEquals(
+        rows[0].completed_at_ms,
+        Date.parse("2026-09-10T00:00:00Z") + index * 2 * 86_400_000 + 1000,
+      );
+      assert(!JSON.stringify(rows).includes("Project Canary"));
+    }
     const config = await cli(["config", "show"]);
     config.learning.l2.enabled = true;
     config.learning.l2.fallback_enabled = false;
@@ -3650,7 +3814,7 @@ Deno.test({
         config,
         now,
       )).batches,
-      1,
+      2,
     );
     await __moonTest.runDailySynthesis(
       api,
@@ -3658,26 +3822,39 @@ Deno.test({
       config,
       now,
     );
-    assertEquals(l1Runs, 2);
-    assertEquals(l2Runs, 1);
+    assertEquals(l1Runs, 3);
+    assertEquals(l2Runs, 2);
     const status = await cli(["learning", "status"]);
-    assertEquals(status.processed_evidence, 2);
+    assertEquals(status.processed_evidence, 3);
     const packet = await cli([
       "context",
       "--query",
       "Project Canary release colour",
+      "--audience-json",
+      JSON.stringify(TEST_READERS),
       "--mode",
       "lexical",
     ]);
-    assertEquals(packet.memories.length, 1);
-    assert(packet.memories[0].content.includes("violet"));
-    assert(!packet.memories[0].content.includes("blue"));
+    assertEquals(packet.memories.length, 2);
+    const bySpeaker = new Map(
+      packet.memories.map((
+        item: { source_speakers: string[]; content: string },
+      ) => [item.source_speakers[0], item.content]),
+    );
+    assertEquals(
+      bySpeaker.get(group[0]),
+      "The release colour for Project Canary is violet.",
+    );
+    assertEquals(
+      bySpeaker.get(group[1]),
+      "The release colour for Project Canary is blue.",
+    );
     await cli(["embed", "--provider", "hash"]);
     const health = await cli(["health"]);
     assertEquals(health.ok, true);
-    assertEquals(health.evidence_sessions, 2);
-    assertEquals(health.active_memories, 1);
-    assertEquals(health.active_memory_vectors, 1);
+    assertEquals(health.evidence_sessions, 3);
+    assertEquals(health.active_memories, 2);
+    assertEquals(health.active_memory_vectors, 2);
     assertEquals(health.evidence_vectors, 0);
     engine.dispose();
   },

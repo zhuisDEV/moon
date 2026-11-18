@@ -8,14 +8,31 @@ description: Inspect and operate Moon's SQLite memory and OpenClaw integration. 
 # Moon
 
 Moon uses one Rust binary and one canonical SQLite database. Default home is
-`~/.moon`; current schema is **13**. OpenClaw owns model execution, provider
-credentials and transcript compaction. Moon creates no second provider login.
+`~/.moon`; development schema is **19** (published 2.7.0 uses 13). OpenClaw owns
+model execution, provider credentials and transcript compaction. Moon creates no
+second provider login.
+
+On an operator terminal, `privacy by-sender --sender discord:USER_ID` lists
+attributed evidence without conversation text. Use a verified account ID. This
+lookup is for local administration and must stay outside model-facing tools.
 
 Normal conversations need no manual Moon commands. The adapter retrieves
 context, records accepted turns, runs eligible L1 extraction and drains
 embeddings. Daily session L2 is disabled by default. Source extraction and topic
 compilation are explicit, separately reviewed workflows; no automatic
 source/topic worker exists.
+
+## Conversation privacy
+
+An operator may use `privacy assign-legacy --owner discord:USER_ID` on an
+explicit rehearsal database when they have confirmed ownership of its entire
+legacy collection. New questions record the speaker and room-access owners.
+Delivered replies have a separate owner list. Chat recall uses the destination
+reader set verified by the host. Local `search`, unscoped `context`, exports,
+legacy review and storage inspection are operator commands and must never serve
+as fallbacks in chat. When readers cannot be verified, use public recall only
+and ask in a verified DM. Use `/moonpublic` for explicit sharing. See
+[privacy and legacy review](docs/memory-privacy.md).
 
 ## Choose the right runtime
 
@@ -74,6 +91,15 @@ writes an Astra low/xhigh starter with L2 disabled and refuses overwrite. Model
 names must be available to the user's host/account. Config validation makes no
 model call and does not verify credentials. Custom prompt files supplement fixed
 guards.
+
+With schema 14, daily L2 processes fresh session evidence first. Rejected
+evidence gets one routine retry on a later occurrence. A second unsuccessful
+review leaves it pending until related new evidence arrives, the grounding rules
+change, or an operator requests review. List session IDs with
+`learning deferred`. To inspect a specific deferred session, use
+`learning prepare --review-session <session-id> --run-key <review-key> --preview`.
+After inspecting the packet, omit `--preview` to take a lease for a requested
+review. Use the same review key for retries of that operation.
 
 Model results distinguish requested model/effort from observed execution.
 `identity=verified` means the host-reported provider/model matched. Missing

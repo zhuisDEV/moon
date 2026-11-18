@@ -19,18 +19,10 @@ struct Request {
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Operation {
     Ping,
-    Context {
-        query: String,
-        mode: String,
-        limit: usize,
-        scope: Option<String>,
-        max_chars: usize,
-        evidence_per_memory: usize,
-        #[serde(default)]
-        structured: bool,
-        #[serde(default)]
-        observe: bool,
-    },
+    Context(ContextParams),
+    /// Chat-facing operation. Older workers reject this opcode instead of
+    /// ignoring an unknown audience field and returning operator-wide context.
+    AudienceContext(ContextParams),
     ContextInjection {
         request_id: String,
         injected: bool,
@@ -57,6 +49,30 @@ enum Operation {
     Embed {
         limit: usize,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextParams {
+    query: String,
+    mode: String,
+    limit: usize,
+    scope: Option<String>,
+    #[serde(default, deserialize_with = "present_audience")]
+    audience: Option<Vec<String>>,
+    max_chars: usize,
+    evidence_per_memory: usize,
+    #[serde(default)]
+    structured: bool,
+    #[serde(default)]
+    observe: bool,
+}
+
+// An omitted audience selects the operator protocol. An explicit null must
+// never turn a failed chat identity lookup into an unscoped operator request.
+fn present_audience<'de, D: serde::Deserializer<'de>>(
+    value: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(value).map(Some)
 }
 
 #[derive(Debug, Serialize)]
@@ -140,16 +156,21 @@ fn handle_request(
             "provider": provider.name(),
             "model": provider.model(),
         })),
-        Operation::Context {
-            query,
-            mode,
-            limit,
-            scope,
-            max_chars,
-            evidence_per_memory,
-            structured,
-            observe,
-        } => {
+        Operation::AudienceContext(params) if params.audience.is_none() => {
+            anyhow::bail!("audience_context requires an explicit reader list")
+        }
+        Operation::Context(params) | Operation::AudienceContext(params) => {
+            let ContextParams {
+                query,
+                mode,
+                limit,
+                scope,
+                audience,
+                max_chars,
+                evidence_per_memory,
+                structured,
+                observe,
+            } = params;
             let mode = SearchMode::from_str(&mode).map_err(anyhow::Error::msg)?;
             let request = ContextRequest {
                 query,
@@ -161,7 +182,12 @@ fn handle_request(
             };
             let context_provider = (mode != SearchMode::Lexical).then_some(provider);
             if observe {
-                let observation = store.observe_context(&request, context_provider)?;
+                let observation = match &audience {
+                    Some(readers) => {
+                        store.observe_audience_context(&request, context_provider, readers)?
+                    }
+                    None => store.observe_context(&request, context_provider)?,
+                };
                 let packet = observation.packet;
                 if structured {
                     return Ok(serde_json::json!({
@@ -173,13 +199,19 @@ fn handle_request(
                 return Ok(serde_json::json!({
                     "request_id": observation.request_id,
                     "packet": rendered,
+                    "public_only": audience.is_some() && store.packet_is_public(&packet)?,
                     "memory_count": packet.memories.len(),
                     "reference_count": packet.references.len(),
                     "packet_chars": packet.used_chars,
                     "truncated": packet.truncated,
                 }));
             }
-            let packet = store.assemble_context(&request, context_provider)?;
+            let packet = match &audience {
+                Some(readers) => {
+                    store.assemble_audience_context(&request, context_provider, readers)?
+                }
+                None => store.assemble_context(&request, context_provider)?,
+            };
             if structured {
                 Ok(serde_json::to_value(packet)?)
             } else if packet.is_empty() {

@@ -62,7 +62,7 @@ permissions do not sandbox this child. It uses the existing host auth owner;
 no credentials are copied, printed or saved in reports. No services/channels
 start. Preflight performs no inference: it reads the account catalogue and
 warms the exact execution owner. The existing host may refresh its catalogue.
-An installed OpenClaw 2026.11.3 is currently reviewed; other versions fail
+OpenClaw 2026.11.3 and 2026.11.5 are currently reviewed; other versions fail
 closed until their contracts are reviewed. Account discovery uses the public
 SDK. Exact-owner preparation requires one version-gated private named export;
 missing/ambiguous capabilities fail closed. No hardcoded hashed imports.
@@ -567,7 +567,7 @@ function moonRunner(state: any) {
       "384",
       "--json",
       ...args,
-    ], { input: input === undefined ? undefined : JSON.stringify(input) });
+    ], { input: typeof input === "string" ? input : JSON.stringify(input) });
     check(result.code === 0, "isolated_moon_command_failed");
     return JSON.parse(result.stdout);
   };
@@ -626,15 +626,28 @@ async function verify(state: any, moon: any, run: any, options: any) {
     "existing_model_cache_required_no_download",
   );
   await copyPublicCache(options.modelCache, state.home + "/models/fastembed");
+  // Keep reviewed operator sources private. Exercise the chat hook with one
+  // independently published synthetic fact in this isolated database.
+  const publicFact =
+    "The Aster restart rehearsal uses the public status label Silver Finch.";
+  await moon([
+    "privacy",
+    "publish",
+    "--actor",
+    "canary:operator",
+    "--kind",
+    "fact",
+  ], publicFact);
   await moon(["embed", "--provider", "local", "--limit", "100"]);
   const contextArgs = (
     mode: string,
+    collection: string[] = ["--scope", SCOPE],
+    query: string = QUERY,
   ) => [
     "context",
     "--query",
-    QUERY,
-    "--scope",
-    SCOPE,
+    query,
+    ...collection,
     "--mode",
     mode,
     "--provider",
@@ -683,19 +696,37 @@ async function verify(state: any, moon: any, run: any, options: any) {
   });
   try {
     check(hooks.has("before_prompt_build"), "prompt_hook_missing");
-    const result = await hooks.get("before_prompt_build")({
-      prompt: QUERY,
-      currentUserMessage: QUERY,
-      currentUserMessageId: crypto.randomUUID(),
-    }, {
-      agentId: "main",
-      senderIsOwner: true,
-      sessionKey: "agent:main:direct:aster-canary",
-      workspaceDir: state.home + "/workspace",
-      runId: "canary-recall",
-      hookInvocation: { assertActive() {} },
-    });
-    const expected = await moon([...contextArgs("hybrid"), "--adapter"]);
+    const recall = (query: string) =>
+      hooks.get("before_prompt_build")({
+        prompt: query,
+        currentUserMessage: query,
+        currentUserMessageId: crypto.randomUUID(),
+      }, {
+        agentId: "main",
+        senderIsOwner: true,
+        sessionKey: "agent:main:direct:aster-canary",
+        workspaceDir: state.home + "/workspace",
+        runId: "canary-recall",
+        hookInvocation: { assertActive() {} },
+      });
+    // The operator query has highly relevant approved sources. The chat has
+    // no right to those sources even when its sender is marked as owner.
+    const operatorResult = await recall(QUERY);
+    const operatorPacket = operatorResult?.prependContext ?? "";
+    const excludesSources = (packet: string) =>
+      !packet.includes(TOPIC.key) &&
+      SOURCES.every((s) =>
+        !packet.includes(s.key) &&
+        s.content.split("\n").every((line) => !packet.includes(line))
+      );
+    check(excludesSources(operatorPacket), "operator_source_leaked_to_chat");
+    const publicQuery =
+      "What is the public status label for the Aster restart rehearsal?";
+    const result = await recall(publicQuery);
+    const expected = await moon([
+      ...contextArgs("hybrid", ["--audience-json", "[]"], publicQuery),
+      "--adapter",
+    ]);
     await writeJson(state.home + "/hook-comparison.json", {
       actual: typeof result?.prependContext === "string" &&
           Array.from(result.prependContext).length <= MAX_CHARS
@@ -708,13 +739,15 @@ async function verify(state: any, moon: any, run: any, options: any) {
     });
     check(
       result?.prependContext === expected.packet &&
-        result.prependContext.includes(TOPIC.key) &&
-        SOURCES.every((s) => result.prependContext.includes(s.key)) &&
+        result.prependContext.includes(publicFact) &&
+        excludesSources(result.prependContext) &&
         Array.from(result.prependContext).length <= MAX_CHARS,
       "hook_packet_mismatch",
     );
     state.promptHook = {
       exactIndependentPacketMatch: true,
+      publicFactRecalled: true,
+      operatorSourcesExcluded: true,
       gatewayChatDeliveryVerified: false,
       packetChars: Array.from(result.prependContext).length,
     };

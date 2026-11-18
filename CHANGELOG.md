@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Preserve the verified source speaker when recalling private conversation
+  memories. Schema 19 separates learning by speaker within each owner set.
+
+- Use room access to record private owners separately for incoming questions and
+  delivered replies. Search private memories that every destination reader owns;
+  preserve existing records when migrating to schema 18.
+
+- Separate a conversation's owners from its potential readers, retain confirmed
+  private replies as role-labelled history, and support one-time private
+  ownership of the pre-cutover global memory collection.
+
+- Record the verified author of each new private chat turn and add a local
+  `privacy by-sender` lookup. Schema 16 preserves unknown historical authors.
+
+- Add audience-checked private conversation memory, explicit public sharing and
+  withdrawal. Schema 15 quarantines legacy globals for local review.
+
+- Give rejected session evidence one routine L2 retry. Schema 14 retains
+  unresolved evidence for related new information, changes to the grounding
+  rules, or an explicit session review. Fresh evidence continues through the
+  daily batch budget.
+
 ## 2.7.0 - 2026-11-17
 
 - Refresh vulnerable locked dependencies before publication: bundled SQLite is
