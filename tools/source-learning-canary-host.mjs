@@ -15,6 +15,7 @@ import {
   assertModelRequest,
   CanaryError,
   check,
+  checkAuthoredProvider,
   credentialGuard,
   executionOwnerInput,
   guardCommand,
@@ -26,7 +27,7 @@ import {
   SCOPE,
   selectExecutionOwnerModule,
   SOURCES,
-  SUPPORTED_HOST,
+  SUPPORTED_HOSTS,
   TOPIC,
 } from "./source-learning-canary-contract.ts";
 
@@ -156,7 +157,7 @@ async function registeredRuntime(state, stage, save) {
     await fs.readFile(path.join(paths.host, "package.json"), "utf8"),
   );
   check(
-    pkg.name === "openclaw" && pkg.version === SUPPORTED_HOST,
+    pkg.name === "openclaw" && SUPPORTED_HOSTS.includes(pkg.version),
     "unsupported_host_version_review_required",
   );
   const sdk = (name) => {
@@ -176,7 +177,7 @@ async function registeredRuntime(state, stage, save) {
       !server.codexHome,
     "unsupported_host_auth_owner_route",
   );
-  check(!source.models?.providers?.openai, "authored_provider_requires_review");
+  checkAuthoredProvider(source.models?.providers?.openai);
   const workspace = path.join(home, "workspace");
   const wrapper = path.join(home, "registered-plugin");
   const modelRef = `${PROVIDER}/${MODEL}`;
@@ -329,7 +330,7 @@ async function registeredRuntime(state, stage, save) {
   // The public catalogue SDK omits runtimePluginSelections from its owner.
   // A model turn includes those selections in its owner key. Warm and retain
   // that exact owner, otherwise catalogue success can mask missing paired auth.
-  // This private compatibility surface is admitted only for SUPPORTED_HOST.
+  // This private compatibility surface is admitted only for reviewed host versions.
   phase = "execution_owner";
   const candidates = [];
   for (
@@ -455,6 +456,7 @@ async function registeredRuntime(state, stage, save) {
     },
   };
   return {
+    hostVersion: pkg.version,
     async call(key) {
       pendingKey = key;
       const tool = stage === "l1"
@@ -533,7 +535,7 @@ try {
     status: "passed",
     stage,
     modelCalls: state.calls.length,
-    hostVersion: SUPPORTED_HOST,
+    hostVersion: runtime.hostVersion,
     runtime: "captured_registered_api",
     catalogue: "exact_owner_full_paired_auth_publication",
   };

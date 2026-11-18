@@ -5,7 +5,7 @@ export const MODEL = "gpt-6.1-terra";
 export const PROVIDER = "openai";
 export const MAX_CALLS = 3;
 export const MAX_CHARS = 8000;
-export const SUPPORTED_HOST = "2026.11.3";
+export const SUPPORTED_HOSTS = ["2026.11.3", "2026.11.5"];
 export const TOPIC = {
   key: "aster-readiness",
   title: "Aster restart readiness: operator approval and integrity checks",
@@ -159,6 +159,34 @@ export function hookHostConfig(settings: Record<string, unknown>) {
       },
     },
   };
+}
+// Discovery still queries the authenticated account. Allow a local picker's
+// catalogue metadata only when it names the same ChatGPT transport.
+export function checkAuthoredProvider(provider: any) {
+  if (provider === undefined) return;
+  const keys = [
+    "id",
+    "name",
+    "api",
+    "input",
+    "reasoning",
+    "contextWindow",
+    "contextTokens",
+    "compat",
+  ];
+  check(
+    provider && Object.keys(provider).every((key) => key === "models") &&
+      Array.isArray(provider.models) &&
+      provider.models.every((row: any) =>
+        row && Object.keys(row).every((key) => keys.includes(key)) &&
+        row.api === "openai-chatgpt-responses" &&
+        (!row.compat ||
+          Object.keys(row.compat).every((key) =>
+            key === "supportedReasoningEfforts"
+          ))
+      ),
+    "authored_provider_requires_review",
+  );
 }
 export function credentialGuard(value: unknown): void {
   if (!value || typeof value !== "object") return;

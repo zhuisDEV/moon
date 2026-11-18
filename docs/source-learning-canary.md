@@ -19,8 +19,9 @@ runtime dependency or a Node package-manager workflow.
 - Choose a new canonical absolute `REPO/target/moon-canary-NAME` home. The tool
   refuses foreign homes, symlinked homes, ambient database redirects and changed
   candidate hashes on resume.
-- Use the existing authorised OpenClaw account. The currently reviewed host is
-  OpenClaw 2026.11.3; other versions fail closed until their SDK is reviewed.
+- Use the existing authorised OpenClaw account. The reviewed OpenClaw versions
+  are 2026.11.3 and 2026.11.5; other versions fail closed until their SDK is
+  reviewed.
 - Catalogue discovery uses public SDK exports. The reviewed host also needs an
   exact execution-owner lease that its public SDK does not expose: a narrow
   compatibility bridge discovers its unique named export, checks capabilities
@@ -68,7 +69,9 @@ using the scoped allowlist and existing host account.
    run `--stage accept-l2 --approve HASH`.
 6. `--stage verify --model-cache ABSOLUTE_CACHE` checks lexical and actual local
    embedding hybrid recall, both independent source premises, exact original
-   citation ranges, the registered prompt hook and withdrawal invalidation.
+   citation ranges, and withdrawal invalidation. The registered prompt hook must
+   recall an explicitly published synthetic fact while excluding the operator
+   sources and topic from chat.
 
 Each model dispatch reserves its budget durably before execution. A home has at
 most three reservations, including failures and uncertain interrupted calls;
