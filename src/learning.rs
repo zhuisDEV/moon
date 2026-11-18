@@ -3,7 +3,7 @@
 use crate::chunking::sha256_hex;
 use crate::memory::{
     distill_in_transaction, fuzzy_context_score, insert_citation, load_evidence, locate_citation,
-    sync_memory_indexes,
+    reference_terms, sync_memory_indexes,
 };
 use crate::model::DistillInput;
 use crate::redaction::redact_text;
@@ -12,11 +12,14 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
 pub struct PrepareRequest {
     pub run_key: String,
+    pub rule_version: String,
+    pub review_session: Option<String>,
+    pub occurrence: Option<String>,
     pub limit: usize,
     pub max_chars: usize,
     pub lease_ms: i64,
@@ -129,15 +132,47 @@ pub struct LearningAction {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Snapshot {
+    #[serde(default)]
+    occurrence: String,
+    #[serde(default)]
+    rule_version: String,
+    // Sources captured during a model call were absent at prepare. Match those
+    // arrivals against newly indexed deferrals before committing the result.
+    #[serde(default)]
+    evidence_high_water: Option<i64>,
+    // Only consume a wake-up that was actually present in the model packet.
+    #[serde(default)]
+    retry_support: BTreeMap<String, i64>,
     scope_hash: String,
     selected_sessions: Vec<String>,
     evidence_sessions: Vec<String>,
     memory_ids: Vec<i64>,
 }
 
+struct Candidate {
+    scope: String,
+    session: String,
+    chars: usize,
+    support: Option<RetrySupport>,
+}
+
+struct RetrySupport {
+    id: i64,
+    session: String,
+    chars: usize,
+}
+
 impl Store {
     pub fn learning_prepare(&mut self, request: &PrepareRequest) -> Result<Value> {
         validate_identifier(&request.run_key, "run key", 128)?;
+        let occurrence = request.occurrence.as_deref().unwrap_or(&request.run_key);
+        validate_identifier(occurrence, "learning occurrence", 128)?;
+        if !request.rule_version.is_empty() {
+            validate_identifier(&request.rule_version, "rule version", 128)?;
+        }
+        if let Some(session) = &request.review_session {
+            crate::memory::validate_session_id(session)?;
+        }
         if !(1..=128).contains(&request.limit) || !(1024..=2_097_152).contains(&request.max_chars) {
             anyhow::bail!(
                 "learning limits must be 1..128 evidence records and 1024..2097152 characters"
@@ -190,37 +225,71 @@ impl Store {
                 );
             }
         }
-        let scope = transaction.query_row(
-            "SELECT d.scope FROM evidence_sessions e JOIN documents d ON d.id = e.document_id
-             LEFT JOIN learning_processed_evidence p ON p.evidence_session_id = e.id
-             WHERE p.evidence_session_id IS NULL AND d.active = 1 AND (?1 IS NULL OR e.completed_at_ms <= ?1)
-               AND (?2 IS NULL OR e.completed_at_ms >= ?2)
-             ORDER BY e.completed_at_ms, e.id LIMIT 1",
-            params![request.before_ms,request.after_ms], |row| row.get::<_, String>(0),
-        ).optional()?;
-        let Some(scope) = scope else {
+        // Old runs had no rule fingerprint. Bind it on the first real versioned
+        // prepare, without making every legacy deferral eligible on upgrade.
+        if !request.preview && !request.rule_version.is_empty() {
+            transaction.execute(
+                "UPDATE learning_evidence_retries SET rule_version=?1 WHERE rule_version=''",
+                [&request.rule_version],
+            )?;
+        }
+        let mut statement = transaction.prepare(
+            "WITH eligible AS (
+                SELECT e.session_id, d.scope, e.document_id, e.completed_at_ms, e.id,
+                       r.attempts IS NOT NULL AS retry, support.session_id AS support_session,
+                       support.id AS support_id, sd.id AS support_document_id
+                FROM evidence_sessions e JOIN documents d ON d.id=e.document_id
+                LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id
+                LEFT JOIN learning_evidence_retries r ON r.evidence_session_id=e.id
+                LEFT JOIN evidence_sessions support ON support.id=r.support_id
+                    AND (?1 IS NULL OR support.completed_at_ms<=?1)
+                LEFT JOIN documents sd ON sd.id=support.document_id AND sd.active=1 AND sd.scope=d.scope
+                WHERE p.evidence_session_id IS NULL AND d.active=1
+                  AND (?1 IS NULL OR e.completed_at_ms<=?1) AND (?2 IS NULL OR e.completed_at_ms>=?2)
+                  AND (?3 IS NULL OR (r.attempts IS NOT NULL AND e.session_id=?3))
+                  AND (?3 IS NOT NULL OR r.attempts IS NULL OR
+                       (r.attempts=1 AND r.last_occurrence<>?4) OR
+                       (r.rule_version<>'' AND ?5<>'' AND r.rule_version<>?5) OR sd.id IS NOT NULL)
+            ), batch AS MATERIALIZED (
+                SELECT * FROM eligible WHERE scope=(SELECT scope FROM eligible ORDER BY retry,completed_at_ms,id LIMIT 1)
+                ORDER BY retry,completed_at_ms,id LIMIT ?6
+            )
+            SELECT b.scope, b.session_id, length(d.body), b.support_session, b.support_id, length(sd.body)
+            FROM batch b JOIN documents d ON d.id=b.document_id
+            LEFT JOIN documents sd ON sd.id=b.support_document_id ORDER BY b.retry,b.completed_at_ms,b.id",
+        )?;
+        let candidates = statement
+            .query_map(
+                params![
+                    request.before_ms,
+                    request.after_ms,
+                    request.review_session,
+                    occurrence,
+                    request.rule_version,
+                    request.limit as i64
+                ],
+                |row| {
+                    let support = match row.get::<_, Option<i64>>(5)? {
+                        Some(chars) => Some(RetrySupport {
+                            session: row.get(3)?,
+                            id: row.get(4)?,
+                            chars: chars as usize,
+                        }),
+                        None => None,
+                    };
+                    Ok(Candidate {
+                        scope: row.get(0)?,
+                        session: row.get(1)?,
+                        chars: row.get::<_, i64>(2)? as usize,
+                        support,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let Some(scope) = candidates.first().map(|item| item.scope.clone()) else {
             transaction.commit()?;
             return Ok(json!({"status":"empty", "run_key":request.run_key}));
-        };
-        let candidates = {
-            let mut statement = transaction.prepare(
-                "SELECT e.session_id, length(d.body) FROM evidence_sessions e
-                 JOIN documents d ON d.id = e.document_id LEFT JOIN learning_processed_evidence p ON p.evidence_session_id = e.id
-                 WHERE p.evidence_session_id IS NULL AND d.active = 1 AND d.scope = ?1 AND (?2 IS NULL OR e.completed_at_ms <= ?2)
-                   AND (?4 IS NULL OR e.completed_at_ms >= ?4)
-                 ORDER BY e.completed_at_ms, e.id LIMIT ?3",
-            )?;
-            statement
-                .query_map(
-                    params![
-                        scope,
-                        request.before_ms,
-                        request.limit as i64,
-                        request.after_ms
-                    ],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut evidence = Vec::new();
         let mut memories = Vec::new();
@@ -235,8 +304,17 @@ impl Store {
         .count()
         .saturating_sub(input_chars(&[], &[])?);
         let budget = request.max_chars.saturating_sub(envelope_chars);
-        for (session, content_chars) in candidates {
-            if content_chars as usize > budget {
+        let mut retry_support = BTreeMap::new();
+        for candidate in candidates {
+            let session = candidate.session;
+            // Keep both sides of a wake-up inside the same bounded packet. The
+            // supporting turn may already have been processed, or selected here.
+            let missing_support = candidate.support.as_ref().filter(|support| {
+                !evidence
+                    .iter()
+                    .any(|e: &LearningEvidence| e.session_id == support.session)
+            });
+            if candidate.chars > budget || missing_support.is_some_and(|item| item.chars > budget) {
                 if evidence.is_empty() {
                     anyhow::bail!(
                         "oldest pending evidence exceeds max_chars; increase the learning input budget or review that evidence explicitly"
@@ -244,23 +322,35 @@ impl Store {
                 }
                 break;
             }
-            let mut item = read_learning_evidence(&transaction, &session)?;
-            item.selected = true;
-            evidence.push(item);
-            // Reserve half of the usable envelope for prior claims and their
-            // original evidence; allow one larger turn if it fits completely.
-            if evidence.len() > 1 && input_chars(&evidence, &memories)? > budget / 2 {
-                evidence.pop();
-                break;
+            let previous_len = evidence.len();
+            let existing = evidence.iter().position(|e| e.session_id == session);
+            if let Some(index) = existing {
+                evidence[index].selected = true;
+            } else {
+                let mut item = read_learning_evidence(&transaction, &session)?;
+                item.selected = true;
+                evidence.push(item);
             }
-            if input_chars(&evidence, &memories)? > budget {
-                evidence.pop();
+            if let Some(support) = missing_support {
+                evidence.push(read_learning_evidence(&transaction, &support.session)?);
+            }
+            let used = input_chars(&evidence, &memories)?;
+            // Reserve half for prior claims and their evidence except for the
+            // first complete selection (including any required supporting turn).
+            if used > budget || (previous_len > 0 && used > budget / 2) {
+                evidence.truncate(previous_len);
+                if let Some(index) = existing {
+                    evidence[index].selected = false;
+                }
                 if evidence.is_empty() {
                     anyhow::bail!(
                         "oldest pending evidence exceeds max_chars; increase the learning input budget or review that evidence explicitly"
                     );
                 }
                 break;
+            }
+            if let Some(support) = candidate.support {
+                retry_support.insert(session, support.id);
             }
         }
         let query = evidence
@@ -295,7 +385,16 @@ impl Store {
                 "related memory and original evidence cannot fit max_chars; increase the input budget before reconciliation"
             );
         }
+        let evidence_high_water: i64 = transaction.query_row(
+            "SELECT coalesce(max(id),0) FROM evidence_sessions",
+            [],
+            |row| row.get(0),
+        )?;
         let snapshot = Snapshot {
+            evidence_high_water: Some(evidence_high_water),
+            occurrence: occurrence.to_owned(),
+            rule_version: request.rule_version.clone(),
+            retry_support,
             scope_hash: scope_hash(&transaction, &scope)?,
             selected_sessions: evidence
                 .iter()
@@ -384,9 +483,10 @@ impl Store {
             anyhow::bail!("learning run lease is no longer active; prepare a fresh run");
         }
         let snapshot: Snapshot = serde_json::from_str(&snapshot_json)?;
+        let mut deferred_sessions = input.deferred_evidence;
         let mut deferred = BTreeSet::new();
-        for session in &input.deferred_evidence {
-            if !deferred.insert(session) {
+        for session in &deferred_sessions {
+            if !deferred.insert(session.clone()) {
                 anyhow::bail!("deferred evidence sessions must be unique");
             }
             if !snapshot.selected_sessions.contains(session) {
@@ -407,26 +507,74 @@ impl Store {
             }
             outcomes.push(apply_action(&transaction, run_id, &scope, action)?);
         }
+        let cited: BTreeSet<_> = input
+            .actions
+            .iter()
+            .filter(|action| action.action != "review")
+            .flat_map(|action| {
+                action
+                    .evidence
+                    .iter()
+                    .map(|citation| citation.session_id.as_str())
+            })
+            .collect();
+        // An empty or unrelated successful batch can close ordinary fresh
+        // turns. Previously rejected evidence needs an accepted, cited claim.
+        let mut newly_deferred = false;
+        for session in &snapshot.selected_sessions {
+            let (id, prior_attempts): (i64, Option<u8>) = transaction.query_row(
+                "SELECT e.id,r.attempts FROM evidence_sessions e LEFT JOIN learning_evidence_retries r
+                 ON r.evidence_session_id=e.id WHERE e.session_id=?1", [session], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if prior_attempts.is_some()
+                && !cited.contains(session.as_str())
+                && deferred.insert(session.clone())
+            {
+                deferred_sessions.push(session.clone());
+            }
+            if deferred.contains(session) {
+                let occurrence = if snapshot.occurrence.is_empty() {
+                    run_id
+                } else {
+                    &snapshot.occurrence
+                };
+                // A concurrent capture may have supplied a newer trigger since
+                // prepare. Consume only the support included in this snapshot.
+                transaction.execute(
+                    "INSERT INTO learning_evidence_retries(evidence_session_id,attempts,last_occurrence,rule_version,support_after_id)
+                     VALUES(?1,1,?2,?3,coalesce(?5,(SELECT max(id) FROM evidence_sessions))) ON CONFLICT(evidence_session_id) DO UPDATE SET
+                     attempts=2,last_occurrence=excluded.last_occurrence,
+                     rule_version=CASE WHEN excluded.rule_version='' THEN rule_version ELSE excluded.rule_version END,
+                     support_after_id=max(support_after_id,coalesce(?4,0)),
+                     support_id=CASE WHEN support_id=?4 THEN NULL ELSE support_id END",
+                    params![id,occurrence,snapshot.rule_version,snapshot.retry_support.get(session),snapshot.evidence_high_water],
+                )?;
+                if prior_attempts.is_none() {
+                    index_retry_terms(&transaction, id)?;
+                    newly_deferred = true;
+                }
+            } else {
+                transaction.execute(
+                    "DELETE FROM learning_evidence_retries WHERE evidence_session_id=?1",
+                    [id],
+                )?;
+                transaction.execute(
+                    "INSERT INTO learning_processed_evidence(evidence_session_id,run_id,processed_at_ms)
+                     VALUES(?1,?2,?3)", params![id,run_id,now_ms()],
+                )?;
+            }
+        }
+        if newly_deferred && let Some(high_water) = snapshot.evidence_high_water {
+            match_arrivals_since(&transaction, high_water, Some(&scope))?;
+        }
         let outcome = json!({"status":if dry_run {"dry_run"} else {"committed"},"run_id":run_id,
             "action_count":outcomes.len(), "processed_evidence":if dry_run {0} else {snapshot.selected_sessions.len()-deferred.len()},
             "selected_evidence":snapshot.selected_sessions.len(), "outcomes":outcomes,
-            "deferred_evidence":deferred.len(),"deferred_session_ids":input.deferred_evidence,
+            "deferred_evidence":deferred.len(),"deferred_session_ids":deferred_sessions,
             "metadata":input.metadata});
         if dry_run {
             transaction.rollback()?;
         } else {
-            for session in &snapshot.selected_sessions {
-                // A selected turn can support an accepted action and still
-                // contain a rejected candidate. Keep that whole turn pending.
-                if deferred.contains(session) {
-                    continue;
-                }
-                transaction.execute(
-                    "INSERT INTO learning_processed_evidence(evidence_session_id,run_id,processed_at_ms)
-                     SELECT id,?2,?3 FROM evidence_sessions WHERE session_id = ?1",
-                    params![session,run_id,now_ms()],
-                )?;
-            }
             transaction.execute(
                 "UPDATE learning_runs SET status='committed',lease_until_ms=NULL,completed_at_ms=?2,outcome_json=?3 WHERE run_id=?1",
                 params![run_id,now_ms(),serde_json::to_string(&outcome)?],
@@ -455,6 +603,32 @@ impl Store {
         Ok(json!({"status":status,"run_id":run_id,"changed":changed == 1}))
     }
 
+    pub fn learning_deferred(&self, after_id: i64, limit: usize) -> Result<Value> {
+        anyhow::ensure!(
+            after_id >= 0 && (1..=128).contains(&limit),
+            "after-id must be nonnegative and limit must be between 1 and 128"
+        );
+        let mut statement = self.connection.prepare(
+            "SELECT e.id,e.session_id,d.scope,r.attempts
+             FROM learning_evidence_retries r JOIN evidence_sessions e ON e.id=r.evidence_session_id
+             JOIN documents d ON d.id=e.document_id
+             WHERE r.evidence_session_id>?1 AND d.active=1
+             ORDER BY r.evidence_session_id LIMIT ?2",
+        )?;
+        let mut rows = statement.query_map(params![after_id,(limit+1) as i64], |row| {
+            let attempts: i64 = row.get(3)?;
+            Ok(json!({"id":row.get::<_,i64>(0)?, "session_id":row.get::<_,String>(1)?,
+                "scope":row.get::<_,String>(2)?, "state":if attempts == 1 {"retry_pending"} else {"parked"}}))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let next_after_id = if rows.len() > limit {
+            rows.truncate(limit);
+            rows.last().and_then(|row| row["id"].as_i64())
+        } else {
+            None
+        };
+        Ok(json!({"deferred":rows, "next_after_id":next_after_id}))
+    }
+
     pub fn learning_status(&self) -> Result<Value> {
         let mut statement = self.connection.prepare(
             "SELECT run_id,run_key,scope,status,created_at_ms,completed_at_ms,lease_until_ms,
@@ -467,6 +641,12 @@ impl Store {
             "deferred_evidence":row.get::<_,i64>(7)?
         })))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL", [], |row| row.get(0))?;
+        let (retry_pending, parked): (i64, i64) = self.connection.query_row(
+            "SELECT count(*) FILTER (WHERE attempts=1),count(*) FILTER (WHERE attempts=2)
+             FROM learning_evidence_retries",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         let processed: i64 = self.connection.query_row(
             "SELECT count(*) FROM learning_processed_evidence",
             [],
@@ -475,9 +655,116 @@ impl Store {
         let mut statement = self.connection.prepare("SELECT id,run_id,document_id,scope,canonical_key,created_at_ms,reason,evidence_ids_json FROM learning_reviews ORDER BY id DESC LIMIT 100")?;
         let reviews = statement.query_map([], |row| Ok(json!({"review_id":row.get::<_,i64>(0)?,"run_id":row.get::<_,String>(1)?,"document_id":row.get::<_,Option<i64>>(2)?,"scope":row.get::<_,String>(3)?,"canonical_key":row.get::<_,String>(4)?,"created_at_ms":row.get::<_,i64>(5)?,"reason":row.get::<_,String>(6)?,"evidence_session_ids":serde_json::from_str::<Value>(&row.get::<_,String>(7)?).unwrap_or(Value::Null)})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(
-            json!({"pending_evidence":pending,"processed_evidence":processed,"runs":runs,"reviews":reviews}),
+            json!({"pending_evidence":pending,"retry_pending_evidence":retry_pending,"parked_evidence":parked,"processed_evidence":processed,"runs":runs,"reviews":reviews}),
         )
     }
+}
+
+// Use Moon's existing multilingual reference tokenisation, excluding role
+// labels and generic conversation words. Two distinct terms are the minimum
+// trigger; longer turns need additional overlap. The model still has to ground
+// any eventual claim in the original evidence.
+fn retry_terms(content: &str) -> Vec<String> {
+    reference_terms(content)
+        .into_iter()
+        .filter(|term| {
+            term.len() <= 64
+                && !term.chars().all(char::is_numeric)
+                && !matches!(
+                    term.as_str(),
+                    "user"
+                        | "assistant"
+                        | "system"
+                        | "tool"
+                        | "message"
+                        | "thank"
+                        | "have"
+                        | "will"
+                        | "want"
+                        | "need"
+                        | "yes"
+                )
+        })
+        .collect()
+}
+
+fn index_retry_terms(connection: &Connection, id: i64) -> Result<()> {
+    let (scope, body): (String,String) = connection.query_row(
+        "SELECT d.scope,d.body FROM evidence_sessions e JOIN documents d ON d.id=e.document_id WHERE e.id=?1",
+        [id], |row| Ok((row.get(0)?,row.get(1)?)),
+    )?;
+    let terms = retry_terms(&body);
+    connection.execute(
+        "INSERT INTO learning_retry_terms(scope,term,evidence_session_id)
+         SELECT ?1,value,?2 FROM json_each(?3)",
+        params![scope, id, serde_json::to_string(&terms)?],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn index_migrated_deferrals(connection: &Connection) -> Result<()> {
+    let mut statement =
+        connection.prepare("SELECT evidence_session_id FROM learning_evidence_retries")?;
+    let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+    for id in rows {
+        index_retry_terms(connection, id?)?;
+    }
+    let oldest_watermark: Option<i64> = connection.query_row(
+        "SELECT min(support_after_id) FROM learning_evidence_retries",
+        [],
+        |row| row.get(0),
+    )?;
+    if let Some(id) = oldest_watermark {
+        match_arrivals_since(connection, id, None)?;
+    }
+    Ok(())
+}
+
+fn match_arrivals_since(connection: &Connection, after: i64, scope: Option<&str>) -> Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT e.id,d.scope FROM evidence_sessions e JOIN documents d ON d.id=e.document_id
+         WHERE e.id>?1 AND d.active=1 AND (?2 IS NULL OR d.scope=?2) ORDER BY e.id",
+    )?;
+    let arrivals = statement.query_map(params![after, scope], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for arrival in arrivals {
+        let (new_id, scope) = arrival?;
+        match_new_retry_support(connection, new_id, &scope)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn match_new_retry_support(
+    connection: &Connection,
+    new_id: i64,
+    scope: &str,
+) -> Result<()> {
+    if !connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM learning_retry_terms WHERE scope=?1)",
+        [scope],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    let body: String = connection.query_row(
+        "SELECT d.body FROM evidence_sessions e JOIN documents d ON d.id=e.document_id WHERE e.id=?1",
+        [new_id], |row| row.get(0),
+    )?;
+    let terms = retry_terms(&body);
+    connection.execute(
+        "UPDATE learning_evidence_retries SET support_id=?1
+         WHERE support_after_id < ?1 AND coalesce(support_id,0) < ?1 AND evidence_session_id <> ?1
+           AND evidence_session_id IN (
+            SELECT t.evidence_session_id FROM json_each(?3) j
+            JOIN learning_retry_terms t ON t.scope=?2 AND t.term=j.value
+            GROUP BY t.evidence_session_id
+            HAVING count(*) >= max(2, (min(12, ?4, (
+                SELECT count(*) FROM learning_retry_terms total WHERE total.evidence_session_id=t.evidence_session_id
+            )) + 2) / 3)
+        )", params![new_id,scope,serde_json::to_string(&terms)?,terms.len() as i64],
+    )?;
+    Ok(())
 }
 
 fn input_chars(evidence: &[LearningEvidence], memories: &[LearningMemory]) -> Result<usize> {

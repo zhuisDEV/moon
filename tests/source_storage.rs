@@ -755,7 +755,7 @@ fn migration_from_eight_preserves_existing_evidence_claims_and_citations() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        13
+        14
     );
     assert_eq!(count(&path, "evidence_sessions"), 1);
     assert_eq!(count(&path, "memory_items"), 1);
@@ -775,7 +775,7 @@ fn migration_from_eight_preserves_existing_evidence_claims_and_citations() {
     assert_eq!(count(&path, "documents"), 2);
     assert_eq!(count(&path, "sources"), 1);
     assert_eq!(count(&path, "source_revisions"), 1);
-    assert_eq!(count(&path, "schema_migrations"), 13);
+    assert_eq!(count(&path, "schema_migrations"), 14);
     assert!(store.health().unwrap().ok);
     drop(store);
     let reopened = Store::open(&path, 64).unwrap();
@@ -783,7 +783,7 @@ fn migration_from_eight_preserves_existing_evidence_claims_and_citations() {
         reopened.source_get(SCOPE, "new-source", None).unwrap()["content"],
         "New external evidence."
     );
-    assert_eq!(count(&path, "schema_migrations"), 13);
+    assert_eq!(count(&path, "schema_migrations"), 14);
 }
 
 #[test]

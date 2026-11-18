@@ -2658,7 +2658,7 @@ Deno.test("L2 partial batches retain five valid claims and defer rejected correc
   assertEquals(sharedSource.deferred_evidence, ["source:0"]);
 });
 
-Deno.test("L2 defers every selected source when any rejected citation cannot map safely", () => {
+Deno.test("L2 avoids charging unrelated sources when a mixed response contains an unmappable candidate", () => {
   const { prepared, actions, settings } = synthesisBatchFixture();
   const snapshot = {
     ...prepared,
@@ -2683,21 +2683,27 @@ Deno.test("L2 defers every selected source when any rejected citation cannot map
       [{ session_id: "support:old", quote: actions[1].content }],
     ]
   ) {
-    const result = __moonTest.normalizeSynthesisBatch(
-      { actions: [actions[0], { ...actions[1], evidence, confidence: 0.1 }] },
-      snapshot,
-      settings,
-      16,
-    );
-    assertEquals(result.actions.length, 1);
-    assertEquals(
-      result.deferred_evidence,
-      prepared.evidence.map((item) => item.session_id),
+    let failure;
+    try {
+      __moonTest.normalizeSynthesisBatch(
+        { actions: [actions[0], { ...actions[1], evidence, confidence: 0.1 }] },
+        snapshot,
+        settings,
+        16,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    const diagnostic = __moonTest.failureDiagnostic(failure);
+    assertEquals(diagnostic.phase, "normalise");
+    assert(
+      ["invalid_citation", "unsupported_action", "missing_selected_evidence"]
+        .includes(diagnostic.code),
     );
   }
 });
 
-Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rejected batches", () => {
+Deno.test("L2 defers attributable grounding failures and rejects malformed or conflicting batches", () => {
   const { prepared, actions, settings } = synthesisBatchFixture();
   const first = { ...actions[0], action: "review", target_document_id: 10 };
   const target = {
@@ -2727,10 +2733,13 @@ Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rej
     })),
     {
       raw: {
-        actions: [{ ...actions[0], content: "Entirely invented claim." }],
+        actions: [{
+          ...actions[0],
+          evidence: [{ session_id: "unknown", quote: actions[0].content }],
+        }],
       },
       maximum: 16,
-      code: "insufficient_overlap",
+      code: "invalid_citation",
     },
   ];
   for (const example of cases) {
@@ -2750,38 +2759,58 @@ Deno.test("L2 partial normalisation rejects malformed conflicting and wholly rej
       code: example.code,
     });
   }
+  for (
+    const proposal of [
+      { ...actions[0], content: "Entirely invented claim." },
+      { ...actions[0], confidence: 0.1 },
+    ]
+  ) {
+    assertEquals(
+      __moonTest.normalizeSynthesisBatch(
+        { actions: [proposal] },
+        snapshot,
+        settings,
+        16,
+      ),
+      { actions: [], deferred_evidence: ["source:0"] },
+    );
+  }
   assertEquals(
     __moonTest.normalizeSynthesisBatch({ actions: [] }, snapshot, settings, 16),
     { actions: [], deferred_evidence: [] },
   );
 });
 
-Deno.test("daily L2 commits the accepted subset and stops partial days across restarts", async () => {
+Deno.test("daily L2 continues with fresh batches after partial and wholly deferred commits, including after restart", async () => {
   const { prepared, actions } = synthesisBatchFixture();
+  const fresh = synthesisFixture();
+  const rejected = synthesisFixture();
+  rejected.prepared.evidence[0].session_id = "source:unsupported";
+  rejected.action.evidence[0].session_id = "source:unsupported";
   const secret = "rejected-private-content-do-not-print";
   const logs: string[] = [];
-  const commands: string[][] = [];
-  let appliedPayload: Record<string, unknown> | undefined;
+  const rules: string[] = [];
+  const applied: Array<{ actions: unknown[]; deferred_evidence: string[] }> =
+    [];
   let modelCalls = 0;
-  let embedded = 0;
-  let committed = false;
+  let interrupted = true;
+  const proposals = [
+    actions.map((action, index) =>
+      index === 5 ? { ...action, content: secret } : action
+    ),
+    [{ ...rejected.action, content: secret }],
+    [fresh.action],
+  ];
   const api = {
     ...createApi(
       { code: 0, stdout: "", stderr: "" },
       [],
       {},
-      () => {
-        modelCalls += 1;
-        return {
-          payloads: [{
-            text: JSON.stringify({
-              actions: actions.map((action, index) =>
-                index === 5 ? { ...action, content: secret } : action
-              ),
-            }),
-          }],
-        };
-      },
+      () => ({
+        payloads: [{
+          text: JSON.stringify({ actions: proposals[modelCalls++] }),
+        }],
+      }),
     ),
     logger: {
       info(message: string) {
@@ -2793,63 +2822,88 @@ Deno.test("daily L2 commits the accepted subset and stops partial days across re
     },
   };
   api.runtime.system.runCommandWithTimeout = (argv, options) => {
-    commands.push(argv);
     let output;
     if (argv.includes("config")) {
       output = learningConfig({}, { enabled: true, fallback_enabled: false });
     } else if (argv.includes("prepare")) {
-      assert(argv[argv.indexOf("--run-key") + 1].endsWith(":0"));
-      output = committed
-        ? { status: "committed", deferred_evidence: 1 }
-        : prepared;
+      const day = "2026-09-14";
+      const key = argv[argv.indexOf("--run-key") + 1];
+      const index = Number(key.split(":").at(-1));
+      assertEquals(key, `l2:${day}:${index}`);
+      assertEquals(argv[argv.indexOf("--occurrence") + 1], day);
+      rules.push(argv[argv.indexOf("--rule-version") + 1]);
+      if (index < applied.length) {
+        output = {
+          status: "committed",
+          deferred_evidence: applied[index].deferred_evidence.length,
+        };
+      } else if (index === 2 && interrupted) {
+        output = { status: "busy" };
+      } else if (index < proposals.length) {
+        output = [prepared, rejected.prepared, fresh.prepared][index];
+      } else {
+        output = { status: "empty" };
+      }
     } else if (argv.includes("apply")) {
-      appliedPayload = JSON.parse(options.input ?? "{}");
-      committed = true;
+      const payload = JSON.parse(options.input ?? "{}");
+      applied.push(payload);
       output = {
         status: "committed",
-        action_count: 5,
-        processed_evidence: 5,
-        deferred_evidence: 1,
+        action_count: payload.actions.length,
+        processed_evidence: payload.actions.length,
+        deferred_evidence: payload.deferred_evidence.length,
       };
     } else throw new Error("unexpected command");
     return { code: 0, stdout: JSON.stringify(output), stderr: secret };
   };
-  const onApplied = () => {
-    embedded += 1;
-  };
-  const firstScheduler = __moonTest.createLearningScheduler(api, onApplied);
-  const restartedScheduler = __moonTest.createLearningScheduler(api, onApplied);
+  const first = __moonTest.createLearningScheduler(api);
+  const restarted = __moonTest.createLearningScheduler(api);
+  const now = Date.parse("2026-09-13T19:00:00Z");
   try {
-    assertEquals(await firstScheduler.tick(), {
-      status: "partial",
-      batches: 1,
-    });
-    await firstScheduler.stop();
-    assertEquals(await restartedScheduler.tick(), {
-      status: "partial",
-      batches: 0,
-    });
-    assertEquals(await restartedScheduler.tick(), {
-      status: "partial",
-      batches: 0,
-    });
-    assertEquals(modelCalls, 1);
-    assertEquals(embedded, 1);
-    assertEquals(commands.filter((argv) => argv.includes("apply")).length, 1);
-    assertEquals(appliedPayload?.deferred_evidence, ["source:5"]);
-    assertEquals(Object.keys(appliedPayload ?? {}), [
-      "actions",
-      "deferred_evidence",
-      "metadata",
+    assertEquals(await first.tick(now), { status: "busy", batches: 2 });
+    await first.stop();
+    interrupted = false;
+    assertEquals(await restarted.tick(now), { status: "empty", batches: 1 });
+    assertEquals(await restarted.tick(now), { status: "empty", batches: 0 });
+    assertEquals(modelCalls, 3);
+    assertEquals(applied.map((p) => p.deferred_evidence), [
+      ["source:5"],
+      ["source:unsupported"],
+      [],
     ]);
-    assert(!JSON.stringify(appliedPayload).includes(secret));
+    assertEquals(applied.map((p) => p.actions.length), [5, 0, 1]);
+    assert(!JSON.stringify(applied).includes(secret));
+    assertEquals(new Set(rules).size, 1);
+    assert(/^[a-f0-9]{64}$/.test(rules[0]));
     assertEquals(logs, [
       "moon synthesis status=committed actions=5 evidence=5 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+      "moon synthesis status=committed actions=0 evidence=0 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+      "moon synthesis status=committed actions=1 evidence=1 model_route=primary",
     ]);
   } finally {
-    await firstScheduler.stop();
-    await restartedScheduler.stop();
+    await first.stop();
+    await restarted.stop();
   }
+});
+
+Deno.test("the L2 rule fingerprint changes with owner guidance and acceptance thresholds", () => {
+  const { settings } = synthesisBatchFixture();
+  const version = __moonTest.synthesisRuleVersion(settings);
+  for (
+    const override of [
+      { promptText: "Only retain approved changes." },
+      { learningMinConfidence: 0.97 },
+      { learningMinImportance: 0.91 },
+    ]
+  ) {
+    assert(
+      version !== __moonTest.synthesisRuleVersion({ ...settings, ...override }),
+    );
+  }
+  assertEquals(
+    version,
+    __moonTest.synthesisRuleVersion({ ...settings, modelTimeoutMs: 1000 }),
+  );
 });
 
 Deno.test("L2 prompt states the configured score and existing validation bounds", () => {
@@ -2952,19 +3006,12 @@ Deno.test("L2 diagnostic codes survive model and normalisation failure without l
     },
     {
       phase: "normalise",
-      code: "insufficient_overlap",
-      result: {
-        payloads: [{
-          text: JSON.stringify({ actions: [{ ...action, content: secret }] }),
-        }],
-      },
-    },
-    {
-      phase: "normalise",
       code: "invalid_claim_or_target",
       result: {
         payloads: [{
-          text: JSON.stringify({ actions: [{ ...action, confidence: 0.1 }] }),
+          text: JSON.stringify({
+            actions: [{ ...action, target_document_id: 99 }],
+          }),
         }],
       },
     },

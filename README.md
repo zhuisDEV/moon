@@ -30,6 +30,11 @@ optional and **disabled by default**. L1 and L2 have independent model and
 reasoning settings in `~/.moon/moon.toml`. OpenClaw owns authentication and
 model execution; Moon creates no provider login or API-key store.
 
+In the development build, daily L2 gives rejected session evidence one routine
+retry on a later occurrence. Evidence that still lacks support stays pending.
+Fresh records take priority.
+[Retry and review policy](docs/learning.md#daily-schedule-and-recovery)
+
 Source learning and topic compilation are explicit workflows. Capturing a source
 does not make it trusted or recallable. Eligible sources queue recoverable jobs;
 L1 can propose verbatim claims and L2 can propose typed topic statements.
@@ -46,7 +51,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Current schema: **13**. Signed 2.7.0 updates accept schemas **6–13** and
+- Development schema: **14**. Signed 2.7.0 updates accept schemas **6–13** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data

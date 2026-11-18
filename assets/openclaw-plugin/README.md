@@ -78,9 +78,11 @@ The adapter keeps strict ownership boundaries:
   per batch key. It retains review items for uncertain conflicts, preserves
   evidence, and never merges differently worded claims automatically.
   Independent candidates that pass validation can commit while sources behind
-  rejected candidates remain pending. A partial commit stops the daily
-  occurrence, also after a restart. Fixed failure phases and codes never include
-  generated claims or provider error bodies.
+  rejected candidates remain pending. With schema 14, the scheduler continues
+  through fresh batches and gives rejected evidence one routine retry on a later
+  occurrence. Further attempts require related new evidence, changed grounding
+  rules, or an explicit session review. Fixed failure phases and codes never
+  include generated claims or provider error bodies.
 - Greetings and irrelevant queries inject no context packet.
 - The optional `moon_source_learn` tool explicitly processes one queued eligible
   source and submits verbatim proposals for separate operator review. It does

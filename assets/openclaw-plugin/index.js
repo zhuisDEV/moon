@@ -62,6 +62,7 @@ const MOON_FAILURE_CODES = {
     "invalid_claim_or_target",
     "content_changed",
     "invalid_citation",
+    "below_score_threshold",
     "question_only",
     "missing_selected_evidence",
     "unsupported_number",
@@ -87,6 +88,18 @@ const moonFailures = new WeakMap();
 // Rejection metadata stays local; only accepted actions and deferred source
 // IDs belong in the Rust apply payload.
 const synthesisRejections = new WeakMap();
+// Bump when built-in L2 acceptance rules change. Prompt text and configured
+// thresholds are included independently in the fingerprint.
+const L2_RULE_REVISION = 1;
+const evidenceRejectionCodes = new Set([
+  "question_only",
+  "below_score_threshold",
+  "unsupported_number",
+  "lost_qualifier",
+  "insufficient_overlap",
+  "missing_user_correction",
+  "assistant_recall",
+]);
 
 function failureDiagnostic(error, phase = "internal", code = "unknown") {
   const known = moonFailures.get(error);
@@ -2237,6 +2250,15 @@ function synthesisPrompt(prepared, settings, maxActions) {
   ].join("\n\n");
 }
 
+function synthesisRuleVersion(settings) {
+  // Hash the static prompt, including owner guidance and score thresholds,
+  // with a constant empty packet. A new date or batch must not wake evidence.
+  return createHash("sha256").update(JSON.stringify([
+    L2_RULE_REVISION,
+    synthesisPrompt({ scope: "", evidence: [], memories: [] }, settings, 16),
+  ])).digest("hex");
+}
+
 function validateSynthesisBatchShape(raw, maxActions) {
   if (
     !isObject(raw) || Object.keys(raw).some((key) => key !== "actions") ||
@@ -2245,6 +2267,17 @@ function validateSynthesisBatchShape(raw, maxActions) {
   ) {
     throw moonFailure("normalise", "invalid_batch");
   }
+}
+
+function synthesisCitationSource(citation, evidence) {
+  const original = evidence.get(citation?.session_id);
+  if (
+    !original || !nonEmptyString(citation?.quote) ||
+    unicodeLength(citation.quote) < 8 ||
+    Buffer.byteLength(citation.quote, "utf8") > 8192 ||
+    !original.content.includes(citation.quote)
+  ) throw moonFailure("normalise", "invalid_citation");
+  return original;
 }
 
 function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
@@ -2304,11 +2337,9 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
       !Number.isFinite(action.confidence) ||
       typeof action.importance !== "number" ||
       !Number.isFinite(action.importance) ||
-      action.confidence <
-        (action.action === "review" ? 0 : settings.learningMinConfidence) ||
+      action.confidence < 0 ||
       action.confidence > 1 ||
-      action.importance <
-        (action.action === "review" ? 0 : settings.learningMinImportance) ||
+      action.importance < 0 ||
       action.importance > 1 ||
       !Array.isArray(mergeIds) || mergeIds.length > 32 ||
       new Set(mergeIds).size !== mergeIds.length ||
@@ -2336,15 +2367,7 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
       throw moonFailure("normalise", "content_changed");
     }
     const citations = action.evidence.map((citation) => {
-      const original = evidence.get(citation?.session_id);
-      if (
-        !original || !nonEmptyString(citation.quote) ||
-        [...citation.quote].length < 8 ||
-        Buffer.byteLength(citation.quote, "utf8") > 8192 ||
-        !original.content.includes(citation.quote)
-      ) {
-        throw moonFailure("normalise", "invalid_citation");
-      }
+      const original = synthesisCitationSource(citation, evidence);
       const userText =
         original.content.match(/^User:\n([\s\S]*?)\n\nAssistant:\n/)?.[1] ?? "";
       if (
@@ -2366,6 +2389,10 @@ function normalizeSynthesisResult(raw, prepared, settings, maxActions) {
     if (action.action === "review") {
       return { ...payload, kind, evidence: citations };
     }
+    if (
+      action.confidence < settings.learningMinConfidence ||
+      action.importance < settings.learningMinImportance
+    ) throw moonFailure("normalise", "below_score_threshold");
     const newestAt = Math.max(
       ...citations.map((citation) =>
         evidence.get(citation.session_id).completed_at_ms
@@ -2487,36 +2514,23 @@ function normalizeSynthesisBatch(raw, prepared, settings, maxActions) {
         ).actions,
       );
     } catch (error) {
-      rejections.push(failureDiagnostic(error, "normalise", "invalid_batch"));
-      // A rejected correction's source must remain eligible for another day.
-      // If any citation cannot be mapped exactly, the model may have intended
-      // any selected source; defer all of them instead of silently losing it.
-      let mapped = isObject(candidate) && Array.isArray(candidate.evidence) &&
-        candidate.evidence.length > 0 && candidate.evidence.length <= 16;
+      const diagnostic = failureDiagnostic(error, "normalise", "invalid_batch");
+      if (!evidenceRejectionCodes.has(diagnostic.code)) throw error;
+      rejections.push(diagnostic);
+      // Normalisation may have stopped on the first quote. Check the rest
+      // before charging any source for this rejection.
       const cited = new Set();
-      if (mapped) {
-        for (const citation of candidate.evidence) {
-          const original = evidence.get(citation?.session_id);
-          if (
-            !original || !nonEmptyString(citation?.quote) ||
-            unicodeLength(citation.quote) < 8 ||
-            Buffer.byteLength(citation.quote, "utf8") > 8192 ||
-            !original.content.includes(citation.quote)
-          ) {
-            mapped = false;
-            break;
-          }
-          if (original.selected) cited.add(original.session_id);
-        }
+      for (const citation of candidate.evidence) {
+        const original = synthesisCitationSource(citation, evidence);
+        if (original.selected) cited.add(original.session_id);
       }
-      for (const session of mapped && cited.size > 0 ? cited : selected) {
+      if (cited.size === 0) {
+        throw moonFailure("normalise", "missing_selected_evidence");
+      }
+      for (const session of cited) {
         deferred.add(session);
       }
     }
-  }
-  if (raw.actions.length > 0 && actions.length === 0) {
-    const first = rejections[0];
-    throw moonFailure(first.phase, first.code);
   }
   const result = {
     actions,
@@ -2609,6 +2623,7 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
   } catch {
     throw moonFailure("config", "invalid_response");
   }
+  const ruleVersion = synthesisRuleVersion(settings);
   let batches = 0;
   for (let batch = 0; batch < (l2.max_batches_per_day ?? 8); batch += 1) {
     if (signal?.aborted) throw modelCancellationError();
@@ -2621,6 +2636,10 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
           "prepare",
           "--run-key",
           `l2:${window.key}:${batch}`,
+          "--occurrence",
+          window.key,
+          "--rule-version",
+          ruleVersion,
           "--before-ms",
           String(window.cutoffMs),
           "--limit",
@@ -2648,7 +2667,6 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
       if (!Number.isSafeInteger(deferred) || deferred < 0) {
         throw moonFailure("prepare", "invalid_response");
       }
-      if (deferred > 0) return { status: "partial", batches };
       continue;
     }
     if (
@@ -2743,9 +2761,6 @@ async function runDailySynthesis(api, base, config, nowMs, signal, onApplied) {
       );
       phase = "embedding";
       await onApplied?.(signal);
-      // Leave rejected source evidence for another day. The committed
-      // deferred count persists this boundary across service restarts.
-      if (partial) return { status: "partial", batches };
     } catch (error) {
       const diagnostic = failureDiagnostic(
         error,
@@ -3851,6 +3866,7 @@ export const __moonTest = {
   stageSettings,
   readLearningPrompt,
   synthesisPrompt,
+  synthesisRuleVersion,
   normalizeSynthesisResult,
   normalizeSynthesisBatch,
   runDailySynthesis,

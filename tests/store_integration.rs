@@ -1649,7 +1649,7 @@ fn schema_four_migrates_transactionally_to_auto_embedding_schema() {
     let store = Store::open(&database, 64).expect("migrate to current schema");
     let health = store.health().expect("health");
     assert!(health.ok);
-    assert_eq!(health.schema_version, 13);
+    assert_eq!(health.schema_version, 14);
     let columns = rusqlite::Connection::open(database)
         .expect("inspect")
         .prepare("PRAGMA table_info(embedding_queue)")

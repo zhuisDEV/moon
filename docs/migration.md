@@ -18,6 +18,10 @@ engine upgrade does not add a Moon schema migration or change the vector model.
 Keep earlier engine timings historical and validate the actual release before
 making performance claims.
 
+The development build migrates session learning to schema 14. It recovers known
+deferrals for still-pending sessions from committed learning runs. A migration
+does not generate proposals or mark those sessions processed.
+
 ## Before an existing v2 runtime is upgraded
 
 1. Verify `command -v moon` and `moon --json --version` identify the currently

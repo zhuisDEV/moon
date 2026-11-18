@@ -42,6 +42,9 @@ fn record(store: &mut Store, session: &str, scope: &str, content: &str, at: i64)
 fn request(key: &str) -> PrepareRequest {
     PrepareRequest {
         run_key: key.into(),
+        rule_version: "rules-a".into(),
+        occurrence: None,
+        review_session: None,
         limit: 32,
         max_chars: 64_000,
         lease_ms: 1_200_000,
@@ -1343,4 +1346,420 @@ fn recalled_review_lookup_uses_both_review_indexes() {
         .join("\n");
     assert!(plan.contains("learning_reviews_document"), "{plan}");
     assert!(plan.contains("learning_reviews_unassigned_key"), "{plan}");
+}
+
+fn selected_sessions(packet: &Value) -> Vec<&str> {
+    packet["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["selected"] == true)
+        .map(|item| item["session_id"].as_str().unwrap())
+        .collect()
+}
+
+fn scheduled(key: &str, occurrence: &str) -> PrepareRequest {
+    let mut req = request(key);
+    req.occurrence = Some(occurrence.into());
+    req
+}
+
+#[test]
+fn rejected_evidence_gets_one_later_retry_and_fresh_work_keeps_advancing() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(
+        &mut store,
+        "vague",
+        "global",
+        "Jasper hummingbird enclosure temperature.",
+        100,
+    );
+    let prepared = store
+        .learning_prepare(&scheduled("day1:0", "day1"))
+        .unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    let rejection = input_with_deferred(vec![], vec!["vague".into()]);
+    store.learning_apply(run, rejection.clone(), true).unwrap();
+    store.learning_apply(run, rejection.clone(), false).unwrap();
+    store.learning_apply(run, rejection, false).unwrap();
+
+    record(
+        &mut store,
+        "fresh",
+        "global",
+        "Mailbox retention lasts thirty days.",
+        200,
+    );
+    let fresh = store
+        .learning_prepare(&scheduled("day1:1", "day1"))
+        .unwrap();
+    assert_eq!(selected_sessions(&fresh), ["fresh"]);
+    let learned = store
+        .learning_apply(
+            fresh["run_id"].as_str().unwrap(),
+            input(vec![action(
+                "create",
+                "mailbox:retention",
+                "fresh",
+                "Mailbox retention lasts thirty days.",
+            )]),
+            false,
+        )
+        .unwrap();
+    assert_eq!(learned["processed_evidence"], 1);
+    assert_eq!(
+        store
+            .learning_prepare(&scheduled("day1:2", "day1"))
+            .unwrap()["status"],
+        "empty"
+    );
+
+    // A failed model call and a dry run cannot spend the evidence retry.
+    let second_day = scheduled("day2:0", "day2");
+    let failed = store.learning_prepare(&second_day).unwrap();
+    assert_eq!(selected_sessions(&failed), ["vague"]);
+    store
+        .learning_fail(failed["run_id"].as_str().unwrap())
+        .unwrap();
+    let retry = store.learning_prepare(&second_day).unwrap();
+    assert_eq!(selected_sessions(&retry), ["vague"]);
+    store
+        .learning_apply(retry["run_id"].as_str().unwrap(), input(vec![]), true)
+        .unwrap();
+    let committed = store
+        .learning_apply(retry["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+    assert_eq!(committed["processed_evidence"], 0);
+    assert_eq!(committed["deferred_session_ids"], json!(["vague"]));
+
+    // Several batches in a different scope advance in the same occurrence,
+    // even with the older source parked and small per-batch limits.
+    for index in 0..12 {
+        record(
+            &mut store,
+            &format!("fresh-{index}"),
+            "maintenance",
+            "Solar inverter passed the wiring inspection.",
+            300 + index,
+        );
+    }
+    for index in 0..4 {
+        let mut req = scheduled(&format!("later:{index}"), "day2");
+        req.limit = 3;
+        let packet = store.learning_prepare(&req).unwrap();
+        assert_eq!(packet["scope"], "maintenance");
+        assert_eq!(selected_sessions(&packet).len(), 3);
+        store
+            .learning_apply(packet["run_id"].as_str().unwrap(), input(vec![]), false)
+            .unwrap();
+    }
+
+    let path = store.path().to_owned();
+    drop(store);
+    let mut store = Store::open(&path, 64).unwrap();
+    for day in ["day3", "day4"] {
+        assert_eq!(
+            store.learning_prepare(&scheduled(day, day)).unwrap()["status"],
+            "empty"
+        );
+    }
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 1);
+    assert_eq!(store.health().unwrap().active_memories, 1);
+}
+
+#[test]
+fn only_related_new_evidence_in_scope_reopens_a_parked_record_and_it_is_shown() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let source = "The Jasper hummingbird enclosure requires amber insulation.";
+    record(&mut store, "parked", "aviary", source, 100);
+    for day in ["day1", "day2"] {
+        let packet = store.learning_prepare(&scheduled(day, day)).unwrap();
+        assert_eq!(selected_sessions(&packet), ["parked"]);
+        store
+            .learning_apply(
+                packet["run_id"].as_str().unwrap(),
+                input_with_deferred(vec![], vec!["parked".into()]),
+                false,
+            )
+            .unwrap();
+    }
+    record(&mut store, "foreign", "other", source, 110);
+    record(
+        &mut store,
+        "unrelated",
+        "aviary",
+        "Spring potatoes thrive in sandy soil.",
+        120,
+    );
+    for day in ["day3", "day4"] {
+        let packet = store.learning_prepare(&scheduled(day, day)).unwrap();
+        assert!(!selected_sessions(&packet).contains(&"parked"));
+        store
+            .learning_apply(packet["run_id"].as_str().unwrap(), input(vec![]), false)
+            .unwrap();
+    }
+    assert_eq!(
+        store.learning_prepare(&request("idle")).unwrap()["status"],
+        "empty"
+    );
+
+    // The trigger is newly ingested, even when its source timestamp predates
+    // the rejection. Both sources must be available when the model reassesses.
+    record(
+        &mut store,
+        "corroboration",
+        "aviary",
+        "The Jasper hummingbird enclosure requires amber insulation during winter.",
+        90,
+    );
+    let mut req = scheduled("related:0", "related");
+    req.limit = 1;
+    let fresh = store.learning_prepare(&req).unwrap();
+    assert_eq!(selected_sessions(&fresh), ["corroboration"]);
+    store
+        .learning_apply(fresh["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+
+    req.run_key = "related:1".into();
+    let retry = store.learning_prepare(&req).unwrap();
+    assert_eq!(selected_sessions(&retry), ["parked"]);
+    assert!(
+        retry["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["session_id"] == "corroboration" && item["selected"] == false)
+    );
+    // A new observation arrives while the model is reviewing the first trigger.
+    // The empty apply may consume only the supporting evidence it actually saw.
+    let confirmation = "The Jasper hummingbird enclosure requires amber insulation.";
+    record(&mut store, "confirmation", "aviary", confirmation, 210);
+    store
+        .learning_apply(retry["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+
+    req.run_key = "related:2".into();
+    let fresh = store.learning_prepare(&req).unwrap();
+    assert_eq!(selected_sessions(&fresh), ["confirmation"]);
+    store
+        .learning_apply(fresh["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+    req.run_key = "related:3".into();
+    let retry = store.learning_prepare(&req).unwrap();
+    assert_eq!(selected_sessions(&retry), ["parked"]);
+    assert!(
+        retry["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["session_id"] == "confirmation" && item["selected"] == false)
+    );
+    let mut fact = action("create", "aviary:insulation", "parked", source);
+    fact["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"session_id":"confirmation","quote":confirmation}));
+    let committed = store
+        .learning_apply(retry["run_id"].as_str().unwrap(), input(vec![fact]), false)
+        .unwrap();
+    assert_eq!(committed["processed_evidence"], 1);
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 0);
+    assert_eq!(store.health().unwrap().citations, 2);
+    assert_eq!(
+        store.learning_prepare(&request("next")).unwrap()["status"],
+        "empty"
+    );
+}
+
+#[test]
+fn rule_change_and_targeted_operator_review_each_allow_one_reconsideration() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    record(&mut store, "first", "global", "Atlas uses SQLite.", 100);
+    record(
+        &mut store,
+        "second",
+        "global",
+        "Ibis monitors wind speed.",
+        101,
+    );
+    let both = vec!["first".to_owned(), "second".to_owned()];
+    for day in ["one", "two"] {
+        let packet = store.learning_prepare(&scheduled(day, day)).unwrap();
+        store
+            .learning_apply(
+                packet["run_id"].as_str().unwrap(),
+                input_with_deferred(vec![], both.clone()),
+                false,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.learning_prepare(&request("unchanged")).unwrap()["status"],
+        "empty"
+    );
+    let mut rule_change = request("rule-change");
+    rule_change.rule_version = "rules-b".into();
+    let packet = store.learning_prepare(&rule_change).unwrap();
+    assert_eq!(selected_sessions(&packet), ["first", "second"]);
+    let deferred = store
+        .learning_apply(packet["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+    assert_eq!(deferred["deferred_evidence"], 2);
+    rule_change.run_key = "unchanged-again".into();
+    assert_eq!(
+        store.learning_prepare(&rule_change).unwrap()["status"],
+        "empty"
+    );
+
+    // The operator can discover an older deferral without retrieving its text.
+    let listing = moon(temp.path())
+        .args(["learning", "deferred", "--limit", "1"])
+        .assert()
+        .success();
+    let page: Value = serde_json::from_slice(&listing.get_output().stdout).unwrap();
+    assert_eq!(page["deferred"][0]["session_id"], "first");
+    assert_eq!(page["deferred"][0]["state"], "parked");
+    assert!(!page.to_string().contains("SQLite"));
+    let next = store
+        .learning_deferred(page["next_after_id"].as_i64().unwrap(), 1)
+        .unwrap();
+    assert_eq!(next["deferred"][0]["session_id"], "second");
+    assert!(next["next_after_id"].is_null());
+
+    // Exercise the operator's actual CLI entry point and fresh-process replay.
+    let output = moon(temp.path())
+        .args([
+            "learning",
+            "prepare",
+            "--run-key",
+            "review-first",
+            "--rule-version",
+            "rules-b",
+            "--review-session",
+            "first",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let review: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(selected_sessions(&review), ["first"]);
+    let accepted = store
+        .learning_apply(
+            review["run_id"].as_str().unwrap(),
+            input(vec![action(
+                "create",
+                "atlas:sqlite",
+                "first",
+                "Atlas uses SQLite.",
+            )]),
+            false,
+        )
+        .unwrap();
+    assert_eq!(accepted["processed_evidence"], 1);
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 1);
+    assert_eq!(
+        store.learning_prepare(&rule_change).unwrap()["status"],
+        "empty"
+    );
+}
+
+#[test]
+fn migration_restores_only_attributable_unprocessed_legacy_deferrals() {
+    let temp = tempfile::tempdir().unwrap();
+    // Use the actual v13 schema so this regression still exercises the upgrade
+    // when later migrations change how a newly initialised store is laid out.
+    drop(store(&temp)); // Register Moon's bundled SQLite vector extension.
+    let path = temp.path().join("v13.sqlite");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    for (index, sql) in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_canonical_body.sql"),
+        include_str!("../migrations/0003_fts_source_kind.sql"),
+        include_str!("../migrations/0004_evidence_memory.sql"),
+        include_str!("../migrations/0005_runtime_safety.sql"),
+        include_str!("../migrations/0006_auto_embedding.sql"),
+        include_str!("../migrations/0007_context_metrics.sql"),
+        include_str!("../migrations/0008_learning_lifecycle.sql"),
+        include_str!("../migrations/0009_source_storage.sql"),
+        include_str!("../migrations/0010_source_learning.sql"),
+        include_str!("../migrations/0011_topic_synthesis.sql"),
+        include_str!("../migrations/0012_retrieval_validity.sql"),
+        include_str!("../migrations/0013_job_diagnostics.sql"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        db.execute_batch(sql).unwrap();
+        db.execute(
+            "INSERT INTO schema_migrations VALUES(?1, 1)",
+            [(index + 1) as i64],
+        )
+        .unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=13;
+        INSERT INTO metadata VALUES('embedding_dimensions','64');
+        CREATE VIRTUAL TABLE chunk_vectors USING vec0(embedding float[64], source_kind text, scope text);").unwrap();
+    for session in ["twice", "once", "processed", "unseen"] {
+        db.execute(
+            "INSERT INTO documents(source_uri,source_kind,scope,content_hash,
+                modified_at_ms,indexed_at_ms,body) VALUES(?1,'evidence','archive','hash',1,1,?2)",
+            rusqlite::params![
+                format!("evidence://{session}"),
+                "Archive notes for the standing order."
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO evidence_sessions(session_id,document_id,completed_at_ms,recorded_at_ms)
+            VALUES(?1,?2,1,1)",
+            rusqlite::params![session, db.last_insert_rowid()],
+        )
+        .unwrap();
+    }
+    for (day, deferred) in [
+        (1, json!(["twice", "processed"])),
+        (2, json!(["twice", "once"])),
+    ] {
+        let key = format!("l2:2026-11-{day:02}:0");
+        db.execute("INSERT INTO learning_runs(run_id,run_key,scope,status,created_at_ms,
+            completed_at_ms,snapshot_hash,snapshot_json,outcome_json)
+            VALUES(?1,?1,'archive','committed',?2,?2,'hash','{}',?3)",
+            rusqlite::params![key, day,
+                json!({"deferred_session_ids":deferred,"deferred_evidence":deferred.as_array().unwrap().len()}).to_string()],
+        ).unwrap();
+    }
+    db.execute(
+        "INSERT INTO learning_processed_evidence(evidence_session_id, run_id, processed_at_ms)
+        SELECT id, 'l2:2026-11-02:0', 2 FROM evidence_sessions WHERE session_id='processed'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let mut store = Store::open(&path, 64).unwrap();
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 3);
+    let mut selected = Vec::new();
+    for batch in 0..3 {
+        let packet = store
+            .learning_prepare(&scheduled(&format!("day3:{batch}"), "2026-11-03"))
+            .unwrap();
+        if packet["status"] == "empty" {
+            break;
+        }
+        selected.extend(selected_sessions(&packet).into_iter().map(str::to_owned));
+        store
+            .learning_apply(packet["run_id"].as_str().unwrap(), input(vec![]), false)
+            .unwrap();
+    }
+    selected.sort();
+    assert_eq!(selected, ["once", "unseen"]);
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 2);
+    assert_eq!(
+        store.learning_prepare(&request("day4")).unwrap()["status"],
+        "empty"
+    );
+    assert!(store.health().unwrap().ok);
 }

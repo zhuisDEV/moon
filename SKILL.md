@@ -75,6 +75,15 @@ names must be available to the user's host/account. Config validation makes no
 model call and does not verify credentials. Custom prompt files supplement fixed
 guards.
 
+With schema 14, daily L2 processes fresh session evidence first. Rejected
+evidence gets one routine retry on a later occurrence. A second unsuccessful
+review leaves it pending until related new evidence arrives, the grounding rules
+change, or an operator requests review. List session IDs with
+`learning deferred`. To inspect a specific deferred session, use
+`learning prepare --review-session <session-id> --run-key <review-key> --preview`.
+After inspecting the packet, omit `--preview` to take a lease for a requested
+review. Use the same review key for retries of that operation.
+
 Model results distinguish requested model/effort from observed execution.
 `identity=verified` means the host-reported provider/model matched. Missing
 reasoning/fallback metadata remains unknown, not proof of effort or zero

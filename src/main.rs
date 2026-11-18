@@ -551,6 +551,15 @@ enum LearningCommand {
         before_ms: Option<i64>,
         #[arg(long)]
         after_ms: Option<i64>,
+        /// Group batches from one scheduled review so they share a retry boundary.
+        #[arg(long)]
+        occurrence: Option<String>,
+        /// Identify the grounding rules for this review. Omit to retain the stored version.
+        #[arg(long, default_value = "")]
+        rule_version: String,
+        /// Request a review of this previously deferred session.
+        #[arg(long)]
+        review_session: Option<String>,
         #[arg(long)]
         preview: bool,
     },
@@ -575,6 +584,13 @@ enum LearningCommand {
         limit: usize,
         #[arg(long, default_value_t = 16_000)]
         max_chars: usize,
+    },
+    /// List deferred sessions and their retry state without reading conversation text.
+    Deferred {
+        #[arg(long, default_value_t = 0)]
+        after_id: i64,
+        #[arg(long, default_value_t = 32)]
+        limit: usize,
     },
     Status,
 }
@@ -968,6 +984,7 @@ fn run(cli: Cli) -> Result<()> {
         &cli.command,
         Command::Learning(LearningArgs {
             command: LearningCommand::Status
+                | LearningCommand::Deferred { .. }
                 | LearningCommand::Related { .. }
                 | LearningCommand::Prepare { preview: true, .. }
         })
@@ -1094,6 +1111,9 @@ fn run(cli: Cli) -> Result<()> {
                     max_attempts,
                     before_ms,
                     after_ms,
+                    occurrence,
+                    rule_version,
+                    review_session,
                     preview,
                 } => store.learning_prepare(&moon::learning::PrepareRequest {
                     run_key,
@@ -1103,6 +1123,9 @@ fn run(cli: Cli) -> Result<()> {
                     max_attempts,
                     before_ms,
                     after_ms,
+                    occurrence,
+                    rule_version,
+                    review_session,
                     preview,
                 })?,
                 LearningCommand::Apply {
@@ -1126,6 +1149,9 @@ fn run(cli: Cli) -> Result<()> {
                     limit,
                     max_chars,
                 } => store.learning_related(&scope, &query, limit, max_chars)?,
+                LearningCommand::Deferred { after_id, limit } => {
+                    store.learning_deferred(after_id, limit)?
+                }
                 LearningCommand::Status => store.learning_status()?,
             };
             emit(&outcome, cli.json)

@@ -127,6 +127,11 @@ impl Store {
                 redacted_metadata.value,
             ],
         )?;
+        crate::learning::match_new_retry_support(
+            &transaction,
+            transaction.last_insert_rowid(),
+            &input.scope,
+        )?;
         transaction.commit()?;
 
         Ok(EvidenceOutcome {
@@ -1302,7 +1307,7 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2fa1f)
 }
 
-fn reference_terms(value: &str) -> Vec<String> {
+pub(crate) fn reference_terms(value: &str) -> Vec<String> {
     // Generic question/request words are neither subjects nor evidence. CJK
     // bigrams permit overlap inside an unsegmented Chinese question; no fuzzy
     // edit matching is used for these two-character terms.
@@ -1778,7 +1783,7 @@ fn validate_canonical_key(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_session_id(value: &str) -> Result<()> {
+pub(crate) fn validate_session_id(value: &str) -> Result<()> {
     validate_identifier("session_id", value, 256)?;
     if !value.chars().all(|character| {
         character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '/' | '-' | '@')

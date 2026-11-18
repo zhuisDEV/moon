@@ -277,13 +277,16 @@ one date key. Restart catch-up includes older pending evidence without creating
 a separate model job for every missed day. Each date's batches share one fixed
 evidence cutoff.
 
-`learning prepare` leases a bounded snapshot of the oldest unprocessed evidence
-in one scope, related active memories, and their original source evidence. It
-reports partial comparison context explicitly. The default daily budget is eight
-batches of at most 32 selected records and 64,000 packet characters, with at
-most 16 proposed actions per batch. A batch key permits three failed attempts
-before that occurrence stops; each attempt can use one primary and one enabled
-fallback. Lease expiry and committed run keys survive restarts.
+In the development build, `learning prepare` selects fresh evidence before
+eligible retries. Each snapshot stays within one scope and includes related
+active memories and their original source evidence. A second unsuccessful review
+parks the evidence until related new evidence, changed grounding rules, or an
+explicit session review makes it eligible again. It reports partial comparison
+context explicitly. The default daily budget is eight batches of at most 32
+selected records and 64,000 packet characters, with at most 16 proposed actions
+per batch. A batch key permits three failed attempts before that occurrence
+stops; each attempt can use one primary and one enabled fallback. Lease expiry
+and committed run keys survive restarts.
 
 L2 can create, confirm, supersede, merge, or request review. Every action needs
 an exact citation from selected evidence, and new claims must be grounded in the

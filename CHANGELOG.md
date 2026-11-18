@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Give rejected session evidence one routine L2 retry. Schema 14 retains
+  unresolved evidence for related new information, changes to the grounding
+  rules, or an explicit session review. Fresh evidence continues through the
+  daily batch budget.
+
 ## 2.7.0 - 2026-11-17
 
 - Refresh vulnerable locked dependencies before publication: bundled SQLite is
