@@ -105,8 +105,11 @@ fn copy_migration_quarantines_history_and_recovers_only_a_reviewed_user_quote() 
     store.backup_to(&copy).unwrap();
     drop(store);
     let db = Connection::open(&copy).unwrap();
-    db.execute_batch(include_str!("fixtures/pre_audience_schema.sql"))
-        .unwrap();
+    db.execute_batch(concat!(
+        include_str!("fixtures/pre_speaker_schema.sql"),
+        include_str!("fixtures/pre_audience_schema.sql")
+    ))
+    .unwrap();
     // The old adapter saved these host markers before verified admissions existed.
     db.execute(
         "UPDATE evidence_sessions SET metadata_json=?1 WHERE session_id='original-session'",

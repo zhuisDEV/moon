@@ -1270,10 +1270,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Record(args) => {
             let content = read_explicit_content(args.content, args.file.as_deref())?;
             let scope = if let Some(key) = args.admission_key.as_deref() {
-                let Some(owners) = store.turn_admission(key)?.owners else {
-                    anyhow::bail!("admission lacks verified owners");
-                };
-                store.register_private_audience(&owners)?
+                store.admitted_memory_scope(key, &args.session_id)?
             } else if let Some(json) = args.audience_json.as_deref() {
                 store.register_private_audience(&parse_audience(json)?)?
             } else {
@@ -1303,6 +1300,9 @@ fn run(cli: Cli) -> Result<()> {
             )?;
             let mut response = serde_json::to_value(outcome)?;
             response["scope"] = scope.into();
+            if let Some(key) = args.admission_key.as_deref() {
+                response["verified_sender"] = store.turn_admission(key)?.sender.into();
+            }
             emit(&response, cli.json)
         }
         Command::Distill(args) => {

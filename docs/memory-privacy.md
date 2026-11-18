@@ -1,6 +1,6 @@
 # Public and private memory
 
-The development binary uses schema 18. Run it with its matching adapter and a
+The development binary uses schema 19. Run it with its matching adapter and a
 separate Moon home for a rehearsal. The signed 2.7.0 release uses schema 13.
 
 ## What a conversation can recall
@@ -55,6 +55,12 @@ separate records. Neither can enter the context of their shared room. A
 statement they both own from a shared conversation is eligible. The same rule
 applies independently to each question and reply in chat history. A summary may
 use only the messages available to that destination.
+
+Within the same room, two people can state different preferences. Moon keeps
+each speaker’s learned statements separate and identifies the verified source
+when recalling them. That identity tells Lilac who said something. If a person
+describes somebody else, the wording of the statement determines whom it is
+about. Historical evidence without a verified speaker retains that uncertainty.
 
 Moon keeps accepted human input as learning evidence. A confirmed Lilac reply
 can be kept as private conversation history under Lilac's role. Looking up that

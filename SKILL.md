@@ -8,7 +8,7 @@ description: Inspect and operate Moon's SQLite memory and OpenClaw integration. 
 # Moon
 
 Moon uses one Rust binary and one canonical SQLite database. Default home is
-`~/.moon`; development schema is **18** (published 2.7.0 uses 13). OpenClaw owns
+`~/.moon`; development schema is **19** (published 2.7.0 uses 13). OpenClaw owns
 model execution, provider credentials and transcript compaction. Moon creates no
 second provider login.
 

@@ -41,7 +41,16 @@ fn allocate_audience(
     readers: &str,
     base: String,
 ) -> Result<String> {
-    let mut scope = base.clone();
+    let scope = unused_scope(tx, &base)?;
+    tx.execute(
+        "INSERT INTO privacy_audiences(scope,kind,readers_json) VALUES(?1,?2,?3)",
+        params![scope, kind, readers],
+    )?;
+    Ok(scope)
+}
+
+fn unused_scope(tx: &Transaction<'_>, base: &str) -> Result<String> {
+    let mut scope = base.to_owned();
     loop {
         let occupied: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM documents WHERE scope=?1)
@@ -57,10 +66,6 @@ fn allocate_audience(
         }
         scope = format!("{base}:{}", random_nonce(tx)?);
     }
-    tx.execute(
-        "INSERT INTO privacy_audiences(scope,kind,readers_json) VALUES(?1,?2,?3)",
-        params![scope, kind, readers],
-    )?;
     Ok(scope)
 }
 
@@ -135,12 +140,52 @@ impl Store {
         Ok(scope)
     }
 
+    /// Resolve the write namespace from the immutable admission. On an exact
+    /// retry preserve the original evidence scope, including pre-19 records.
+    pub fn admitted_memory_scope(&mut self, key: &str, session: &str) -> Result<String> {
+        let admission = self.turn_admission(key)?;
+        let speaker = admission
+            .sender
+            .context("admission lacks a verified speaker")?;
+        let owners = canonical_readers(
+            &admission
+                .owners
+                .context("admission lacks verified owners")?,
+        )?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<String> = tx.query_row(
+            "SELECT d.scope FROM evidence_admissions b JOIN evidence_sessions e ON e.id=b.evidence_id
+             JOIN documents d ON d.id=e.document_id WHERE b.admission_key=?1 AND e.session_id=?2",
+            params![key,session], |row| row.get(0),
+        ).optional()?;
+        let audience = private_audience(&tx, &owners)?;
+        let scope = match existing {
+            Some(scope) => scope,
+            None => {
+                if let Some(scope) = tx.query_row(
+                    "SELECT scope FROM speaker_memory_scopes WHERE audience_scope=?1 AND sender=?2",
+                    params![audience,speaker], |row| row.get::<_,String>(0),
+                ).optional()? { scope } else {
+                    let digest = sha256_hex(&serde_json::to_string(&(&audience, &speaker))?);
+                    let scope = unused_scope(&tx, &format!("private:speaker:{digest}"))?;
+                    tx.execute("INSERT INTO speaker_memory_scopes(scope,audience_scope,sender) VALUES(?1,?2,?3)",
+                        params![scope,audience,speaker])?;
+                    scope
+                }
+            }
+        };
+        tx.commit()?;
+        Ok(scope)
+    }
+
     /// A room may recall a memory only if every current reader was in the
     /// original audience. An empty/unknown room never passes by vacuous truth.
     pub fn readable_memory_scopes(&self, readers: &[String]) -> Result<Vec<String>> {
         let readers = canonical_readers(readers)?;
         let mut stmt = self.connection.prepare(
-            "SELECT scope FROM privacy_audiences a WHERE a.kind='public'
+            "SELECT scope FROM memory_audiences a WHERE a.kind='public'
                OR (?1<>'[]' AND NOT EXISTS (
                    SELECT value FROM json_each(?1) EXCEPT SELECT value FROM json_each(a.readers_json)
                )) ORDER BY a.kind='public' DESC, scope"

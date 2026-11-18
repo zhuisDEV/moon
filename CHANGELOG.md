@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve the verified source speaker when recalling private conversation
+  memories. Schema 19 separates learning by speaker within each owner set.
+
 - Use room access to record private owners separately for incoming questions and
   delivered replies. Search private memories that every destination reader owns;
   preserve existing records when migrating to schema 18.

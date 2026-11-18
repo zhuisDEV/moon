@@ -31,6 +31,8 @@ pub struct PrepareRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_sender: Option<String>,
     pub session_id: String,
     pub document_id: i64,
     pub completed_at_ms: i64,
@@ -246,6 +248,7 @@ impl Store {
                     AND (?1 IS NULL OR support.completed_at_ms<=?1)
                 LEFT JOIN documents sd ON sd.id=support.document_id AND sd.active=1 AND sd.scope=d.scope
                 WHERE p.evidence_session_id IS NULL AND d.active=1
+                  AND NOT EXISTS(SELECT 1 FROM historic_speaker_scopes h WHERE h.scope=d.scope)
                   AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
                   AND (?1 IS NULL OR e.completed_at_ms<=?1) AND (?2 IS NULL OR e.completed_at_ms>=?2)
                   AND (?3 IS NULL OR (r.attempts IS NOT NULL AND e.session_id=?3))
@@ -643,11 +646,11 @@ impl Store {
             "status":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?,"completed_at_ms":row.get::<_,Option<i64>>(5)?,"lease_until_ms":row.get::<_,Option<i64>>(6)?,
             "deferred_evidence":row.get::<_,i64>(7)?
         })))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id)", [], |row| row.get(0))?;
+        let pending: i64 = self.connection.query_row("SELECT count(*) FROM evidence_sessions e JOIN documents d ON d.id=e.document_id LEFT JOIN learning_processed_evidence p ON p.evidence_session_id=e.id WHERE p.evidence_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id) AND NOT EXISTS(SELECT 1 FROM historic_speaker_scopes h WHERE h.scope=d.scope)", [], |row| row.get(0))?;
         let (retry_pending, parked): (i64, i64) = self.connection.query_row(
             "SELECT count(*) FILTER (WHERE attempts=1),count(*) FILTER (WHERE attempts=2)
-             FROM learning_evidence_retries r JOIN evidence_sessions e ON e.id=r.evidence_session_id
-             WHERE NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id)",
+             FROM learning_evidence_retries r JOIN evidence_sessions e ON e.id=r.evidence_session_id JOIN documents d ON d.id=e.document_id
+             WHERE NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=e.document_id) AND NOT EXISTS(SELECT 1 FROM historic_speaker_scopes h WHERE h.scope=d.scope)",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -781,8 +784,9 @@ fn input_chars(evidence: &[LearningEvidence], memories: &[LearningMemory]) -> Re
 
 fn read_learning_evidence(connection: &Connection, session: &str) -> Result<LearningEvidence> {
     Ok(connection.query_row(
-        "SELECT e.session_id,e.document_id,e.completed_at_ms,d.body FROM evidence_sessions e JOIN documents d ON d.id=e.document_id WHERE e.session_id=?1",
-        [session], |row| Ok(LearningEvidence {session_id:row.get(0)?, document_id:row.get(1)?, completed_at_ms:row.get(2)?, content:row.get(3)?,selected:false}),
+        "SELECT e.session_id,e.document_id,e.completed_at_ms,d.body,t.sender FROM evidence_sessions e JOIN documents d ON d.id=e.document_id
+         LEFT JOIN evidence_admissions b ON b.evidence_id=e.id LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key WHERE e.session_id=?1",
+        [session], |row| Ok(LearningEvidence {verified_sender:row.get(4)?,session_id:row.get(0)?, document_id:row.get(1)?, completed_at_ms:row.get(2)?, content:row.get(3)?,selected:false}),
     )?)
 }
 
@@ -797,7 +801,7 @@ fn related_memories(
                 EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
          FROM memory_items m JOIN documents d ON d.id=m.document_id WHERE d.scope=?1 AND d.active=1
            AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
-           AND (NOT EXISTS (SELECT 1 FROM privacy_audiences WHERE scope=?1)
+           AND (NOT EXISTS (SELECT 1 FROM memory_audiences WHERE scope=?1)
                 OR d.id IN (SELECT document_id FROM audience_recallable_memories WHERE scope=?1))
            AND m.superseded_by IS NULL AND m.canonical_key IS NOT NULL AND length(d.body)<=32000
          ORDER BY m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT 512",

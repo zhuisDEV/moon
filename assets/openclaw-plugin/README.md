@@ -4,7 +4,7 @@ This adapter registers the `moon` context engine, supplies one bounded SQLite
 context packet for the current user message, and records completed turns for
 selective durable-memory learning.
 
-This development adapter requires the matching schema-18 binary and skill. The
+This development adapter requires the matching schema-19 binary and skill. The
 published 2.7.0 adapter uses schema 13. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an

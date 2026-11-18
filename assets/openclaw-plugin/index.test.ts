@@ -444,6 +444,11 @@ Deno.test("adapter records one completed turn and distills a validated durable m
       agent: {
         runEmbeddedAgent(params: Record<string, unknown>) {
           modelCalls += 1;
+          assert(
+            String(params.prompt).includes(
+              `Verified source speaker: ${TEST_READERS[0]}`,
+            ),
+          );
           assertEquals(params.provider, "vllm");
           assertEquals(params.model, "qwen3.8-27b-uncensored-fp8");
           assertEquals(params.thinkLevel, "high");
@@ -2989,6 +2994,8 @@ Deno.test("L2 prompt states the configured score and existing validation bounds"
   for (
     const bound of [
       "at most 7 actions",
+      "verified_sender on evidence identifies who spoke",
+      "A named third party or a quoted speaker",
       "confidence must be a finite number from 0.93 through 1",
       "importance from 0.67 through 1",
       "Review permits both scores from 0 through 1",
@@ -3686,23 +3693,32 @@ Deno.test({
         const memories = prepared.memories as Array<Record<string, unknown>>;
         const evidence = prepared.evidence as Array<Record<string, unknown>>;
         const target = memories.find((memory) => memory.canonical_key === key);
+        const primary = evidence[0].verified_sender === TEST_READERS[0];
+        assert(
+          evidence.every((item) =>
+            item.verified_sender === evidence[0].verified_sender
+          ),
+        );
+        const quote = primary ? newQuote : oldQuote;
         const source = evidence.find((item) =>
-          String(item.content).includes(newQuote)
+          String(item.content).includes(quote)
         );
         assert(target && source);
         return {
           payloads: [{
             text: JSON.stringify({
               actions: [{
-                action: "supersede",
+                action: primary ? "supersede" : "confirm",
                 canonical_key: key,
                 kind: "fact",
                 title: "Canary colour",
-                content: "The release colour for Project Canary is violet.",
+                content: primary
+                  ? "The release colour for Project Canary is violet."
+                  : target.content,
                 importance: 0.9,
                 confidence: 0.99,
                 target_document_id: target.document_id,
-                evidence: [{ session_id: source.session_id, quote: newQuote }],
+                evidence: [{ session_id: source.session_id, quote }],
               }],
             }),
           }],
@@ -3714,7 +3730,7 @@ Deno.test({
       return {
         payloads: [{
           text: JSON.stringify(
-            l1Runs === 1
+            l1Runs !== 2
               ? {
                 eligible: true,
                 memories: [{
@@ -3740,7 +3756,7 @@ Deno.test({
     };
     const engine = __moonTest.createMoonContextEngine(api);
     const group = [TEST_READERS[0], "discord:222222222222222222"];
-    for (const [index, quote] of [oldQuote, newQuote].entries()) {
+    for (const [index, quote] of [oldQuote, newQuote, oldQuote].entries()) {
       const time = Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000;
       const params = acceptedParams([{
         role: "user",
@@ -3764,7 +3780,7 @@ Deno.test({
           params.admission.idempotencyKey,
         )!,
         "--sender",
-        group[index],
+        index === 2 ? group[1] : group[0],
         "--audience-json",
         JSON.stringify(group),
         "--owners-json",
@@ -3773,17 +3789,17 @@ Deno.test({
       assertEquals(await engine.commitTurn(params), { status: "committed" });
     }
     const before = await cli(["health"]);
-    assertEquals(before.evidence_sessions, 2);
-    assertEquals(before.active_memories, 1);
-    // Both accepted messages have the same private audience. The operator can
+    assertEquals(before.evidence_sessions, 3);
+    assertEquals(before.active_memories, 2);
+    // All three messages have the same readers. The operator can
     // identify each speaker across restarts without exposing their wording.
     for (const [index, sender] of group.entries()) {
       const rows = await cli(["privacy", "by-sender", "--sender", sender]);
-      assertEquals(rows.length, 1);
+      assertEquals(rows.length, index === 0 ? 2 : 1);
       assertEquals(rows[0].reader_count, 2);
       assertEquals(
         rows[0].completed_at_ms,
-        Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000 + 1000,
+        Date.parse("2026-09-10T00:00:00Z") + index * 2 * 86_400_000 + 1000,
       );
       assert(!JSON.stringify(rows).includes("Project Canary"));
     }
@@ -3798,7 +3814,7 @@ Deno.test({
         config,
         now,
       )).batches,
-      1,
+      2,
     );
     await __moonTest.runDailySynthesis(
       api,
@@ -3806,10 +3822,10 @@ Deno.test({
       config,
       now,
     );
-    assertEquals(l1Runs, 2);
-    assertEquals(l2Runs, 1);
+    assertEquals(l1Runs, 3);
+    assertEquals(l2Runs, 2);
     const status = await cli(["learning", "status"]);
-    assertEquals(status.processed_evidence, 2);
+    assertEquals(status.processed_evidence, 3);
     const packet = await cli([
       "context",
       "--query",
@@ -3819,15 +3835,26 @@ Deno.test({
       "--mode",
       "lexical",
     ]);
-    assertEquals(packet.memories.length, 1);
-    assert(packet.memories[0].content.includes("violet"));
-    assert(!packet.memories[0].content.includes("blue"));
+    assertEquals(packet.memories.length, 2);
+    const bySpeaker = new Map(
+      packet.memories.map((
+        item: { source_speakers: string[]; content: string },
+      ) => [item.source_speakers[0], item.content]),
+    );
+    assertEquals(
+      bySpeaker.get(group[0]),
+      "The release colour for Project Canary is violet.",
+    );
+    assertEquals(
+      bySpeaker.get(group[1]),
+      "The release colour for Project Canary is blue.",
+    );
     await cli(["embed", "--provider", "hash"]);
     const health = await cli(["health"]);
     assertEquals(health.ok, true);
-    assertEquals(health.evidence_sessions, 2);
-    assertEquals(health.active_memories, 1);
-    assertEquals(health.active_memory_vectors, 1);
+    assertEquals(health.evidence_sessions, 3);
+    assertEquals(health.active_memories, 2);
+    assertEquals(health.active_memory_vectors, 2);
     assertEquals(health.evidence_vectors, 0);
     engine.dispose();
   },

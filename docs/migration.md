@@ -77,6 +77,15 @@ delivery snapshot for private history recall. The migration leaves the owner
 fields of old replies unknown. Future room permissions cannot supply that
 missing historical evidence.
 
+## Schema 19 speaker attribution
+
+New private learning distinguishes speakers who share the same room and the same
+audience. A correction by one speaker can update that speaker’s earlier
+statement. Audience checks still apply to every reader before recall. The
+migration preserves historical records and does not infer a missing speaker from
+a quotation, a room’s current membership, or the operator’s legacy ownership
+assignment.
+
 ## SQLite migrations
 
 Moon applies numbered migrations transactionally. Moon 2.7.0 uses schema v13.

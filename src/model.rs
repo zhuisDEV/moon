@@ -198,6 +198,8 @@ pub struct ContextRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextCitation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_sender: Option<String>,
     pub session_id: String,
     pub source_uri: String,
     pub start_byte: usize,
@@ -209,6 +211,10 @@ pub struct ContextCitation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextMemory {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_speakers: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub source_speaker_unverified: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub owner_attested_legacy: bool,
     pub document_id: i64,
@@ -478,13 +484,21 @@ impl ContextPacket {
 fn render_context_memory(memory: &ContextMemory) -> String {
     let heading = memory.title.as_deref().unwrap_or("Untitled memory");
     let key = memory.canonical_key.as_deref().unwrap_or("unkeyed");
+    let mut attribution = String::new();
+    if !memory.source_speakers.is_empty() {
+        attribution.push_str(&format!("\n- verified source speakers (people who said the evidence, not necessarily its subjects): {}", serde_json::to_string(&memory.source_speakers).expect("serialise speaker identifiers")));
+    }
+    if memory.source_speaker_unverified || memory.owner_attested_legacy {
+        attribution.push_str("\n- source speaker unverified for some or all evidence");
+    }
     let mut output = format!(
-        "### Memory {}\n\n- title: {}\n- key: {}\n- kind: {}\n- scope: {}\n- confidence: {:.3}\n- observed_at_ms: {}\n- last_confirmed_at_ms: {}\n- valid_until_ms: {}\n\nUntrusted recalled content:\n\n{}",
+        "### Memory {}\n\n- title: {}\n- key: {}\n- kind: {}\n- scope: {}{}\n- confidence: {:.3}\n- observed_at_ms: {}\n- last_confirmed_at_ms: {}\n- valid_until_ms: {}\n\nUntrusted recalled content:\n\n{}",
         memory.document_id,
         inline_json(heading),
         inline_json(key),
         inline_json(&memory.memory_kind),
         inline_json(&memory.scope),
+        attribution,
         memory.confidence,
         memory
             .observed_at_ms
@@ -509,8 +523,13 @@ fn render_context_memory(memory: &ContextMemory) -> String {
         output.push_str("\nEvidence metadata and untrusted exact quotes:\n\n");
         for citation in &memory.citations {
             output.push_str(&format!(
-                "- session: {}; lines: {}-{}; source: {}; bytes: {}-{}\n\n{}",
+                "- session: {}{}; lines: {}-{}; source: {}; bytes: {}-{}\n\n{}",
                 inline_json(&citation.session_id),
+                citation
+                    .verified_sender
+                    .as_ref()
+                    .map(|sender| format!("; verified speaker: {}", inline_json(sender)))
+                    .unwrap_or_default(),
                 citation.start_line,
                 citation.end_line,
                 inline_json(&citation.source_uri),
@@ -731,6 +750,8 @@ mod tests {
             used_chars: 0,
             truncated: false,
             memories: vec![ContextMemory {
+                source_speakers: Vec::new(),
+                source_speaker_unverified: false,
                 owner_attested_legacy: false,
                 document_id: 1,
                 canonical_key: Some("audit:prompt".to_string()),

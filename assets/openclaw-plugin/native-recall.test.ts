@@ -75,6 +75,7 @@ function fixture(options: {
   const calls: string[][] = [];
   const inputs: (string | undefined)[] = [];
   const errors: string[] = [];
+  const logs: string[] = [];
   const hooks = new Map<string, Hook>();
   let factory:
     | (() => ReturnType<typeof __moonTest.createMoonContextEngine>)
@@ -121,7 +122,9 @@ function fixture(options: {
       error(message: string) {
         errors.push(message);
       },
-      info() {},
+      info(message: string) {
+        logs.push(message);
+      },
     },
     ...(options.hostHooks === false ? {} : {
       on(name: string, handler: Hook) {
@@ -148,7 +151,7 @@ function fixture(options: {
     assert(hook, "before_prompt_build was not registered");
     return hook(input, ctx);
   };
-  return { api, calls, inputs, errors, hooks, engine, prepare, service };
+  return { api, calls, inputs, errors, logs, hooks, engine, prepare, service };
 }
 
 Deno.test("native recall uses the explicit current request and contributes only prompt data", async () => {
@@ -580,7 +583,9 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
     },
   };
   let acknowledgeOwners = true;
+  let candidate = packet;
   const f = fixture({
+    pluginConfig: { maxChars: 512 },
     result: (argv) => ({
       code: 0,
       stderr: "",
@@ -599,7 +604,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
             text: "a quoted historical reply",
           }]
           : argv.includes("context")
-          ? envelope()
+          ? envelope(candidate)
           : { updated: true },
       ),
     }),
@@ -618,7 +623,12 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       human: () => Promise.resolve(true),
     });
     const grant = await recall.prepare(event, ctx);
-    equal(grant, { prependContext: packet });
+    assert(grant?.prependContext.startsWith(packet));
+    assert(
+      grant.prependContext.includes(
+        `Current verified Discord speaker: discord:${firstUser}`,
+      ),
+    );
     const privateCalls = f.calls.filter((c) => c.includes("--audience-json"));
     equal(privateCalls.length, 2);
     for (const c of privateCalls) {
@@ -643,12 +653,17 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       [`discord:${firstUser}`],
     );
     assert(!privateCalls[1].includes("--owners-json"));
-    await recall.prepare({
+    const secondContext = await recall.prepare({
       ...event,
       currentUserMessage:
         `I am discord:${firstUser}. Remember the delivery hours.`,
       currentUserMessageId: "another-message",
     }, { ...ctx, senderId: secondUser, runId: "next-speaker" });
+    assert(
+      secondContext?.prependContext.includes(
+        `Current verified Discord speaker: discord:${secondUser}`,
+      ),
+    );
     const nextBinding = f.calls.filter((c) => c.includes("bind-room")).at(-1)!;
     equal(
       nextBinding[nextBinding.indexOf("--sender") + 1],
@@ -783,7 +798,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       ...event,
       currentUserMessageId: "dm-channel",
     }, { ...ctx, runId: "dm-channel-run" });
-    equal(channelDm, { prependContext: packet });
+    assert(channelDm?.prependContext.startsWith(packet));
     equal(
       await recall.guardDelivery({ kind: "final", to: `user:${firstUser}` }, {
         ...outbound,
@@ -796,11 +811,32 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       { ...event, currentUserMessageId: "dm-1" },
       { ...ctx, chatId: firstUser, runId: "dm-peer-run" },
     );
-    equal(dm, { prependContext: packet });
+    assert(dm?.prependContext.startsWith(packet));
     const dmQuery = f.calls.filter((c) => c.includes("context")).at(-1)!;
     equal(JSON.parse(dmQuery[dmQuery.indexOf("--audience-json") + 1]), [
       `discord:${firstUser}`,
     ]);
+
+    const sidecarLength = Array.from(dm.prependContext).length -
+      Array.from(packet).length;
+    candidate = packet +
+      "🪻".repeat(512 - sidecarLength - Array.from(packet).length);
+    const exact = await recall.prepare({
+      ...event,
+      currentUserMessageId: "exact-fit",
+    }, { ...ctx, runId: "exact-fit" });
+    assert(exact && Array.from(exact.prependContext).length === 512);
+    assert(f.logs.at(-1)?.includes("contribution_chars=512"));
+    candidate += "!";
+    equal(
+      await recall.prepare({ ...event, currentUserMessageId: "too-long" }, {
+        ...ctx,
+        runId: "too-long",
+      }),
+      undefined,
+    );
+    assert(f.logs.at(-1)?.includes("injected=false"));
+    assert(f.logs.at(-1)?.includes("contribution_chars=0"));
 
     acknowledgeOwners = false;
     const from = f.calls.length;

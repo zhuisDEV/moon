@@ -25,11 +25,28 @@ impl Store {
     /// attach a new author to an existing record or record two turns for one admission.
     pub fn record_turn_evidence(
         &mut self,
-        input: EvidenceInput,
+        mut input: EvidenceInput,
         admission: Option<&str>,
     ) -> Result<EvidenceOutcome> {
         if let Some(key) = admission {
-            crate::publication::validate_admission_key(key)?;
+            let scope = self.admitted_memory_scope(key, &input.session_id)?;
+            if input.scope != scope {
+                // Older direct callers supply the owner-set scope. It must match
+                // the verified ACL before storing into the speaker's namespace.
+                let parent: Option<String> = self
+                    .connection
+                    .query_row(
+                        "SELECT audience_scope FROM speaker_memory_scopes WHERE scope=?1",
+                        [&scope],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                anyhow::ensure!(
+                    parent.as_deref() == Some(&input.scope),
+                    "evidence scope differs from admission owners"
+                );
+                input.scope = scope;
+            }
         }
         validate_session_id(&input.session_id)?;
         validate_identifier("scope", &input.scope, 2_048)?;
@@ -61,6 +78,16 @@ impl Store {
         let content_hash = sha256_hex(&redacted_content.value);
 
         let session_hash = sha256_hex(&input.session_id);
+        if admission.is_none() {
+            anyhow::ensure!(
+                !self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM speaker_memory_scopes WHERE scope=?1)",
+                    [&input.scope],
+                    |r| r.get::<_, bool>(0),
+                )?,
+                "speaker evidence requires a verified admission"
+            );
+        }
         let prepared = prepare_ingest(IngestDocument {
             source_uri: format!("evidence://session/{}", &session_hash[..24]),
             source_kind: "evidence".to_string(),
@@ -210,7 +237,7 @@ impl Store {
         // Preserve the legacy operator context behaviour for unregistered scopes.
         if let Some(scope) = &request.scope
             && self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM privacy_audiences WHERE scope=?1)",
+                "SELECT EXISTS(SELECT 1 FROM memory_audiences WHERE scope=?1)",
                 [scope],
                 |row| row.get::<_, bool>(0),
             )?
@@ -799,9 +826,11 @@ impl Store {
                         m.importance, m.confidence, m.pinned, m.observed_at_ms,
                         m.last_confirmed_at_ms, m.valid_until_ms,
                         EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id
-                            OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key)), o.scope IS NOT NULL
+                            OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key)), o.scope IS NOT NULL, s.sender,
+                     EXISTS(SELECT 1 FROM privacy_audiences a WHERE a.scope=d.scope AND a.kind='private')
                  FROM memory_items m
                  JOIN documents d ON d.id = m.document_id
+                 LEFT JOIN speaker_memory_scopes s ON s.scope=d.scope
                  LEFT JOIN owned_legacy_memories o ON ?3 AND o.document_id=d.id
                  WHERE d.id = ?1
                    AND d.active = 1
@@ -810,6 +839,8 @@ impl Store {
                 params![document_id, now_ms(), audience_filtered],
                 |row| {
                     Ok(ContextMemory {
+                        source_speakers: row.get::<_,Option<String>>(14)?.into_iter().collect(),
+                        source_speaker_unverified: row.get::<_,bool>(15)?,
                         document_id: row.get(0)?,
                         canonical_key: row.get(1)?,
                         memory_kind: row.get(2)?,
@@ -833,6 +864,27 @@ impl Store {
         let Some(mut memory) = memory else {
             return Ok(None);
         };
+        if memory.source_speaker_unverified && !memory.owner_attested_legacy {
+            // A parent scope has no single writer. Inspect *all* original citations,
+            // independently of the packet's quote budget. Missing evidence cannot
+            // turn one known contributor into an assertion of sole authorship.
+            let mut statement = self.connection.prepare(
+                "SELECT DISTINCT t.sender FROM memory_citations c
+                 JOIN evidence_sessions e ON e.id=c.evidence_session_id
+                 JOIN documents ed ON ed.id=c.evidence_document_id AND ed.id=e.document_id
+                 LEFT JOIN evidence_admissions b ON b.evidence_id=e.id
+                 LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key
+                 WHERE c.memory_document_id=?1 AND ed.scope=?2 ORDER BY t.sender",
+            )?;
+            let contributors = statement
+                .query_map(params![document_id, memory.scope], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            memory.source_speaker_unverified =
+                contributors.is_empty() || contributors.iter().any(Option::is_none);
+            memory.source_speakers = contributors.into_iter().flatten().collect();
+        }
         if !memory.owner_attested_legacy {
             memory.citations = self.load_context_citations(document_id, evidence_limit)?;
         }
@@ -849,11 +901,13 @@ impl Store {
         }
         let mut statement = self.connection.prepare(
             "SELECT e.session_id, d.source_uri, c.start_byte, c.end_byte,
-                    c.start_line, c.end_line, c.quote
+                    c.start_line, c.end_line, c.quote, t.sender
              FROM memory_citations c
              JOIN evidence_sessions e ON e.id = c.evidence_session_id
              JOIN documents d ON d.id = c.evidence_document_id
              JOIN documents memory ON memory.id = c.memory_document_id
+             LEFT JOIN evidence_admissions b ON b.evidence_id=e.id
+             LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key
              WHERE c.memory_document_id = ?1 AND e.document_id = d.id AND d.scope = memory.scope
                AND NOT EXISTS (SELECT 1 FROM memory_publications p WHERE p.document_id = memory.id)
              ORDER BY c.created_at_ms DESC, c.id DESC
@@ -862,6 +916,7 @@ impl Store {
         Ok(statement
             .query_map(params![document_id, limit as i64], |row| {
                 Ok(ContextCitation {
+                    verified_sender: row.get(7)?,
                     session_id: row.get(0)?,
                     source_uri: row.get(1)?,
                     start_byte: row.get::<_, i64>(2)? as usize,
@@ -879,6 +934,14 @@ pub(crate) fn distill_in_transaction(
     transaction: &Transaction<'_>,
     mut input: DistillInput,
 ) -> Result<DistillOutcome> {
+    anyhow::ensure!(
+        !transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM historic_speaker_scopes WHERE scope=?1)",
+            [&input.scope],
+            |r| r.get::<_, bool>(0),
+        )?,
+        "historical shared learning scope is read-only"
+    );
     validate_canonical_key(&input.canonical_key)?;
     validate_identifier("memory_kind", &input.memory_kind, 128)?;
     validate_identifier("scope", &input.scope, 2_048)?;
@@ -2015,6 +2078,7 @@ mod tests {
     #[test]
     fn truncated_citation_keeps_exact_bytes_and_lines() {
         let mut citation = ContextCitation {
+            verified_sender: None,
             session_id: "session".to_string(),
             source_uri: "evidence://session".to_string(),
             start_byte: 20,

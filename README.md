@@ -57,7 +57,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Development schema: **18**. Signed 2.7.0 updates accept schemas **6–13** and
+- Development schema: **19**. Signed 2.7.0 updates accept schemas **6–13** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data

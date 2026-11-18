@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -328,6 +328,14 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0018_reply_owners.sql"))?;
             transaction.execute(
                 "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(18, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 19 {
+            transaction.execute_batch(include_str!("../migrations/0019_speaker_scopes.sql"))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(19, ?1)",
                 [now_ms()],
             )?;
         }
@@ -1815,7 +1823,7 @@ pub(crate) fn ingest_prepared(
         // evidence, reactivate a withdrawn publication, or edit a legacy original.
         let protected: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM privacy_legacy_documents WHERE document_id=?1)
-                 OR EXISTS(SELECT 1 FROM documents d JOIN privacy_audiences a ON a.scope=d.scope
+                 OR EXISTS(SELECT 1 FROM documents d JOIN memory_audiences a ON a.scope=d.scope
                            WHERE d.id=?1 AND (EXISTS(SELECT 1 FROM memory_items WHERE document_id=d.id)
                             OR EXISTS(SELECT 1 FROM evidence_sessions WHERE document_id=d.id)))",
             [document_id],

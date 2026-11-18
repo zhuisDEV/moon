@@ -283,6 +283,8 @@ fn schema_fifteen_admissions_remain_unattributed_after_migration() {
     store.record_evidence(old_evidence("{}")).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(include_str!("fixtures/pre_speaker_schema.sql"))
+        .unwrap();
     conn.execute_batch(
         "
 DROP VIEW chat_recallable_memories;
