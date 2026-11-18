@@ -1,7 +1,7 @@
 # Moon architecture
 
 User setup is in [Getting started](getting-started.md); existing installations
-should follow [Updating](updating.md). Moon 2.7.0 produces schema 13. This page
+should follow [Updating](updating.md). Moon 2.8.0 produces schema 19. This page
 describes the engineering contracts; historical benchmarks are documented
 separately in [Performance](performance.md).
 
@@ -41,10 +41,15 @@ but is excluded from normal retrieval.
 quote or conflicting head rolls back earlier creations, confirmations and
 supersessions, so a failed batch leaves no partial memory changes.
 
-Context assembly selects pinned summaries and relevant active memories, dedupes
-chunk hits by memory, attaches bounded citations, and fits the result to an
-explicit character budget. A bounded pinned-summary quota reserves capacity for
-query-relevant recall. Remaining capacity can contain deduplicated document
+Chat retrieval admits public memories and private records owned by all current
+destination readers. It selects eligible collections before ranking.
+Operator-scoped context can also include source claims and reviewed topics. See
+[the audience rules](memory-privacy.md).
+
+Scoped context assembly selects pinned summaries and relevant active memories,
+dedupes chunk hits by memory, attaches bounded citations, and fits the result to
+an explicit character budget. A bounded pinned-summary quota reserves capacity
+for query-relevant recall. Remaining capacity can contain deduplicated document
 excerpts with source and byte citations. These references remain separate from
 reviewed canonical memories. Memory, evidence, and references are rendered as
 untrusted data rather than agent instructions.
@@ -56,13 +61,14 @@ makes `assemble` a pass-through to avoid duplicate injection. Hosts without hook
 support or permission retain the legacy assembly path; this fallback cannot
 restore recall for a host that never calls `assemble`.
 
-The OpenClaw adapter records one immutable evidence document per completed turn,
-using a stable parent-session and content fingerprint. It keeps the user request
-and final answer and omits intermediate tool traffic. The configured curator
-model may propose at most three memories. Deterministic validation requires an
-exact supporting quote, complete numeric support, sufficient term overlap,
-minimum confidence and importance, and explicit correction intent before
-supersession.
+For an eligible completed chat turn, the adapter records the accepted human
+message as immutable private evidence under its verified speaker and original
+owners. A confirmed Discord reply has a separate delivery-time ownership
+snapshot and can be recalled as assistant history. L1 and L2 learn from human
+input. The configured curator model may propose at most three memories.
+Deterministic validation requires an exact supporting quote, complete numeric
+support, sufficient term overlap, minimum confidence and importance, and
+explicit correction intent before supersession.
 
 Each user-facing context assembly records an opaque local metric row with mode,
 latency, result counts, packet size/truncation, and optional injection/review

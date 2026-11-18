@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 2.8.0 - 2026-11-19
+
+Moon 2.8.0 accepts database schemas **6–19** and migrates to **19**. Back up
+with the installed binary before upgrading. The public collection starts empty.
+Existing global memories remain available for operator review. Assign them to
+one private owner only if you can attest to the ownership of the entire
+collection. Moon filters what enters chat context. Host file access, shell
+commands and session-history tools retain their own permissions.
+
+The signed bundle keeps the six-file layout for older updaters. Refresh every
+separately installed `SKILL.md` copy and use the guides from the same tag.
 
 - Preserve the verified source speaker when recalling private conversation
   memories. Schema 19 separates learning by speaker within each owner set.

@@ -5,7 +5,7 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-This guide describes Moon 2.7.0 (database schema 13). For installation, start
+This guide describes Moon 2.8.0 (database schema 19). For installation, start
 with [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
@@ -281,16 +281,16 @@ one date key. Restart catch-up includes older pending evidence without creating
 a separate model job for every missed day. Each date's batches share one fixed
 evidence cutoff.
 
-In the development build, `learning prepare` selects fresh evidence before
-eligible retries. Each snapshot stays within one scope and includes related
-active memories and their original source evidence. A second unsuccessful review
-parks the evidence until related new evidence, changed grounding rules, or an
-explicit session review makes it eligible again. It reports partial comparison
-context explicitly. The default daily budget is eight batches of at most 32
-selected records and 64,000 packet characters, with at most 16 proposed actions
-per batch. A batch key permits three failed attempts before that occurrence
-stops; each attempt can use one primary and one enabled fallback. Lease expiry
-and committed run keys survive restarts.
+In Moon 2.8.0, `learning prepare` selects fresh evidence before eligible
+retries. Each snapshot stays within one scope and includes related active
+memories and their original source evidence. A second unsuccessful review parks
+the evidence until related new evidence, changed grounding rules, or an explicit
+session review makes it eligible again. It reports partial comparison context
+explicitly. The default daily budget is eight batches of at most 32 selected
+records and 64,000 packet characters, with at most 16 proposed actions per
+batch. A batch key permits three failed attempts before that occurrence stops;
+each attempt can use one primary and one enabled fallback. Lease expiry and
+committed run keys survive restarts.
 
 L2 can create, confirm, supersede, merge, or request review. Every action needs
 an exact citation from selected evidence, and new claims must be grounded in the
@@ -318,7 +318,10 @@ path remains. OpenClaw 2026.9.7 native-owned routes skip assembly, so they
 require the hook; see the
 [canary settings](openclaw-canary.md#native-recall-compatibility).
 
-The agent asks Moon for context relevant to its current task:
+In chat, Moon searches public memory and the private records whose owners
+include every verified destination reader, before ranking and rendering the
+packet. The operator CLI below demonstrates a separate scoped lookup that can
+also include reviewed sources and topics.
 
 ```bash
 moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" context \
@@ -329,7 +332,7 @@ moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlit
   --max-chars 8000
 ```
 
-The packet is assembled in this order:
+The scoped operator packet is assembled in this order:
 
 1. A bounded quota of active pinned summaries for the requested scope, plus
    global pinned summaries.
@@ -499,12 +502,14 @@ The main lifecycle tables are:
   exact flattened input dependencies and immutable reviewed typed explanations.
 
 Numbered migrations update these tables transactionally. Generated Markdown is
-never a second writable source of truth. Moon 2.7.0 adds schemas 9–13 to the
+never a second writable source of truth. Moon 2.7.0 added schemas 9–13 to the
 existing schema-8 session lifecycle: source storage, reviewed source learning,
-topics, retrieval optimisation and bounded job diagnostics. Back up using the
-currently installed pre-upgrade executable, retain configuration and a matching
-database for the previous binary, then use the signed update procedure. Merely
-building this checkout does not change an installed runtime.
+topics, retrieval optimisation and bounded job diagnostics. Moon 2.8.0 adds the
+deferred-learning retry ledger and the audience, ownership and speaker records
+used in chat recall. See [Public and private memory](memory-privacy.md). Back up
+using the currently installed pre-upgrade executable, retain configuration and a
+matching database for the previous binary, then use the signed update procedure.
+Merely building this checkout does not change an installed runtime.
 
 Source learning is an explicit CLI/host workflow rather than an eighth automatic
 adapter operation. Its accepted claims retain exact source quotes and

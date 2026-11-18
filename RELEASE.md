@@ -4,8 +4,8 @@ This document describes the release process for Moon.
 
 ## Scope
 
-Use this process for tagged public releases. The current release is **2.7.0**,
-schema **13**, with signed input compatibility **6–13**. User installation and
+Use this process for tagged public releases. The current release is **2.8.0**,
+schema **19**, with signed input compatibility **6–19**. User installation and
 upgrade instructions are in [Getting started](docs/getting-started.md) and
 [Updating](docs/updating.md).
 
@@ -70,7 +70,7 @@ and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 
-Moon 2.7.0 produces schema 13. **Keep `--legacy-skill-only` in both CI and the
+Moon 2.8.0 produces schema 19. **Keep `--legacy-skill-only` in both CI and the
 release workflow for this bridge release**: the 2.6.6 reader rejects additional
 payload files. The six signed payloads include binary, adapter and `SKILL.md`.
 Users copy supporting guides from the same tag; the skill has pinned online
@@ -158,7 +158,7 @@ environment.
    version's changelog, pinned user guides and generated commit notes, the
    signed canonical manifest, detached signature set, and four platform
    archives. It refuses an existing release.
-5. Include the 2.7.0 highlights from `CHANGELOG.md`, schema compatibility, the
+5. Include the 2.8.0 highlights from `CHANGELOG.md`, schema compatibility, the
    six-file bridge boundary and **the instruction to refresh separately
    installed `SKILL.md` copies** in the release notes. Generated commit notes
    alone are insufficient upgrade guidance.

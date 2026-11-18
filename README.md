@@ -15,30 +15,30 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.7.0 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.8.0 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
-OpenClaw skill; 2.7.0's compatibility bundle omits supporting `docs/` files.
+OpenClaw skill; 2.8.0's compatibility bundle omits supporting `docs/` files.
 Copy those from the same release using the
 [skill update instructions](docs/updating.md#refresh-the-agent-skill).
 
 ## What runs automatically
 
-In the development build, Moon retrieves public and audience-permitted private
-memories before a turn. Each newly recorded private chat turn keeps the verified
-sender ID, question owners and potential readers. Confirmed replies have
-separate delivery owners. Moon extracts eligible durable memories through L1,
-and drains local embedding work. Daily L2 reconciliation is optional and
-**disabled by default**. L1 and L2 have independent model and reasoning settings
-in `~/.moon/moon.toml`. OpenClaw owns authentication and model execution; Moon
-creates no provider login or API-key store.
+Moon retrieves public and audience-permitted private memories before a turn.
+Each newly recorded private chat turn keeps the verified sender ID, question
+owners and potential readers. Confirmed replies have separate delivery owners.
+Moon extracts eligible durable memories through L1, and drains local embedding
+work. Daily L2 reconciliation is optional and **disabled by default**. L1 and L2
+have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
+owns authentication and model execution; Moon creates no provider login or
+API-key store.
 
 The new public collection starts empty. Assign a known owner or review legacy
 global memories using the
 [audience and migration guide](docs/memory-privacy.md).
 
-In the development build, daily L2 gives rejected session evidence one routine
-retry on a later occurrence. Evidence that still lacks support stays pending.
-Fresh records take priority.
+Daily L2 gives rejected session evidence one routine retry on a later
+occurrence. Evidence that still lacks support stays pending. Fresh records take
+priority.
 [Retry and review policy](docs/learning.md#daily-schedule-and-recovery)
 
 Source learning and topic compilation are explicit workflows. Capturing a source
@@ -57,7 +57,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Development schema: **19**. Signed 2.7.0 updates accept schemas **6–13** and
+- Moon 2.8.0 uses schema **19**. Signed updates accept schemas **6–19** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data

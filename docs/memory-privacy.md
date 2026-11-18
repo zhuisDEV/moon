@@ -1,7 +1,7 @@
 # Public and private memory
 
-The development binary uses schema 19. Run it with its matching adapter and a
-separate Moon home for a rehearsal. The signed 2.7.0 release uses schema 13.
+Moon 2.8.0 uses schema 19. Rehearse the migration on a copy in a separate Moon
+home with the matching 2.8.0 binary and adapter.
 
 ## What a conversation can recall
 
@@ -134,8 +134,8 @@ cannot enter audience-based recall or learning. Other operator collections
 remain available through the local administrative CLI.
 
 All examples below assume that `moon_copy` points to the rehearsal directory and
-`candidate` to the development binary. The database path is explicit so an
-inherited environment variable cannot select the live database.
+`candidate` to the 2.8.0 binary. The database path is explicit so an inherited
+environment variable cannot select the live database.
 
 ```sh
 "$candidate" --home "$moon_copy" --database "$moon_copy/state/moon.sqlite" init

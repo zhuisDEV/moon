@@ -21,10 +21,10 @@ automatically enable daily synthesis. For a source checkout, run
 `cargo build --locked` and use `./target/debug/moon` in place of `moon` in the
 isolated examples below.
 
-The source-learning workflow in Moon 2.7.0 is separate: eligible immutable
-source captures create durable jobs, and explicitly reviewed verbatim claims can
-later join recall. It is accessed through `source learning` and `source claims`
-and does not run on the L1/L2 scheduler. See the source workflow below and
+The source-learning workflow is separate: eligible immutable source captures
+create durable jobs, and explicitly reviewed verbatim claims can later join
+recall. It is accessed through `source learning` and `source claims` and does
+not run on the L1/L2 scheduler. See the source workflow below and
 [source storage](source-storage.md) for its schema-10 contract.
 
 ## Configure the two stages independently
@@ -501,17 +501,19 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.7.0 accepts supported databases from schema 6 through 13 and migrates
-them to schema 13. L1/L2 introduced schema 8; source storage, reviewed learning
+Moon 2.8.0 accepts supported databases from schema 6 through 19 and migrates
+them to schema 19. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
-job diagnostics adds schema 13. The development build adds the session retry
-ledger in schema 14, audience-bound learning in schema 15, and verified per-turn
-sender records in schema 16. Existing global evidence stays in the operator
-review collection. Back up with the currently installed pre-upgrade executable,
-export memories, and preserve the existing OpenClaw configuration and any
-`moon.toml` before an authorised deployment. The export is a generated view, not
-a replacement for the complete SQLite backup. Keep the previous binary and its
-matching database backup: an older binary must not open the newer schema.
+job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in
+schema 14, audience-bound learning in schema 15, and verified per-turn sender
+records in schema 16. Schemas 17–19 preserve original ownership, record
+reply-time room access and separate private learning by verified speaker.
+Existing global evidence stays in the operator review collection. Back up with
+the currently installed pre-upgrade executable, export memories, and preserve
+the existing OpenClaw configuration and any `moon.toml` before an authorised
+deployment. The export is a generated view, not a replacement for the complete
+SQLite backup. Keep the previous binary and its matching database backup: an
+older binary must not open the newer schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

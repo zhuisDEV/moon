@@ -30,13 +30,13 @@ controlled [signed bootstrap](updating.md#v210-bootstrap-boundary).
 Clone the release into a new directory and build:
 
 ```bash
-git clone --branch v2.7.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.7.0
-cd moon-2.7.0
+git clone --branch v2.8.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.8.0
+cd moon-2.8.0
 cargo build --locked --release
 target/release/moon --json --version
 ```
 
-Check version `2.7.0`, the expected target/commit and `git_dirty: false`. This
+Check version `2.8.0`, the expected target/commit and `git_dirty: false`. This
 block refuses an existing runtime and installs a versioned layout:
 
 ```bash
@@ -46,7 +46,7 @@ if [ -e "$HOME/.moon" ] || [ -L "$HOME/.moon" ]; then
   echo 'Moon already exists; use the upgrade guide instead.' >&2
   exit 1
 fi
-moon_release="$HOME/.moon/releases/2.7.0"
+moon_release="$HOME/.moon/releases/2.8.0"
 install -d -m 700 "$HOME/.moon" "$HOME/.moon/releases" "$moon_release" \
   "$moon_release/bin" "$moon_release/openclaw-plugin" "$moon_release/skill" \
   "$moon_release/skill/docs" "$HOME/.moon/bin"
@@ -56,7 +56,7 @@ install -m 644 assets/openclaw-plugin/index.js assets/openclaw-plugin/package.js
   "$moon_release/openclaw-plugin/"
 install -m 644 SKILL.md "$moon_release/skill/SKILL.md"
 install -m 644 docs/*.md "$moon_release/skill/docs/"
-ln -s releases/2.7.0 "$HOME/.moon/current"
+ln -s releases/2.8.0 "$HOME/.moon/current"
 ln -s ../current/bin/moon "$HOME/.moon/bin/moon"
 ln -s current/openclaw-plugin "$HOME/.moon/openclaw-plugin"
 SH
@@ -73,7 +73,7 @@ moon --home "$HOME/.moon" --database "$HOME/.moon/state/moon.sqlite" init
 moon --json health
 ```
 
-Expect schema `13`, integrity `ok` and no logical violations. If a different
+Expect schema `19`, integrity `ok` and no logical violations. If a different
 `moon` is found, repair `PATH` first. Never follow an old binary's migration
 prompt against a newer database.
 
@@ -126,6 +126,12 @@ moon metrics summary --since 7d
 OpenClaw's `moonPath` and `command -v moon` should resolve to the same release.
 An empty new database is normal. Health should report integrity `ok`, zero
 logical violations and, once embeddings drain, no pending/failed/dead jobs.
+
+For Discord chat, test an owner-only fact in its authorised DM and check that a
+shared room with an additional reader excludes it. Moon applies this filter to
+recall. Host filesystem, shell and cross-session tools have separate permissions
+and may expose the same data. See
+[Public and private memory](memory-privacy.md).
 
 Storage health does not prove a chat received memory. Follow the
 [native recall canary](openclaw-canary.md#native-recall-compatibility) with a

@@ -14,9 +14,11 @@ For each agent turn:
 2. It invokes lexical context directly or sends hybrid context over Moon's
    private stdio child with an explicit runtime, character budget, mode, and
    embedding-space dimensions.
-3. Moon selects reviewed canonical memories first.
-4. Remaining slots may contain unreviewed indexed references with source and
-   byte citations.
+3. Moon selects published public memory and private records owned by every
+   verified destination reader. An unverified destination receives public memory
+   only.
+4. Eligible claims include their provenance and bounded citations. Operator
+   source and topic collections stay outside the chat packet.
 5. With conversation-hook access granted, the adapter returns the defensive
    packet through `before_prompt_build` as `prependContext`, and returns
    messages unchanged from context-engine assembly. Otherwise it uses the legacy
@@ -25,8 +27,9 @@ For each agent turn:
    default.
 7. OpenClaw owns the compaction lifecycle. If `moon-local` is selected, Moon
    supplies only the summary text through OpenClaw's compaction-provider seam.
-8. After a successful completed turn, the adapter records the user request and
-   final answer as immutable evidence under a stable turn fingerprint.
+8. After an eligible turn, Moon records the accepted human message as private
+   learning evidence under the verified speaker. A confirmed Discord reply can
+   enter private chat history with its own delivery-time owners.
 9. Greetings stop there. Eligible turns use the L1 model, then its enabled
    provider-neutral fallback if needed, to propose a bounded number of memories,
    three by default.
@@ -83,15 +86,17 @@ preservation, interrupted lease recovery, DST date keys, and exhausted retry
 behaviour. These checks use temporary homes and synthetic evidence, not the live
 Moon database or provider authentication.
 
-For a real-binary adapter test, point the test at an existing isolated runtime:
+For a real-binary adapter test against an existing isolated runtime, publish a
+synthetic public fact in that runtime first. The following example expects the
+fact “The coral compass aligns the telescope”.
 
 ```bash
 MOON_TEST_BINARY="$PWD/target/release/moon" \
 MOON_TEST_HOME="/path/to/isolated/moon-home" \
 MOON_REQUIRE_REAL_BINARY=1 \
 MOON_TEST_MODE="hybrid" \
-MOON_TEST_QUERY="What model should Moon use for fast work and deep work?" \
-MOON_TEST_EXPECTED="gpt-5.6-luna|gpt-5.6-sol" \
+MOON_TEST_QUERY="What aligns the telescope?" \
+MOON_TEST_EXPECTED="coral compass" \
 deno test --node-modules-dir=none --allow-read --allow-run --allow-env \
   assets/openclaw-plugin/index.test.ts
 ```
@@ -178,9 +183,11 @@ write it automatically. Without permission or hook support, the adapter warns
 and retains legacy assembly recall only where the host invokes it. A loaded
 plugin is not proof of working native recall.
 
-Use synthetic evidence in the temporary Moon home. Require exactly one retrieval
-for a stable native admission, a non-empty packet returned to the prompt hook,
-no duplicate assembly injection, and no retrieval on heartbeat or Moon helper
+Use an explicitly published synthetic fact for a public route. Exercise private
+evidence with a verified Discord audience, then confirm that adding a non-owner
+to the destination excludes the record. Require exactly one retrieval for a
+stable native admission, a non-empty packet returned to the prompt hook, no
+duplicate assembly injection, and no retrieval on heartbeat or Moon helper
 turns. An explicit empty `currentUserMessage` must not retrieve from
 reconstructed history. Check cancellation and hook-lifetime expiry before
 accepting delivery metrics. The adapter tests exercise these boundaries without
@@ -312,9 +319,9 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.7.0, back up with the installed pre-upgrade binary,
-retain configuration and rehearse schema 13 on a copy. Preserve the prior binary
-with its matching database backup. The signed release schema range is 6–13;
+Before deploying Moon 2.8.0, back up with the installed pre-upgrade binary,
+retain configuration and rehearse schema 19 on a copy. Preserve the prior binary
+with its matching database backup. The signed release schema range is 6–19;
 schema 8 was the earlier 2.6.x target. Follow the
 [upgrade checklist](updating.md#upgrade-checklist) and refresh the changed
 skill. Do not change live configuration, install the adapter, restart the

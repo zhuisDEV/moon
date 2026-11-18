@@ -33,7 +33,7 @@ Do not post credentials, private memory, evidence transcripts, or unredacted
 configuration. See the
 [native recall canary](docs/openclaw-canary.md#native-recall-compatibility).
 
-For 2.7.0 upgrades, include schema version, the installed skill's `moon-version`
+For 2.8.0 upgrades, include schema version, the installed skill's `moon-version`
 marker and whether the signed bridge update completed. Source/topic issues need
 job state and fixed failure code, not the source body or raw model response.
 Unknown observed reasoning effort is a host metadata limitation, not proof of
