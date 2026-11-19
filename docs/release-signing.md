@@ -52,7 +52,7 @@ Ordinary push and pull-request CI produces unsigned artifacts and cannot access
 the signing secret. The release job receives `contents: write` only after its
 dependencies pass and the protected environment is approved.
 
-Moon 2.8.0 retains the six-file compatibility bridge described in
+Moon 2.8.1 retains the six-file compatibility bridge described in
 [RELEASE.md](../RELEASE.md). Keep the bridge flag in the workflow and include
 the skill-refresh instruction in release notes. Signing an extended bundle does
 not make it readable by an older six-file updater.

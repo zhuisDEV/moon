@@ -504,19 +504,20 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.8.0 accepts supported databases from schema 6 through 19 and migrates
-them to schema 19. L1/L2 introduced schema 8; source storage, reviewed learning
+Moon 2.8.1 accepts supported databases from schema 6 through 20 and migrates
+them to schema 20. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
 job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in
 schema 14, audience-bound learning in schema 15, and verified per-turn sender
 records in schema 16. Schemas 17–19 preserve original ownership, record
-reply-time room access and separate private learning by verified speaker.
-Existing global evidence stays in the operator review collection. Back up with
-the currently installed pre-upgrade executable, export memories, and preserve
-the existing OpenClaw configuration and any `moon.toml` before an authorised
-deployment. The export is a generated view, not a replacement for the complete
-SQLite backup. Keep the previous binary and its matching database backup: an
-older binary must not open the newer schema.
+reply-time room access and separate private learning by verified speaker. Schema
+20 adds bot provenance and tracks linked Discord memory owners. Existing global
+evidence stays in the operator review collection. Back up with the currently
+installed pre-upgrade executable, export memories, and preserve the existing
+OpenClaw configuration and any `moon.toml` before an authorised deployment. The
+export is a generated view, not a replacement for the complete SQLite backup.
+Keep the previous binary and its matching database backup: an older binary must
+not open the newer schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

@@ -2,7 +2,7 @@
 
 For installation and ordinary upgrades, start with
 [Getting started](getting-started.md) or [Updating](updating.md). This advanced
-operator check ships in the tagged source, not the six-file 2.8.0 binary bundle.
+operator check ships in the tagged source, not the six-file 2.8.1 binary bundle.
 Install the updated [skill and guides](updating.md#refresh-the-agent-skill) with
 the release.
 

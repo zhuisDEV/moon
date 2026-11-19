@@ -15,10 +15,10 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.8.0 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.8.1 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
-OpenClaw skill; 2.8.0's compatibility bundle omits supporting `docs/` files.
-Copy those from the same release using the
+OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
+Copy the guides from the same release using the
 [skill update instructions](docs/updating.md#refresh-the-agent-skill).
 
 ## What runs automatically
@@ -32,16 +32,15 @@ have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
 owns authentication and model execution; Moon creates no provider login or
 API-key store.
 
-The development adapter supports human learning in ordinary Discord text rooms
-with OpenClaw's native memory disabled. Moon verifies the exact text of a single
-Discord post and room access. The author owns the resulting evidence. Replies on
-this path use public Moon context. See the
+Moon supports human learning in ordinary Discord text rooms with OpenClaw's
+native memory disabled. Moon verifies the exact text of a single Discord post
+and room access. The author owns the resulting evidence. Replies on this path
+use public Moon context. See the
 [privacy rules](docs/memory-privacy.md#what-a-conversation-can-recall).
 
-The development adapter can give one personal OpenClaw profile a private Moon
-memory across linked accounts. It can also save new messages from external bots
-for that person in Discord rooms they can read. The bot remains the recorded
-author. See
+The adapter can give one personal OpenClaw profile a private Moon memory across
+linked accounts. It can also save new messages from external bots for that
+person in Discord rooms they can read. The bot remains the recorded author. See
 [profile setup and supported chat routes](docs/memory-privacy.md#personal-openclaw-profile).
 
 The new public collection starts empty. Assign a known owner or review legacy
@@ -69,7 +68,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.8.0 uses schema **19**. Signed updates accept schemas **6–19** and
+- Moon 2.8.1 uses schema **20**. Signed updates accept schemas **6–20** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
