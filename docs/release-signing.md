@@ -14,9 +14,9 @@ and supports a local signing ceremony. Moon embeds only the public trust root.
 - Offline recovery keychain:
   `~/Library/Keychains/moon-release-signing.keychain-db`
 - Keychain item service: `dev.zhuis.moon.release-signing`
-- Workflow policy: exact annotated `vX.Y.Z` tag, manual environment approval,
-  tag-restricted environment, least-privilege publication job, and release
-  overwrite refusal
+- Workflow policy: dispatch from `main` with an annotated `vX.Y.Z` tag. The
+  tagged commit must be on `main` with successful push CI. Publication uses the
+  `main`-restricted environment and requires manual approval.
 - Recovery policy: not in the default keychain search list, lock on sleep, lock
   after five minutes, and explicit confirmation for every private-key read
 
@@ -36,17 +36,20 @@ The normal production flow is deliberately short:
 
 1. Complete `RELEASE.md`, merge the reviewed release pull request to `main`, and
    create and push one annotated `vX.Y.Z` tag.
-2. Run the `Release` workflow at that exact tag:
+2. Wait for `main` CI for the tagged commit, then dispatch `Release` from `main`
+   with that tag:
 
    ```bash
-   gh workflow run release.yml --ref vX.Y.Z
+   gh workflow run release.yml --ref main -f tag=vX.Y.Z
    ```
 
-3. Review the pending `production-release` deployment in GitHub and approve it.
-4. The workflow builds all four native archives, assembles the canonical
-   manifest, signs it, verifies it through Moon's embedded production trust
-   root, and creates the GitHub release. It fails instead of replacing an
-   existing release or asset.
+3. Inspect the recorded CI run and the four unsigned native archives. The
+   workflow tests the OpenClaw adapter against the packaged Linux binary before
+   assembling the canonical manifest and requesting `production-release`
+   approval.
+4. Approve the deployment. The workflow checks the tag again, signs the
+   manifest, verifies it through Moon's embedded production trust root, and
+   creates the GitHub release. It fails if a release already exists.
 
 Ordinary push and pull-request CI produces unsigned artifacts and cannot access
 the signing secret. The release job receives `contents: write` only after its
