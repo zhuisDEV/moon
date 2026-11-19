@@ -4,9 +4,9 @@ This document describes the release process for Moon.
 
 ## Scope
 
-Use this process for tagged public releases. The current release is **2.8.0**,
-schema **19**, with signed input compatibility **6–19**. User installation and
-upgrade instructions are in [Getting started](docs/getting-started.md) and
+Use this process for tagged public releases. Moon **2.8.1** uses schema **20**
+with signed input compatibility **6–20**. User installation and upgrade
+instructions are in [Getting started](docs/getting-started.md) and
 [Updating](docs/updating.md).
 
 ## Pre-release Checklist
@@ -70,13 +70,12 @@ and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 
-The development build produces schema 20. Published Moon 2.8.0 produces schema
-19. Switching back to that release requires its matching database backup. **Keep
-`--legacy-skill-only` in both CI and the release workflow for this bridge
-release**: the 2.6.6 reader rejects additional payload files. The six signed
-payloads include binary, adapter and `SKILL.md`. Users copy supporting guides
-from the same tag; the skill has pinned online links and the release notes must
-flag the skill update.
+Moon 2.8.1 produces schema 20. Switching back to Moon 2.8.0 requires its
+matching schema-19 database backup. **Keep `--legacy-skill-only` in both CI and
+the release workflow for this bridge release**: the 2.6.6 reader rejects
+additional payload files. The six signed payloads include binary, adapter and
+`SKILL.md`. Users copy supporting guides from the same tag; the skill has pinned
+online links and the release notes must flag the skill update.
 
 The new reader also supports bounded optional `skill/docs/*.md`. A later release
 can remove the bridge flag once the supported upgrade path includes 2.7.0. All
@@ -96,10 +95,12 @@ operator defaults `--openclaw-min-version` to that floor; keep it aligned with
 the adapter package's `openclaw.compat.minGatewayVersion`. Do not lower the
 signed floor without verifying the required host capabilities.
 
-The command executes the candidate's offline JSON version check and refuses
-non-release, mismatched, dirty, or unverifiable binaries. `--allow-dirty` exists
-only for local development fixtures and must never be used for a published
-release. Archive generation runs twice and requires byte-identical output.
+Run the command from the Moon checkout. It checks the binary's offline JSON
+identity and compares the adapter, skill and any bundled guides against the Git
+objects at that commit. Full bundles must contain every tracked guide. For local
+development builds, `--allow-dirty` permits uncommitted inputs and labels the
+output as an unsigned, unverified local fixture. Use verified inputs for
+publication. Archive generation runs twice and requires byte-identical output.
 
 After all supported platform asset descriptors have been collected, assemble the
 canonical outer manifest:
@@ -160,10 +161,10 @@ environment.
    version's changelog, pinned user guides and generated commit notes, the
    signed canonical manifest, detached signature set, and four platform
    archives. It refuses an existing release.
-5. Include the 2.8.0 highlights from `CHANGELOG.md`, schema compatibility, the
-   six-file bridge boundary and **the instruction to refresh separately
-   installed `SKILL.md` copies** in the release notes. Generated commit notes
-   alone are insufficient upgrade guidance.
+5. Include the tagged version's highlights from `CHANGELOG.md`, schema
+   compatibility, the six-file bridge boundary and **the instruction to refresh
+   separately installed `SKILL.md` copies** in the release notes. Generated
+   commit notes alone are insufficient upgrade guidance.
 
 ## Post-release
 

@@ -6,8 +6,8 @@ is for an existing Moon runtime. For the data changes, see
 
 ## Upgrade checklist
 
-Moon **2.8.0** adds public and private chat memory and migrates supported
-databases from **schemas 6–19** to **schema 19**. On the first audience
+Moon **2.8.1** accepts **schemas 6–20** and migrates to **schema 20**. Keep a
+matching schema-19 backup for rollback to 2.8.0. On the first audience
 migration, old global memories enter operator review and the public collection
 starts empty. The operator may explicitly assign the frozen legacy collection to
 one verified owner when its ownership is known. The assignment preserves
@@ -36,8 +36,8 @@ shared agents as part of the cutover. Existing model settings are preserved.
    new private paths:
 
    ```bash
-   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.8.0.sqlite
-   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.8.0.md
+   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.8.1.sqlite
+   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.8.1.md
    ```
 
    Create the destination directory with mode `0700`. Copy `~/.moon/moon.toml`
@@ -48,9 +48,9 @@ shared agents as part of the cutover. Existing model settings are preserved.
 3. Review the signed plan, then apply when ready for a Gateway restart:
 
    ```bash
-   ~/.moon/bin/moon update --version=2.8.0 --check
-   ~/.moon/bin/moon update --version=2.8.0 --dry-run
-   ~/.moon/bin/moon update --version=2.8.0
+   ~/.moon/bin/moon update --version=2.8.1 --check
+   ~/.moon/bin/moon update --version=2.8.1 --dry-run
+   ~/.moon/bin/moon update --version=2.8.1
    ```
 
    Read the plan and confirmation. If active leases are reported, allow work to
@@ -67,7 +67,7 @@ shared agents as part of the cutover. Existing model settings are preserved.
    openclaw plugins doctor
    ```
 
-   Expect version `2.8.0`, schema `19`, integrity `ok`, zero logical violations
+   Expect version `2.8.1`, schema `20`, integrity `ok`, zero logical violations
    and the loaded adapter from the selected release. Verify a fresh conversation
    and current injection evidence separately from storage health. See
    [verification](getting-started.md#verify-the-installation).
@@ -76,7 +76,7 @@ shared agents as part of the cutover. Existing model settings are preserved.
 
 ### Six-file compatibility bridge
 
-Moon 2.8.0 retains the six signed payloads introduced by the 2.7.0 bridge. The
+Moon 2.8.1 retains the six signed payloads introduced by the 2.7.0 bridge. The
 published 2.6.6 updater accepts this archive shape. The binary, adapter files
 and `SKILL.md` are in the signed archive. Install the supporting Markdown guides
 from the matching release tag. For local development builds, check both the
@@ -84,17 +84,17 @@ commit reported by `moon --json --version` and the database schema.
 
 ## Refresh the agent skill
 
-**`SKILL.md` changed in 2.8.0. Update it wherever you previously copied it.**
+**`SKILL.md` changed in 2.8.1. Update it wherever you previously copied it.**
 The native updater refreshes its managed OpenClaw skill; it does not find or
 update separate Codex/other-agent copies. Verify the installed
-`moon-version: 2.8.0` marker. The updated skill has pinned online links so it
+`moon-version: 2.8.1` marker. The updated skill has pinned online links so it
 works without local guides.
 
 To install the complete guide set, use a reviewed checkout of the **same tag**:
 
 ```bash
-git clone --branch v2.8.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.8.0-guides
-cd moon-2.8.0-guides
+git clone --branch v2.8.1 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.8.1-guides
+cd moon-2.8.1-guides
 ```
 
 For an existing skill, first preserve its entire directory in a new private
@@ -133,13 +133,13 @@ not. Queued, pending-review and completed jobs must survive. Recovery also
 checks leases before replacing an intact database; a corrupt failed-migration
 database remains restorable after workers have stopped.
 
-Before restarting the candidate host, the updater persists a full post-migration
-learning checkpoint. If the host then changes learning jobs and validation
-fails, automatic rollback stops with the current database and candidate retained
-for operator recovery. This protects completed work even when no lease remains.
-Do not report that outcome as a completed rollback or force replacement with the
-older snapshot. Migration failures before restart still use normal verified
-restoration; unreadable corrupt databases retain the existing recovery path.
+Before restarting the candidate host, the updater fingerprints a consistent
+SQLite backup that includes committed WAL pages. If validation later fails, Moon
+locks the candidate database, compares the full fingerprint and holds the lock
+through restoration. Any database change, including an operator write, stops
+restoration for review. An unreadable post-restart database or an older journal
+missing the full fingerprint also requires operator recovery. Migration failures
+before the candidate starts can still restore the verified backup.
 
 Signed bundles may include up to 32 regular `skill/docs/*.md` files, each at
 most 4 MiB, in addition to the existing required payload. The archive manifest
@@ -305,7 +305,7 @@ OpenClaw configuration or infer provider credentials.
 
 ```bash
 moon update
-moon update --version=2.8.0
+moon update --version=2.8.1
 moon --json update --yes
 ```
 
@@ -315,6 +315,12 @@ but cannot apply; run the canonical path reported by `--check`. Downgrades need
 both an exact signed version and `--allow-downgrade`, and still cannot open a
 newer unsupported schema. Recover with the old binary's matching database rather
 than treating downgrade as a reverse migration.
+
+The updater installs and recovers the agent skill for the active OpenClaw
+profile. It uses `OPENCLAW_STATE_DIR`, then the parent of
+`OPENCLAW_CONFIG_PATH`, then the selected profile under the OpenClaw home.
+`MOON_SKILL_PATH` explicitly selects a different `SKILL.md`. Use the same
+profile and skill path when resuming an interrupted update.
 
 The transaction performs these durable phases:
 
@@ -353,7 +359,7 @@ incident review.
 If a post-quiesce gate fails and restoration is safe, Moon switches back to the
 prior immutable release, restores the prior skill and verified SQLite backup,
 restarts OpenClaw, and verifies rollback health before returning
-`rollback_completed`. Post-restart learning changes or conflicting skill edits
+`rollback_completed`. Post-restart database changes or conflicting skill edits
 stop restoration for operator review, preserving newer work. If rollback cannot
 itself be proven, it returns `rollback_failed`, preserves the lock, journal,
 failed database, releases, and backup, and must not be reported as a safe
@@ -428,7 +434,7 @@ add the newer updater's rollback behaviour to an old executable.
 ```text
 ~/.moon/
   bin/moon -> ../current/bin/moon
-  current -> releases/2.8.0
+  current -> releases/2.8.1
   openclaw-plugin -> current/openclaw-plugin
   releases/<version>/
   state/moon.sqlite

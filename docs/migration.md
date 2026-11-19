@@ -2,13 +2,13 @@
 
 For normal Moon v2 updates, use the signed transaction in
 [updating](updating.md). You do not need to export and reimport your knowledge
-or convert Markdown files to use Moon 2.8.0. New users should follow
+or convert Markdown files to use Moon 2.8.1. New users should follow
 [getting started](getting-started.md). The
 [v1 migration](#legacy-v1-to-v2-migration) below applies only to the retired
 QMD/watcher runtime.
 
-Moon 2.8.0 uses database **schema 19** and accepts supported databases from
-schema 6 through 19. The runtime remains `~/.moon`, the database remains
+Moon 2.8.1 uses database **schema 20** and accepts supported databases from
+schema 6 through 20. The runtime remains `~/.moon`, the database remains
 `~/.moon/state/moon.sqlite`, and the OpenClaw plugin ID remains `moon`. Runtime
 settings in `moon.toml` survive updates; migration does not enable L2, call a
 model or create a new login.
@@ -88,11 +88,10 @@ assignment.
 
 ## Schema 20 personal profiles and bot evidence
 
-The development build adds bot provenance and records historical Discord IDs
-that have been used as personal profile memory owners. Existing evidence,
-speakers and ownership are retained. The new profile setting in `moon.toml`
-controls future captures. See
-[profile setup](memory-privacy.md#personal-openclaw-profile).
+Moon 2.8.1 adds bot provenance and records historical Discord IDs that have been
+used as personal profile memory owners. Existing evidence, speakers and
+ownership are retained. The new profile setting in `moon.toml` controls future
+captures. See [profile setup](memory-privacy.md#personal-openclaw-profile).
 
 Rehearse with a consistent copy using an explicit temporary `--home` and
 `--database`. A rollback to signed Moon 2.8.0 requires the pre-migration SQLite
@@ -101,7 +100,7 @@ the `[master]` setting. Retain those together before applying a migration.
 
 ## SQLite migrations
 
-Moon applies numbered migrations transactionally. Moon 2.8.0 uses schema v19.
+Moon applies numbered migrations transactionally. Moon 2.8.1 uses schema 20.
 Opening a normal write command migrates older supported Moon v2 databases
 forward; `health` and source inspection (`get`, `list`, `history`, `cite`,
 `state`, deletion preview, learning status/preview, and claim inspection) never

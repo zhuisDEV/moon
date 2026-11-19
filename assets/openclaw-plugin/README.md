@@ -4,7 +4,7 @@ This adapter registers the `moon` context engine, supplies one bounded SQLite
 context packet for the current user message, and records completed turns for
 selective durable-memory learning.
 
-This 2.8.0 adapter requires the matching schema-19 binary and 2.8.0 skill. See
+This 2.8.1 adapter requires the matching schema-20 binary and 2.8.1 skill. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an
 existing installation, use [updating](../../docs/updating.md); do not copy this
@@ -14,7 +14,7 @@ production.
 ## Installation and upgrade checks
 
 The signed updater treats the binary, adapter, skill and database as one
-compatibility set. Moon 2.8.0 retains the six-file bundle for older updaters.
+compatibility set. Moon 2.8.1 retains the six-file bundle for older updaters.
 Its companion documentation must be installed from the same reviewed release tag
 when an agent needs local references. Refresh separately installed skill copies
 as well. The upgrade guide explains which skill files are updated automatically

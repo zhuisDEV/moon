@@ -5,7 +5,7 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-This guide describes Moon 2.8.0 (database schema 19). For installation, start
+This guide describes Moon 2.8.1 (database schema 20). For installation, start
 with [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
@@ -44,7 +44,14 @@ transaction. This makes retries and concurrent acknowledgements idempotent. The
 parent session and channel identity stay in sanitized metadata. Moon does not
 read the growing transcript during assembly or commit.
 
-Development builds with schema 20 can verify the accepted sender against a
+When OpenClaw's native memory slot is disabled, the prompt hook can verify an
+ordinary guild text turn before inference. It looks up the exact active user
+admission in the default host SQLite store, matches its canonical text to one
+original Discord post, and verifies room access. The author owns the question.
+The same durable commit path records the evidence after the reply. This route
+uses public recall and does not confirm private reply delivery.
+
+Moon 2.8.1 can verify the accepted sender against a
 [personal OpenClaw profile](memory-privacy.md#personal-openclaw-profile). In
 configured Discord text rooms, a fresh bot post can also become private L2
 evidence for the linked human owner. Its citation preserves the bot as author.

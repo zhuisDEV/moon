@@ -1,7 +1,7 @@
 # Public and private memory
 
-Published Moon 2.8.0 uses schema 19. The personal profile and bot-capture
-features below require the schema 20 binary and its matching adapter. See
+Moon 2.8.1 provides personal profiles and bot capture with the schema 20 binary
+and its matching adapter. See
 [migration and rollback](migration.md#schema-20-personal-profiles-and-bot-evidence).
 
 ## Personal OpenClaw profile
@@ -60,9 +60,10 @@ message. Personal direct turns contribute evidence to the same collection as the
 linked Discord account. Replies in TUI, Control UI and other new chat tools use
 public context only. OpenClaw broadcasts native chat replies by session, and
 external adapters can implement their own delivery. Moon can verify the sender
-on these routes but cannot check all recipients at delivery. Use a verified
-Discord DM to recall what Moon learned across these channels. A shared token
-login, a client label or a display name supplies no personal identity.
+on these routes but cannot check all recipients at delivery. Use a Discord DM
+with a verified host audience to recall what Moon learned across these channels.
+A shared token login, a client label or a display name supplies no personal
+identity.
 
 New external bot messages in Discord text rooms configured by exact guild and
 channel IDs can enter the Master's private memory when their linked Discord
@@ -103,14 +104,24 @@ membership. OpenClaw and Discord must support the required hooks and
 authenticated lookups. An embedded host path without a trusted message identity
 uses public recall only and skips private learning.
 
+With `plugins.slots.memory` set to `none`, OpenClaw can omit its audience grant.
+For an ordinary Discord guild text room, Moon can still learn from a completed
+human turn by verifying the active admission in OpenClaw's default SQLite agent
+store, the author, the exact text of one Discord post and current room access.
+Moon skips combined posts, edited posts and mismatched text. The verified author
+alone owns the question because a queued turn can run after channel membership
+changes. Replies use public recall. Private reply history requires a host grant.
+This check applies to ordinary guild text rooms with the default transcript
+store.
+
 At question admission, Moon records the verified speaker, the people who can
 view the destination, and the owners of the question. The speaker owns their own
-words. In a supported Discord text room, every verified human with both
-`VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` also owns the question, including
-offline members. A confirmed reply gets a separate ownership snapshot at
-delivery. An owner added after a question can own the reply alone. An owner who
-has lost access can keep the question alone. In a DM, the verified recipient
-owns the reply.
+words. With a host audience grant in a supported Discord text room, every
+verified human with both `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` also owns the
+question, including offline members. A confirmed reply gets a separate ownership
+snapshot at delivery. An owner added after a question can own the reply alone.
+An owner who has lost access can keep the question alone. In a DM, the verified
+recipient owns the reply.
 
 For disclosure, everyone with effective `VIEW_CHANNEL` counts, including a
 member who can see new posts but lacks history access. Moon freezes each
@@ -206,7 +217,7 @@ cannot enter audience-based recall or learning. Other operator collections
 remain available through the local administrative CLI.
 
 All examples below assume that `moon_copy` points to the rehearsal directory and
-`candidate` to the 2.8.0 binary. The database path is explicit so an inherited
+`candidate` to the 2.8.1 binary. The database path is explicit so an inherited
 environment variable cannot select the live database.
 
 ```sh

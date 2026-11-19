@@ -602,6 +602,22 @@ fn completed_evidence_is_secret_scrubbed_idempotent_and_immutable() {
         .expect("search evidence");
     assert_eq!(hits.len(), 1);
     assert!(hits[0].content.contains("Moon uses SQLite"));
+    let replacement = IngestDocument {
+        source_uri: hits[0].source_uri.clone(),
+        source_kind: "evidence".into(),
+        scope: "moon".into(),
+        title: None,
+        content: "This ordinary import must preserve the recorded evidence.".into(),
+        modified_at_ms: 101,
+        metadata_json: "{}".into(),
+    };
+    assert!(
+        store
+            .ingest(replacement)
+            .unwrap_err()
+            .to_string()
+            .contains("immutable")
+    );
     assert!(!hits[0].content.contains("do-not-store"));
     assert!(
         !hits[0]

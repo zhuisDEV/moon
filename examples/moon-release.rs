@@ -518,6 +518,18 @@ fn build_bundle(args: BundleArgs) -> Result<()> {
         &version,
         args.legacy_skill_only,
     )?;
+    if !args.allow_dirty {
+        verify_payload_provenance(
+            Path::new("."),
+            &git_commit,
+            &payload,
+            args.legacy_skill_only,
+        )?;
+    } else {
+        eprintln!(
+            "Building an unsigned local fixture with --allow-dirty. Its source commit has not been verified for publication."
+        );
+    }
     let files = payload
         .iter()
         .map(|file| BundleFile {
@@ -591,6 +603,8 @@ fn build_bundle(args: BundleArgs) -> Result<()> {
             "ok": true,
             "archive": archive_path,
             "asset": asset_path,
+            "source_provenance": if args.allow_dirty { "unverified_local_fixture" } else { "verified_commit" },
+            "signed": false,
             "archive_sha256": asset.archive.sha256,
             "bundle_manifest_sha256": asset.archive.bundle_manifest_sha256,
         })
@@ -792,6 +806,84 @@ fn load_payload(
     }
     payload.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(payload)
+}
+
+fn verify_payload_provenance(
+    repo: &Path,
+    commit: &str,
+    payload: &[PayloadFile],
+    legacy_skill_only: bool,
+) -> Result<()> {
+    let mut files = std::collections::BTreeMap::new();
+    for file in payload.iter().filter(|file| file.path != "bin/moon") {
+        let source = if let Some(name) = file.path.strip_prefix("openclaw-plugin/") {
+            format!("assets/openclaw-plugin/{name}")
+        } else {
+            file.path
+                .strip_prefix("skill/")
+                .context("unknown source payload")?
+                .to_owned()
+        };
+        files.insert(source, file);
+    }
+    let tree = Command::new("git")
+        .current_dir(repo)
+        .args([
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit,
+            "--",
+            "SKILL.md",
+            "assets/openclaw-plugin",
+            "docs",
+        ])
+        .output()
+        .context("cannot inspect the release source commit")?;
+    ensure!(
+        tree.status.success(),
+        "cannot verify release payload against its Git commit"
+    );
+    for entry in tree
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let (object, path) = std::str::from_utf8(entry)?
+            .split_once('\t')
+            .context("invalid Git tree entry")?;
+        let Some(file) = files.remove(path) else {
+            // A missing working-tree guide must not silently shrink the full bundle.
+            if !legacy_skill_only
+                && path
+                    .strip_prefix("docs/")
+                    .is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
+            {
+                anyhow::bail!("release payload omits tracked {path}");
+            }
+            continue;
+        };
+        let mut fields = object.split_whitespace();
+        ensure!(
+            matches!(fields.next(), Some("100644" | "100755")) && fields.next() == Some("blob"),
+            "release source {path} is not a regular file"
+        );
+        let blob = fields.next().context("missing Git blob identity")?;
+        let committed = Command::new("git")
+            .current_dir(repo)
+            .args(["cat-file", "blob", blob])
+            .output()?;
+        ensure!(
+            committed.status.success() && committed.stdout == file.bytes,
+            "release payload differs from its Git commit at {path}; local fixtures require --allow-dirty"
+        );
+    }
+    ensure!(
+        files.is_empty(),
+        "release payload contains files absent from its Git commit; local fixtures require --allow-dirty"
+    );
+    Ok(())
 }
 
 fn build_archive(payload: &[PayloadFile], bundle_manifest: &[u8]) -> Result<Vec<u8>> {
@@ -1018,6 +1110,40 @@ mod tests {
             Some(args.openclaw_min_version.as_str())
         );
         assert_eq!(args.openclaw_min_version, "2026.9.2");
+    }
+
+    #[test]
+    fn bundle_provenance_covers_adapter_bytes_and_tracked_guide_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (binary, adapter, skill) = payload_files_fixture(root.path());
+        let assets = root.path().join("assets");
+        fs::create_dir(&assets).unwrap();
+        let target = assets.join("openclaw-plugin");
+        fs::rename(adapter, &target).unwrap();
+        let skill_target = root.path().join("SKILL.md");
+        fs::rename(skill, &skill_target).unwrap();
+        let docs = root.path().join("docs");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("guide.md"), "tracked guide").unwrap();
+        let git = |args: &[&str]| {
+            let result = Command::new("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+            String::from_utf8(result.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "SKILL.md", "assets", "docs"]);
+        let tree = git(&["write-tree"]);
+        let load = |bridge| load_payload(&binary, &target, &skill_target, "2.6.6", bridge).unwrap();
+        verify_payload_provenance(root.path(), &tree, &load(false), false).unwrap();
+        fs::remove_file(docs.join("guide.md")).unwrap();
+        assert!(verify_payload_provenance(root.path(), &tree, &load(false), false).is_err());
+        verify_payload_provenance(root.path(), &tree, &load(true), true).unwrap();
+        fs::write(target.join("index.js"), "local adapter").unwrap();
+        assert!(verify_payload_provenance(root.path(), &tree, &load(true), true).is_err());
     }
 
     #[test]

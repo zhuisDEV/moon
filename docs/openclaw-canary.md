@@ -356,9 +356,9 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.8.0, back up with the installed pre-upgrade binary,
-retain configuration and rehearse schema 19 on a copy. Preserve the prior binary
-with its matching database backup. The signed release schema range is 6–19;
+Before deploying Moon 2.8.1, back up with the installed pre-upgrade binary,
+retain configuration and rehearse schema 20 on a copy. Preserve the prior binary
+with its matching database backup. The signed release schema range is 6–20;
 schema 8 was the earlier 2.6.x target. Follow the
 [upgrade checklist](updating.md#upgrade-checklist) and refresh the changed
 skill. Do not change live configuration, install the adapter, restart the

@@ -214,18 +214,21 @@ supporting evidence time plus `observation_ttl_hours`, not the date a historical
 batch happens to run. New temporary claims use `observation`; legacy claims can
 receive expiry while retaining their kind. `observed_at_ms` and
 `last_confirmed_at_ms` distinguish source observation from later confirmation.
-Expired memories leave normal recall but remain available with their evidence
-for audit. This does not retroactively classify every old memory as temporary.
+Expired memories leave normal recall. Within the same learning scope, fresh
+evidence can still confirm or correct an expired head under its original key.
+The learner checks its original citations before reconciling it. This does not
+retroactively classify every old memory as temporary.
 
-Related-memory selection is bounded, not a full database review. A prepared
-packet reports `context_limited` and `omitted_memory_count` when related claims
-cannot all fit. The model is told that comparison may be incomplete. If the
-oldest pending evidence is too large, or no related claim and its original
-evidence can fit, preparation fails and preserves the backlog. Inspect the
-packet before increasing its budget; do not treat a partial packet as proof that
-no conflict exists. `learning status` exposes review reasons and evidence
-session IDs for human inspection; it is not an automatic review-resolution
-command.
+L2 scores up to 512 recent candidate memories and selects up to 128 matches. A
+prepared packet sets `context_limited` when any of those bounds or the character
+budget reduces coverage. `omitted_memory_count` counts scored matches left out
+of the packet. `candidate_scan_limited` means more candidates remained unscored.
+The model is told when comparison is incomplete. If the oldest pending evidence
+is too large, or no related claim and its original evidence can fit, preparation
+fails and preserves the backlog. Inspect the packet before increasing its
+budget; do not treat a partial packet as proof that no conflict exists.
+`learning status` exposes review reasons and evidence session IDs for human
+inspection; it is not an automatic review-resolution command.
 
 ## Daily schedule and recovery
 
@@ -501,19 +504,20 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.8.0 accepts supported databases from schema 6 through 19 and migrates
-them to schema 19. L1/L2 introduced schema 8; source storage, reviewed learning
+Moon 2.8.1 accepts supported databases from schema 6 through 20 and migrates
+them to schema 20. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
 job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in
 schema 14, audience-bound learning in schema 15, and verified per-turn sender
 records in schema 16. Schemas 17–19 preserve original ownership, record
-reply-time room access and separate private learning by verified speaker.
-Existing global evidence stays in the operator review collection. Back up with
-the currently installed pre-upgrade executable, export memories, and preserve
-the existing OpenClaw configuration and any `moon.toml` before an authorised
-deployment. The export is a generated view, not a replacement for the complete
-SQLite backup. Keep the previous binary and its matching database backup: an
-older binary must not open the newer schema.
+reply-time room access and separate private learning by verified speaker. Schema
+20 adds bot provenance and tracks linked Discord memory owners. Existing global
+evidence stays in the operator review collection. Back up with the currently
+installed pre-upgrade executable, export memories, and preserve the existing
+OpenClaw configuration and any `moon.toml` before an authorised deployment. The
+export is a generated view, not a replacement for the complete SQLite backup.
+Keep the previous binary and its matching database backup: an older binary must
+not open the newer schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

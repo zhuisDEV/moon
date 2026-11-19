@@ -395,8 +395,8 @@ fn validate_release_url(url: &Url, redirected: bool) -> Result<()> {
 }
 
 pub fn inspect_openclaw_config() -> Result<MoonIntegrationSnapshot> {
-    let config_path = openclaw_config_path();
-    inspect_openclaw_config_at(config_path.as_deref())
+    let (config_path, _) = openclaw_profile_paths()?;
+    inspect_openclaw_config_at(Some(&config_path))
 }
 
 fn inspect_openclaw_config_at(config_path: Option<&Path>) -> Result<MoonIntegrationSnapshot> {
@@ -498,15 +498,70 @@ fn empty_snapshot(config_path: Option<PathBuf>) -> MoonIntegrationSnapshot {
     }
 }
 
-fn openclaw_config_path() -> Option<PathBuf> {
-    env::var_os("OPENCLAW_CONFIG_PATH")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("OPENCLAW_STATE_DIR")
-                .map(PathBuf::from)
-                .map(|path| path.join("openclaw.json"))
-        })
-        .or_else(|| dirs::home_dir().map(|home| home.join(".openclaw/openclaw.json")))
+fn openclaw_profile_paths() -> Result<(PathBuf, PathBuf)> {
+    let setting = |key| {
+        env::var(key)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    let home = setting("OPENCLAW_HOME")
+        .map(|s| expand_tilde(&s))
+        .transpose()?
+        .or_else(dirs::home_dir)
+        .context("OpenClaw home is unavailable")?;
+    resolve_profile_paths(
+        &home,
+        setting("OPENCLAW_PROFILE").as_deref(),
+        setting("OPENCLAW_STATE_DIR").as_deref(),
+        setting("OPENCLAW_CONFIG_PATH").as_deref(),
+    )
+}
+
+fn resolve_profile_paths(
+    home: &Path,
+    profile: Option<&str>,
+    state: Option<&str>,
+    config: Option<&str>,
+) -> Result<(PathBuf, PathBuf)> {
+    let resolve = |value: &str| -> Result<PathBuf> {
+        let path = Path::new(value);
+        Ok(std::path::absolute(match path.strip_prefix("~") {
+            Ok(suffix) => home.join(suffix),
+            Err(_) => path.to_owned(),
+        })?)
+    };
+    let named = profile.filter(|name| {
+        !name.eq_ignore_ascii_case("default")
+            && name.len() <= 64
+            && name
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    });
+    let state_dir = match state {
+        Some(path) => resolve(path)?,
+        None => std::path::absolute(home.join(named.map_or_else(
+            || ".openclaw".to_owned(),
+            |name| format!(".openclaw-{name}"),
+        )))?,
+    };
+    let config_path = match config {
+        Some(path) => resolve(path)?,
+        None => state_dir.join("openclaw.json"),
+    };
+    let managed_root = if state.is_some() {
+        state_dir.as_path()
+    } else {
+        config_path
+            .parent()
+            .context("OpenClaw configuration has no parent directory")?
+    };
+    let skill = managed_root.join("skills/moon/SKILL.md");
+    Ok((config_path, skill))
 }
 
 fn installed_adapter_version(home: &Path) -> Option<String> {
@@ -532,10 +587,10 @@ fn installed_skill_version() -> Result<Option<String>> {
 }
 
 pub fn default_skill_path() -> Result<PathBuf> {
-    env::var_os("MOON_SKILL_PATH")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".openclaw/skills/moon/SKILL.md")))
-        .context("Moon skill path could not be resolved")
+    if let Some(path) = env::var_os("MOON_SKILL_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(openclaw_profile_paths()?.1)
 }
 
 fn read_database_schema(database: &Path, dimensions: usize) -> Result<Option<i64>> {
@@ -1288,18 +1343,17 @@ fn apply_update_inner(
                 && snapshot_after.memory_slot == context.openclaw.memory_slot,
             "OpenClaw Moon slots changed during update"
         );
-        // Capture the full candidate schema, including newly introduced job
-        // tables/columns, before allowing any candidate worker to run.
-        let candidate_checkpoint = backup.join("candidate-learning-jobs.json");
+        let fingerprint = backup.join("candidate-database.sha256");
         write_new_file(
-            &candidate_checkpoint,
-            &serde_json::to_vec(&learning_snapshot(
-                &context.home.join("state/moon.sqlite"),
-                None,
-            )?)?,
+            &fingerprint,
+            database_fingerprint(
+                &learning_connection(&context.home.join("state/moon.sqlite"))?,
+                &backup,
+            )?
+            .as_bytes(),
             0o600,
         )?;
-        sync_parent(&candidate_checkpoint)?;
+        sync_parent(&fingerprint)?;
         // Starting may partially succeed even when the host command fails.
         // Persist intent before any candidate worker can acknowledge new work.
         journal.candidate_gateway_started = true;
@@ -1656,6 +1710,10 @@ fn recover_incomplete_update(context: &ApplyContext, openclaw: &dyn OpenClawCont
                     read_bounded_file(&backup.join("openclaw-moon.json"), MAX_CONFIG_BYTES)?;
                 recovery_context.openclaw = serde_json::from_slice(&bytes)
                     .context("rollback integration snapshot is invalid")?;
+                ensure!(
+                    recovery_context.openclaw.config_path == context.openclaw.config_path,
+                    "select the original OpenClaw profile before recovering this update"
+                );
                 validate_openclaw_snapshot(&recovery_context)?;
             }
             rollback_update(&recovery_context, &mut journal, &path, openclaw).map_err(|error| {
@@ -1732,6 +1790,19 @@ fn learning_connection(database: &Path) -> Result<rusqlite::Connection> {
     )?;
     connection.busy_timeout(Duration::from_secs(5))?;
     Ok(connection)
+}
+
+// A fresh online backup includes committed WAL pages and works with an unknown
+// candidate schema. A WAL checkpoint alone does not change this fingerprint.
+fn database_fingerprint(connection: &rusqlite::Connection, scratch: &Path) -> Result<String> {
+    let snapshot = tempfile::Builder::new()
+        .prefix(".candidate-check-")
+        .tempdir_in(scratch)?;
+    let image = snapshot.path().join("moon.sqlite");
+    connection.backup(rusqlite::MAIN_DB, &image, rusqlite::backup::NO_PROGRESS)?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut File::open(image)?, &mut digest)?;
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn has_table(connection: &rusqlite::Connection, name: &str) -> Result<bool> {
@@ -2179,6 +2250,7 @@ fn create_rollback_bundle(
         &backup.join("skill-layout.json"),
         &serde_json::to_vec(&SkillLayout {
             schema_version: 1,
+            original_path: Some(std::path::absolute(&context.skill_path)?),
             original_exists,
             original_hashes,
             installed_hashes: None,
@@ -2302,6 +2374,8 @@ fn install_legacy_skill_file(
 #[serde(deny_unknown_fields)]
 struct SkillLayout {
     schema_version: u32,
+    #[serde(default)]
+    original_path: Option<PathBuf>,
     original_exists: bool,
     original_hashes: BTreeMap<String, String>,
     installed_hashes: Option<BTreeMap<String, String>>,
@@ -2537,6 +2611,12 @@ fn validate_skill_rollback(context: &ApplyContext, backup: &Path) -> Result<()> 
     let Some(layout) = read_skill_layout(backup)? else {
         return Ok(());
     };
+    if let Some(path) = &layout.original_path {
+        ensure!(
+            paths_match(path, &std::path::absolute(&context.skill_path)?),
+            "select the original OpenClaw skill path before recovering this update"
+        );
+    }
     let Some(installed) = layout.installed_hashes else {
         return Ok(());
     };
@@ -2764,24 +2844,27 @@ fn rollback_update(
             .backup_path
             .as_deref()
             .context("journal has no rollback bundle")?;
-        if journal.candidate_gateway_started {
-            // A worker may have finished between restart and validation. An
-            // inactive lease is not proof that the pre-update DB is still the
-            // latest acknowledged state. Keep the candidate and DB intact.
-            let checkpoint: LearningSnapshot = serde_json::from_slice(&read_bounded_file(
-                &backup.join("candidate-learning-jobs.json"),
-                MAX_ARCHIVE_BYTES,
-            )?)?;
-            if let Err(error) =
-                verify_learning_jobs(&context.home.join("state/moon.sqlite"), &checkpoint)
-                && !learning_database_is_corrupt(&error)
-            {
+        let mut locked_candidate = if journal.candidate_gateway_started {
+            // Ordinary operator writes (including unscoped evidence) can leave all
+            // learning-job and privacy counters untouched. Older journals only
+            // checkpointed those counters and cannot establish safe restoration.
+            let fingerprint = read_bounded_file(&backup.join("candidate-database.sha256"), 64)
+                .context("candidate database checkpoint unavailable; operator recovery required")?;
+            let database = context.home.join("state/moon.sqlite");
+            let connection = lock_candidate_database(&database)
+                .context("candidate database cannot be locked; operator recovery required")?;
+            let current = database_fingerprint(&connection, backup)
+                .context("candidate database cannot be verified; operator recovery required")?;
+            if current.as_bytes() != fingerprint {
                 return fail(
-                    "learning_jobs_changed_after_restart",
-                    "learning state changed after candidate restart; current database retained and operator recovery required",
+                    "database_changed_after_restart",
+                    "database changed after candidate restart; current database retained and operator recovery required",
                 );
             }
-        }
+            Some(connection)
+        } else {
+            None
+        };
         validate_skill_rollback(context, backup)?;
         let prior = journal
             .prior_release
@@ -2801,6 +2884,7 @@ fn rollback_update(
             context,
             &backup.join("moon.sqlite"),
             &journal.transaction_id,
+            locked_candidate.as_mut(),
         )?;
         // Once the prior gateway starts it can accept new writes. Make later
         // recovery availability-only before allowing that gateway to run.
@@ -2824,7 +2908,30 @@ fn rollback_update(
     Ok(())
 }
 
-fn restore_database(context: &ApplyContext, backup: &Path, transaction_id: &str) -> Result<()> {
+fn lock_candidate_database(database: &Path) -> Result<rusqlite::Connection> {
+    ensure!(
+        fs::symlink_metadata(database)?.file_type().is_file(),
+        "candidate database is not a regular file"
+    );
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    // Exclusive locking mode retains the lock after COMMIT, so this connection
+    // can both back up and restore without leaving a writer race between them.
+    connection.execute_batch(
+        "PRAGMA locking_mode=EXCLUSIVE; PRAGMA synchronous=FULL; BEGIN EXCLUSIVE; COMMIT;",
+    )?;
+    Ok(connection)
+}
+
+fn restore_database(
+    context: &ApplyContext,
+    backup: &Path,
+    transaction_id: &str,
+    locked_candidate: Option<&mut rusqlite::Connection>,
+) -> Result<()> {
     ensure!(
         fs::symlink_metadata(backup)?.file_type().is_file(),
         "rollback database is not a regular file"
@@ -2854,6 +2961,20 @@ fn restore_database(context: &ApplyContext, backup: &Path, transaction_id: &str)
         rand::random::<u128>()
     ));
     create_private_dir(&preserved)?;
+    if let Some(candidate) = locked_candidate {
+        let saved = preserved.join("moon.sqlite");
+        candidate.backup(rusqlite::MAIN_DB, &saved, rusqlite::backup::NO_PROGRESS)?;
+        set_mode(&saved, 0o600)?;
+        sync_parent(&saved)?;
+        // Preserve the locked inode, including for other processes waiting to
+        // open it. SQLite performs the restore as one durable transaction.
+        candidate.restore(
+            rusqlite::MAIN_DB,
+            &staged_database,
+            rusqlite::backup::NO_PROGRESS,
+        )?;
+        return Ok(());
+    }
     for name in ["moon.sqlite", "moon.sqlite-wal", "moon.sqlite-shm"] {
         let path = state.join(name);
         if fs::symlink_metadata(&path).is_ok() {
@@ -2893,7 +3014,7 @@ fn required_free_space(context: &ApplyContext, archive_size: u64) -> Result<u64>
     let skill_size = directory_size(skill_root(&context.skill_path)?)?;
     Ok(archive_size
         .saturating_mul(3)
-        .saturating_add(database_size.saturating_mul(2))
+        .saturating_add(database_size.saturating_mul(4))
         .saturating_add(installed_size.saturating_mul(2))
         .saturating_add(skill_size.saturating_mul(3))
         .saturating_add(64 * 1024 * 1024))
@@ -5013,12 +5134,54 @@ done
     }
 
     #[test]
+    fn managed_skill_follows_openclaw_profile_precedence() {
+        let home = Path::new("/home/operator");
+        for (profile, state, config, root, config_path) in [
+            (
+                None,
+                Some("/custom/state"),
+                Some("/config/openclaw.json"),
+                "/custom/state",
+                "/config/openclaw.json",
+            ),
+            (
+                None,
+                None,
+                Some("~/config/custom.json"),
+                "/home/operator/config",
+                "/home/operator/config/custom.json",
+            ),
+            (
+                Some("Dev"),
+                None,
+                None,
+                "/home/operator/.openclaw-Dev",
+                "/home/operator/.openclaw-Dev/openclaw.json",
+            ),
+            (
+                Some("DEFAULT"),
+                None,
+                None,
+                "/home/operator/.openclaw",
+                "/home/operator/.openclaw/openclaw.json",
+            ),
+        ] {
+            assert_eq!(
+                resolve_profile_paths(home, profile, state, config).unwrap(),
+                (
+                    PathBuf::from(config_path),
+                    Path::new(root).join("skills/moon/SKILL.md")
+                )
+            );
+        }
+    }
+
+    #[test]
     fn restart_checkpoint_includes_tables_absent_from_the_old_schema() {
         let (fixture, path, mut journal) = dead_interrupted_fixture();
         let database = fixture.context.home.join("state/moon.sqlite");
         let backup = journal.backup_path.as_ref().unwrap();
-        let candidate = learning_snapshot(&database, None).unwrap();
-        let mut old = candidate.clone();
+        let mut old = learning_snapshot(&database, None).unwrap();
         old.retain(|table, _| table.starts_with("learning_"));
         fs::write(
             backup.join("learning-jobs.json"),
@@ -5026,8 +5189,10 @@ done
         )
         .unwrap();
         write_new_file(
-            &backup.join("candidate-learning-jobs.json"),
-            &serde_json::to_vec(&candidate).unwrap(),
+            &backup.join("candidate-database.sha256"),
+            database_fingerprint(&learning_connection(&database).unwrap(), backup)
+                .unwrap()
+                .as_bytes(),
             0o600,
         )
         .unwrap();
@@ -5048,16 +5213,92 @@ done
             &MockOpenClaw::default(),
         )
         .unwrap_err();
-        assert_eq!(
-            error_code(&error),
-            Some("learning_jobs_changed_after_restart")
-        );
+        assert_eq!(error_code(&error), Some("database_changed_after_restart"));
         assert_eq!(
             learning_snapshot(&database, None).unwrap()["source_learning_jobs"]
                 .rows
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn restart_checkpoint_preserves_ordinary_writes_and_refuses_incomplete_proof() {
+        let (fixture, path, mut journal) = dead_interrupted_fixture();
+        let database = fixture.context.home.join("state/moon.sqlite");
+        let backup = journal.backup_path.clone().unwrap();
+        journal.candidate_gateway_started = true;
+        let control = MockOpenClaw::default();
+        let error = rollback_update(&fixture.context, &mut journal, &path, &control).unwrap_err();
+        assert!(error.to_string().contains("checkpoint unavailable"));
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch("PRAGMA wal_autocheckpoint=0; INSERT INTO metadata(key,value) VALUES ('test-wal','present')").unwrap();
+        assert!(
+            fs::metadata(database.with_file_name("moon.sqlite-wal"))
+                .unwrap()
+                .len()
+                > 32
+        );
+        let fingerprint =
+            database_fingerprint(&learning_connection(&database).unwrap(), &backup).unwrap();
+        write_new_file(
+            &backup.join("candidate-database.sha256"),
+            fingerprint.as_bytes(),
+            0o600,
+        )
+        .unwrap();
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        assert_eq!(
+            database_fingerprint(&learning_connection(&database).unwrap(), &backup).unwrap(),
+            fingerprint
+        );
+        drop(connection);
+        let jobs = learning_snapshot(&database, None).unwrap();
+        let store = crate::Store::open(&database, 64).unwrap();
+        let acknowledged = serde_json::json!("acknowledged");
+        store.set_state("operator-state", &acknowledged).unwrap();
+        drop(store);
+        assert_eq!(learning_snapshot(&database, None).unwrap(), jobs);
+        let error = rollback_update(&fixture.context, &mut journal, &path, &control).unwrap_err();
+        assert_eq!(error_code(&error), Some("database_changed_after_restart"));
+        assert!(journal.current_switched);
+        assert_eq!(
+            crate::Store::open_existing(&database, 64)
+                .unwrap()
+                .get_state("operator-state")
+                .unwrap(),
+            Some(acknowledged)
+        );
+    }
+
+    #[test]
+    fn verified_restore_excludes_intervening_writers_and_keeps_the_database_inode() {
+        let (fixture, _, journal) = dead_interrupted_fixture();
+        let database = fixture.context.home.join("state/moon.sqlite");
+        let backup = journal.backup_path.unwrap().join("moon.sqlite");
+        let mut locked = lock_candidate_database(&database).unwrap();
+        let competing = rusqlite::Connection::open(&database).unwrap();
+        competing.busy_timeout(Duration::ZERO).unwrap();
+        let error = competing.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&database).unwrap());
+        restore_database(&fixture.context, &backup, "locked-test", Some(&mut locked)).unwrap();
+        #[cfg(unix)]
+        assert_eq!(
+            inode,
+            std::os::unix::fs::MetadataExt::ino(&fs::metadata(&database).unwrap())
+        );
+        assert!(competing.execute_batch("BEGIN IMMEDIATE").is_err());
+        drop(locked);
+        competing
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+            .unwrap();
     }
 
     #[test]
@@ -5579,7 +5820,7 @@ done
                 .unwrap()
                 .ok
         );
-        restore_database(&fixture.context, &backup, "large").unwrap();
+        restore_database(&fixture.context, &backup, "large", None).unwrap();
         assert!(fs::metadata(&database).unwrap().len() > MAX_ARCHIVE_BYTES);
         assert!(healthy_runtime(&fixture.context).unwrap().ok);
 
@@ -5596,7 +5837,7 @@ done
             "#!/bin/sh\nexit 9\n",
         )
         .unwrap();
-        let error = restore_database(&rejected.context, &backup, "rejected").unwrap_err();
+        let error = restore_database(&rejected.context, &backup, "rejected", None).unwrap_err();
         assert!(error.to_string().contains("health check failed"));
         assert_eq!(fs::read(&database).unwrap(), original);
         assert!(

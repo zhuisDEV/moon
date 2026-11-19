@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.8.1 - 2026-11-19
+
+Moon 2.8.1 accepts database schemas **6–20** and migrates to **20**. Back up
+with the installed binary before upgrading. Keep the schema-19 backup and
+matching runtime if you may need to roll back to Moon 2.8.0.
+
+The signed update keeps the six-file layout for older updaters. Refresh every
+separately installed `SKILL.md` copy and use the guides from the same tag.
 
 - Link a personal OpenClaw profile to a private Moon collection across Discord,
   TUI, the Control UI and supported direct chats. Operators can opt into
@@ -11,6 +18,16 @@
   records a bot's new posts as bot-authored evidence for the linked person with
   access to the room and its history. Replies there use public Moon context.
   [Setup and privacy rules](docs/memory-privacy.md#personal-openclaw-profile)
+- Restore verified human learning in ordinary Discord text rooms when OpenClaw's
+  native memory is disabled. Moon matches the accepted text to a single original
+  post and binds ownership to its verified author. Replies on this path use
+  public Moon context.
+- Let L2 correct expired observations and report when candidate limits make its
+  input incomplete. Protect recorded evidence against replacement through raw
+  ingestion in operator scopes.
+- Check the full candidate database before automatic rollback, resolve the
+  installed skill in the selected OpenClaw profile, and verify the source of
+  adapter and skill files when building release archives.
 
 ## 2.8.0 - 2026-11-19
 

@@ -1,7 +1,7 @@
 # Moon architecture
 
 User setup is in [Getting started](getting-started.md); existing installations
-should follow [Updating](updating.md). Moon 2.8.0 produces schema 19. This page
+should follow [Updating](updating.md). Moon 2.8.1 produces schema 20. This page
 describes the engineering contracts; historical benchmarks are documented
 separately in [Performance](performance.md).
 

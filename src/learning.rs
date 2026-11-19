@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+const RELATED_CANDIDATE_LIMIT: usize = 512;
+
 #[derive(Debug, Clone)]
 pub struct PrepareRequest {
     pub run_key: String,
@@ -164,6 +166,12 @@ struct RetrySupport {
     chars: usize,
 }
 
+struct RelatedMemories {
+    memories: Vec<LearningMemory>,
+    omitted_matches: usize,
+    candidate_scan_limited: bool,
+}
+
 impl Store {
     pub fn learning_prepare(&mut self, request: &PrepareRequest) -> Result<Value> {
         validate_identifier(&request.run_key, "run key", 128)?;
@@ -303,7 +311,8 @@ impl Store {
         let envelope_chars = serde_json::to_string(&json!({
             "status":"prepared","run_id":"0".repeat(32),"run_key":request.run_key,
             "scope":scope,"snapshot_hash":"0".repeat(64),"evidence":[],"memories":[],
-            "context_limited":false,"omitted_memory_count":128
+            "context_limited":false,"omitted_memory_count":RELATED_CANDIDATE_LIMIT,
+            "candidate_scan_limited":false
         }))?
         .chars()
         .count()
@@ -363,8 +372,9 @@ impl Store {
             .map(|e| e.content.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let mut omitted_memory_count = 0;
-        for memory in related_memories(&transaction, &scope, &query, 128)? {
+        let related = related_memories(&transaction, &scope, &query, 128)?;
+        let mut omitted_memory_count = related.omitted_matches;
+        for memory in related.memories {
             let previous_len = evidence.len();
             for citation in &memory.citations {
                 if !evidence.iter().any(|e| e.session_id == citation.session_id) {
@@ -426,7 +436,9 @@ impl Store {
         Ok(
             json!({"status":if request.preview {"preview"} else {"prepared"}, "run_id":run_id,
             "run_key":request.run_key,"scope":scope,"snapshot_hash":snapshot_hash,
-            "evidence":evidence,"memories":memories,"context_limited":omitted_memory_count>0,"omitted_memory_count":omitted_memory_count}),
+            "evidence":evidence,"memories":memories,
+            "context_limited":omitted_memory_count>0 || related.candidate_scan_limited,
+            "omitted_memory_count":omitted_memory_count,"candidate_scan_limited":related.candidate_scan_limited}),
         )
     }
 
@@ -446,7 +458,7 @@ impl Store {
             anyhow::bail!("invalid related-memory scope, query or limits");
         }
         let mut memories = Vec::new();
-        for memory in related_memories(&self.connection, scope, query, limit)? {
+        for memory in related_memories(&self.connection, scope, query, limit)?.memories {
             memories.push(memory);
             if serde_json::to_string(&memories)?.chars().count() > max_chars.saturating_sub(64) {
                 memories.pop();
@@ -795,19 +807,31 @@ fn related_memories(
     scope: &str,
     query: &str,
     limit: usize,
-) -> Result<Vec<LearningMemory>> {
+) -> Result<RelatedMemories> {
+    // Reconciliation can revise an expired head. Keep the publication and
+    // citation checks from audience recall, independent of the expiry clock.
     let mut statement = connection.prepare(
         "SELECT m.document_id,m.canonical_key,m.memory_kind,d.title,d.body,m.importance,m.confidence,m.observed_at_ms,m.last_confirmed_at_ms,m.valid_until_ms,
                 EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
-         FROM memory_items m JOIN documents d ON d.id=m.document_id WHERE d.scope=?1 AND d.active=1
+         FROM memory_items m JOIN documents d ON d.id=m.document_id
+         LEFT JOIN memory_audiences a ON a.scope=d.scope
+         WHERE d.scope=?1 AND d.active=1
            AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
-           AND (NOT EXISTS (SELECT 1 FROM memory_audiences WHERE scope=?1)
-                OR d.id IN (SELECT document_id FROM audience_recallable_memories WHERE scope=?1))
+           AND (a.kind IS NULL
+                OR (a.kind='public' AND EXISTS(SELECT 1 FROM memory_publications p WHERE p.document_id=d.id))
+                OR (a.kind='private'
+                    AND EXISTS(SELECT 1 FROM memory_citations c WHERE c.memory_document_id=d.id)
+                    AND NOT EXISTS(SELECT 1 FROM memory_citations c
+                        LEFT JOIN evidence_sessions e ON e.id=c.evidence_session_id
+                        LEFT JOIN documents ed ON ed.id=c.evidence_document_id
+                        WHERE c.memory_document_id=d.id AND (e.document_id IS NOT c.evidence_document_id
+                            OR ed.scope IS NOT d.scope OR ed.source_kind IS NOT 'evidence'
+                            OR EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=ed.id)))))
            AND m.superseded_by IS NULL AND m.canonical_key IS NOT NULL AND length(d.body)<=32000
-         ORDER BY m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT 512",
+         ORDER BY m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT ?2",
     )?;
-    let mut rows = statement
-        .query_map([scope], |row| {
+    let mut candidates = statement
+        .query_map(params![scope, RELATED_CANDIDATE_LIMIT as i64 + 1], |row| {
             Ok(LearningMemory {
                 document_id: row.get(0)?,
                 canonical_key: row.get(1)?,
@@ -823,7 +847,10 @@ fn related_memories(
                 citations: Vec::new(),
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let candidate_scan_limited = candidates.len() > RELATED_CANDIDATE_LIMIT;
+    candidates.truncate(RELATED_CANDIDATE_LIMIT);
+    let mut rows = candidates
         .into_iter()
         .filter_map(|memory| {
             // A memory's short terms are the query here: a long batch should not
@@ -840,7 +867,8 @@ fn related_memories(
         b.0.total_cmp(&a.0)
             .then_with(|| b.1.last_confirmed_at_ms.cmp(&a.1.last_confirmed_at_ms))
     });
-    let mut result = Vec::new();
+    let omitted_matches = rows.len().saturating_sub(limit);
+    let mut memories = Vec::new();
     for (_, mut memory) in rows.into_iter().take(limit) {
         let mut citations = connection.prepare(
             "SELECT e.session_id,c.quote FROM memory_citations c JOIN evidence_sessions e ON e.id=c.evidence_session_id
@@ -856,9 +884,13 @@ fn related_memories(
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        result.push(memory);
+        memories.push(memory);
     }
-    Ok(result)
+    Ok(RelatedMemories {
+        memories,
+        omitted_matches,
+        candidate_scan_limited,
+    })
 }
 
 fn scope_hash(connection: &Connection, scope: &str) -> Result<String> {
