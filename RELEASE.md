@@ -140,11 +140,18 @@ cargo run --locked --example moon-release -- verify \
   --signature /path/to/release-staging/release-manifest.sig.json
 ```
 
-Both CI and the release workflow generate all four native targets: macOS arm64,
-macOS x86_64, GNU/Linux arm64, and GNU/Linux x86_64. The aggregate manifest job
-must refuse a missing or duplicate target. Ordinary CI publishes only unsigned
-workflow artifacts; the release workflow signs only behind the protected
-environment.
+CI runs on pull requests to `main` and pushes to `main`. Pull requests test
+Linux x86_64 and macOS arm64, including the adapter against the packaged Linux
+binary. Changes to dependencies, packaging, updater or workflows also exercise
+the full matrix. Every `main` push builds and tests all four architectures and
+assembles the unsigned manifest. The manifest builder refuses a missing or
+duplicate target. CI retains its unsigned artifacts for seven days.
+
+The production workflow builds all four native targets at the exact tagged
+commit. Linux x86_64 and arm64 build in a pinned Ubuntu 22.04 container on newer
+runners and start the packaged binary on glibc 2.35. The signing job requires
+successful `main` CI for that commit, the packaged adapter test and approval by
+the protected environment.
 
 ## Tag and Publish
 

@@ -2,76 +2,83 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  rust:
+  platform-plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          full=true
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            changed="$(git diff --name-only --no-renames "${GITHUB_SHA}^1" "$GITHUB_SHA" -- \
+              .github .cargo Cargo.toml Cargo.lock build.rs assets SKILL.md RELEASE.md \
+              docs/updating.md docs/release-signing.md examples/moon-release.rs \
+              src/release.rs src/update.rs tests/cli_update.rs \
+              tools/interactive-zsh-smoke.zsh tools/recover-openclaw-update.sh)"
+            if [[ -z "$changed" ]]; then
+              full=false
+            fi
+          fi
+          if [[ "$full" == true ]]; then
+            targets='["aarch64-apple-darwin","x86_64-apple-darwin","aarch64-unknown-linux-gnu"]'
+          else
+            targets='["aarch64-apple-darwin"]'
+          fi
+          printf 'full=%s\ntargets=%s\n' "$full" "$targets" >> "$GITHUB_OUTPUT"
+
+  linux-x64:
+    uses: ./.github/workflows/native-build.yml
+    with:
+      commit: ${{ github.sha }}
+      target: x86_64-unknown-linux-gnu
+      package: true
+
+  native-platforms:
+    needs: platform-plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            target: aarch64-apple-darwin
-            minimum_os_version: "13.0"
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            minimum_os_version: "13.0"
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            minimum_os_version: "glibc-2.35"
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            minimum_os_version: "glibc-2.35"
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Verify native release target
-        run: >-
-          rustc -vV | grep -F "host: ${{ matrix.target }}"
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --all-targets --all-features
-      - name: Remove release artifacts restored from an older runner image
-        run: cargo clean --release
-      - run: cargo build --locked --release
-      - name: Exercise documented interactive-zsh strict-mode semantics
-        if: matrix.target == 'aarch64-apple-darwin'
-        run: >-
-          zsh -f -i -c 'source tools/interactive-zsh-smoke.zsh' 2>&1 |
-          grep -Fx 'UPDATE SUCCEEDED'
-      - name: Generate deterministic unsigned release bundle
-        run: >-
-          cargo run --locked --example moon-release -- bundle
-          --binary target/release/moon
-          --minimum-os-version "${{ matrix.minimum_os_version }}"
-          --database-schema-min 6
-          --database-schema-max 20
-          --legacy-skill-only
-          --output-dir "target/release-check/${{ matrix.target }}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: unsigned-release-${{ matrix.target }}
-          path: target/release-check/${{ matrix.target }}
-          if-no-files-found: error
+        target: ${{ fromJSON(needs.platform-plan.outputs.targets) }}
+    uses: ./.github/workflows/native-build.yml
+    with:
+      commit: ${{ github.sha }}
+      target: ${{ matrix.target }}
+      package: ${{ needs.platform-plan.outputs.full == 'true' }}
 
   release-manifest:
-    needs: rust
-    runs-on: ubuntu-22.04
+    needs: [platform-plan, linux-x64, native-platforms]
+    if: needs.platform-plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: unsigned-release-*
           path: target/release-check
-          merge-multiple: false
       - name: Restrict release staging to the runner owner
         run: chmod 700 target/release-check
       - name: Assemble four-platform canonical unsigned release manifest
@@ -83,18 +90,20 @@ jobs:
           --asset target/release-check/unsigned-release-x86_64-unknown-linux-gnu/release-asset.json
           --published-at 2026-01-01T00:00:00Z
           --output target/release-check/release-manifest.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unsigned-release-manifest
           path: target/release-check/release-manifest.json
           if-no-files-found: error
+          retention-days: 7
 
-  adapter:
-    needs: rust
-    runs-on: ubuntu-22.04
+  adapter-checks:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: denoland/setup-deno@v2.0.5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
       - run: deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md
@@ -105,26 +114,41 @@ jobs:
         run: deno test --no-config --no-remote tools/check-openclaw-moon.test.ts
       - name: Test source-learning canary contracts without auth or inference
         run: deno test --no-config --no-remote tools/source-learning-canary.test.ts
-      - uses: actions/download-artifact@v8
-        with:
-          name: unsigned-release-x86_64-unknown-linux-gnu
-          path: ${{ runner.temp }}/moon-adapter-bundle
-      - name: Run required real-binary adapter and SQLite tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          archives=("${RUNNER_TEMP}"/moon-adapter-bundle/moon-*.tar.gz)
-          test "${#archives[@]}" = 1
-          install -d -m 700 "${RUNNER_TEMP}/moon-adapter-candidate"
-          tar -xzf "${archives[0]}" -C "${RUNNER_TEMP}/moon-adapter-candidate"
-          sh tools/test-openclaw-adapter.sh "${RUNNER_TEMP}/moon-adapter-candidate/moon-release/bin/moon"
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: audit-tool
+        with:
+          path: ${{ runner.temp }}/cargo-audit/bin/cargo-audit
+          key: cargo-audit-0.22.2-ubuntu-24.04-${{ runner.arch }}
       - name: Install Cargo Audit
-        run: cargo install --locked cargo-audit --version 0.22.2
-      - name: Audit locked dependencies
-        run: cargo audit --file Cargo.lock
+        if: steps.audit-tool.outputs.cache-hit != 'true'
+        run: cargo install --locked --root "$RUNNER_TEMP/cargo-audit" cargo-audit --version 0.22.2
+      - name: Audit locked dependencies against fresh RustSec advisories
+        run: PATH="$RUNNER_TEMP/cargo-audit/bin:$PATH" cargo audit --file Cargo.lock
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs: [platform-plan, linux-x64, native-platforms, release-manifest, adapter-checks, security]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all selected checks to pass
+        shell: bash
+        env:
+          FULL_MATRIX: ${{ needs.platform-plan.outputs.full }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$JOB_RESULTS"
+          jq -e --arg full "$FULL_MATRIX" '
+            ($full == "true" or $full == "false")
+            and (to_entries | map(select(.key != "release-manifest")) | all(.value.result == "success"))
+            and (.["release-manifest"].result == (if $full == "true" then "success" else "skipped" end))
+          ' <<< "$JOB_RESULTS" >/dev/null
