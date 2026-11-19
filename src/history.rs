@@ -34,7 +34,10 @@ impl Store {
             let owners = canonical_readers(receipt.owners)?;
             ensure!(
                 !receipt.readers.is_empty()
-                    && receipt.owners.iter().all(|p| receipt.readers.contains(p)),
+                    && receipt
+                        .owners
+                        .iter()
+                        .all(|p| !p.starts_with("bot:") && receipt.readers.contains(p)),
                 "reply owners must have access to the delivery destination"
             );
             let sequence: u64 = receipt.message_id.parse()?;
@@ -60,7 +63,7 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let eligible: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM privacy_admissions a WHERE a.admission_key=?1
+            "SELECT EXISTS(SELECT 1 FROM privacy_admissions a WHERE a.admission_key=?1 AND a.sender_kind='human'
              AND a.owners_json IS NOT NULL AND a.sender IS NOT NULL
              AND (?2 IS NOT NULL OR EXISTS(SELECT 1 FROM evidence_admissions e
                   WHERE e.admission_key=a.admission_key)))",
@@ -104,7 +107,7 @@ impl Store {
     pub fn private_turn_history(&self, readers: &[String], limit: usize) -> Result<Vec<Value>> {
         ensure!((1..=20).contains(&limit), "invalid history limit");
         let audience = canonical_readers(readers)?;
-        if readers.is_empty() {
+        if readers.is_empty() || readers.iter().any(|id| id.starts_with("bot:")) {
             return Ok(Vec::new());
         }
         // Filter both message roles independently before ranking any turns.
@@ -128,7 +131,8 @@ impl Store {
              )
              SELECT v.event_ms,v.role,
                     CASE v.role WHEN 0 THEN a.sender END,
-                    CASE v.role WHEN 0 THEN substr(d.body,1,2054) ELSE substr(h.reply,1,2048) END
+                    CASE v.role WHEN 0 THEN substr(d.body,1,2054) ELSE substr(h.reply,1,2048) END,
+                    a.sender_kind
              FROM recent r JOIN visible v USING(id) JOIN evidence_sessions e ON e.id=r.id
              JOIN evidence_admissions x ON x.evidence_id=e.id JOIN privacy_admissions a USING(admission_key)
              JOIN documents d ON d.id=e.document_id
@@ -142,8 +146,13 @@ impl Store {
                 if r.get::<_, i64>(1)? == 1 {
                     return Ok(json!({"role":"assistant", "text":text, "delivered_at_ms":at}));
                 }
+                let (role, prefix) = if r.get::<_, String>(4)? == "bot" {
+                    ("bot", "Bot:\n")
+                } else {
+                    ("user", "User:\n")
+                };
                 Ok(
-                    json!({"role":"user", "text":text.strip_prefix("User:\n").unwrap_or(&text),
+                    json!({"role":role, "text":text.strip_prefix(prefix).unwrap_or(&text),
                 "turn_sender":r.get::<_,String>(2)?, "completed_at_ms":at}),
                 )
             })?

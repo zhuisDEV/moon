@@ -52,7 +52,7 @@ jobs:
           --binary target/release/moon
           --minimum-os-version "${{ matrix.minimum_os_version }}"
           --database-schema-min 6
-          --database-schema-max 19
+          --database-schema-max 20
           --legacy-skill-only
           --output-dir "target/release-check/${{ matrix.target }}"
       - uses: actions/upload-artifact@v7
@@ -101,6 +101,8 @@ jobs:
       - run: deno lint assets/openclaw-plugin tools
       - name: Test native Codex route diagnostic without accessing auth or models
         run: deno test --no-config tools/probe-codex-route.test.ts
+      - name: Test scheduled learning health reports
+        run: deno test --no-config --no-remote tools/check-openclaw-moon.test.ts
       - name: Test source-learning canary contracts without auth or inference
         run: deno test --no-config --no-remote tools/source-learning-canary.test.ts
       - uses: actions/download-artifact@v8

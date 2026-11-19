@@ -63,6 +63,39 @@ fn absent_config_preserves_legacy_defaults_and_does_not_create_a_home() {
 }
 
 #[test]
+fn personal_master_profile_can_preserve_the_existing_discord_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let path = home.join("moon.toml");
+    fs::write(&path, "[master]\nprofile_id = 'person-one'\n").unwrap();
+    assert_eq!(
+        output(home, "validate")["master"]["memory_principal"],
+        "openclaw:person-one"
+    );
+    let anchor = "discord:100000000000000001";
+    fs::write(
+        &path,
+        format!("[master]\nprofile_id='person-one'\nmemory_principal='{anchor}'\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        output(home, "validate")["master"]["memory_principal"],
+        anchor
+    );
+    for settings in [
+        "profile_id='gateway-owner'",
+        "profile_id='*'",
+        "profile_id=''",
+        "profile_id='person-one'\nmemory_principal='openclaw:unrelated'",
+        "profile_id='person-one'\nmemory_principal='discord:*'",
+        "profile_id='person-one'\nmemory_principal='bot:discord:100000000000000001'",
+    ] {
+        fs::write(&path, format!("[master]\n{settings}\n")).unwrap();
+        moon(home).arg("validate").assert().failure();
+    }
+}
+
+#[test]
 fn independent_stages_and_prompt_paths_resolve_from_selected_home() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("runtime");
@@ -511,4 +544,151 @@ fn fifo_configuration_does_not_block_validation() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("regular file"));
+}
+
+#[test]
+fn first_authenticated_direct_sender_enrollment_is_explicitly_opt_in() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("moon.toml");
+    for setting in ["", "enroll_first_direct_sender=false\n"] {
+        let before = format!("[master]\nprofile_id='person1'\n{setting}");
+        fs::write(&path, &before).unwrap();
+        assert_eq!(
+            output(home.path(), "validate")["master"]["enroll_first_direct_sender"],
+            false
+        );
+        enroll_sender(home.path(), "100", "first-human")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "first direct sender enrollment is disabled",
+            ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+}
+
+fn enroll_sender(home: &Path, sender: &str, source: &str) -> Command {
+    let mut command = moon(home);
+    command.args([
+        "enroll-master-channel",
+        "--profile-id",
+        "person1",
+        "--channel",
+        "telegram",
+        "--account-id",
+        "default",
+        "--sender-id",
+        sender,
+        "--source",
+        source,
+    ]);
+    command
+}
+
+#[test]
+fn enrollment_survives_restarts_conflicts_and_upgrade_to_a_gateway_link() {
+    let root = tempfile::tempdir().unwrap();
+    for original in [
+        "# preserve this\n[master]\nprofile_id = 'person1'\nenroll_first_direct_sender=true\n[learning.l2]\nenabled = false\n",
+        "# preserve this\nmaster = {profile_id='person1',enroll_first_direct_sender=true,channels=[]}\n",
+        "# preserve this\n[master]\nprofile_id='person1'\nenroll_first_direct_sender=true\n[[master.channels]]\nchannel='other'\naccount_id='a'\nsender_id='other-user'\n",
+    ] {
+        let home = tempfile::tempdir_in(root.path()).unwrap();
+        let path = home.path().join("moon.toml");
+        fs::write(&path, original).unwrap();
+        let enroll = |sender: &str, source: &str| -> Value {
+            let result = enroll_sender(home.path(), sender, source)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            serde_json::from_slice(&result).unwrap()
+        };
+        assert_eq!(
+            output(home.path(), "validate")["master"]["enroll_first_direct_sender"],
+            true
+        );
+        assert_eq!(
+            enroll("100", "first-human"),
+            serde_json::json!({"matches":true,"enrolled":true,"source":"first-human"})
+        );
+        assert_eq!(
+            enroll("101", "gateway"),
+            serde_json::json!({"matches":false,"enrolled":false,"source":"first-human"})
+        );
+        assert_eq!(enroll("100", "first-human")["enrolled"], false);
+        assert_eq!(enroll("100", "allowlist")["enrolled"], true);
+        assert_eq!(enroll("100", "first-human")["source"], "allowlist");
+        assert_eq!(enroll("100", "allowlist")["enrolled"], false);
+        assert_eq!(enroll("101", "allowlist")["matches"], false);
+        let confirmed = enroll("100", "gateway");
+        assert_eq!(confirmed["matches"], true);
+        assert_eq!(confirmed["source"], "gateway");
+        assert_eq!(enroll("100", "allowlist")["source"], "gateway");
+        assert_eq!(enroll("100", "first-human")["source"], "gateway");
+        assert_eq!(enroll("101", "gateway")["matches"], false);
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("# preserve this")
+        );
+        assert_eq!(
+            output(home.path(), "validate")["master"]["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["channel"] == "telegram"
+                    && r["sender_id"] == "100"
+                    && r["source"] == "gateway")
+                .count(),
+            1
+        );
+        assert!(!home.path().join("state/moon.sqlite").exists());
+    }
+}
+
+#[test]
+fn concurrent_first_turns_can_enroll_only_one_sender_per_channel_account() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("moon.toml"),
+        "[master]\nprofile_id='person1'\nenroll_first_direct_sender=true\n",
+    )
+    .unwrap();
+    let gate = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| {
+        let work: Vec<_> = ["one", "two", "one", "two"]
+            .into_iter()
+            .map(|sender| {
+                let gate = &gate;
+                let home = root.path();
+                scope.spawn(move || {
+                    gate.wait();
+                    let raw = enroll_sender(home, sender, "first-human")
+                        .assert()
+                        .success()
+                        .get_output()
+                        .stdout
+                        .clone();
+                    (sender, serde_json::from_slice::<Value>(&raw).unwrap())
+                })
+            })
+            .collect();
+        let results: Vec<_> = work.into_iter().map(|j| j.join().unwrap()).collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, v)| v["enrolled"] == true)
+                .count(),
+            1
+        );
+        let config = output(root.path(), "show");
+        let rows = config["master"]["channels"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["source"], "first-human");
+        for (sender, result) in results {
+            assert_eq!(result["matches"], rows[0]["sender_id"] == sender);
+        }
+    });
 }

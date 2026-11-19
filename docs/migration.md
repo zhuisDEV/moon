@@ -86,6 +86,19 @@ migration preserves historical records and does not infer a missing speaker from
 a quotation, a room’s current membership, or the operator’s legacy ownership
 assignment.
 
+## Schema 20 personal profiles and bot evidence
+
+The development build adds bot provenance and records historical Discord IDs
+that have been used as personal profile memory owners. Existing evidence,
+speakers and ownership are retained. The new profile setting in `moon.toml`
+controls future captures. See
+[profile setup](memory-privacy.md#personal-openclaw-profile).
+
+Rehearse with a consistent copy using an explicit temporary `--home` and
+`--database`. A rollback to signed Moon 2.8.0 requires the pre-migration SQLite
+backup, the matching adapter and skill, and a compatible `moon.toml` from before
+the `[master]` setting. Retain those together before applying a migration.
+
 ## SQLite migrations
 
 Moon applies numbered migrations transactionally. Moon 2.8.0 uses schema v19.

@@ -852,6 +852,67 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
   }
 });
 
+Deno.test("a human learns in a mixed Discord room while private history and private recall stay withheld", async () => {
+  const senderId = "111111111111111111";
+  const owner = `discord:${senderId}`;
+  const readers = [owner, "bot:discord:222222222222222222"];
+  const f = fixture({
+    result: (argv) => ({
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify(
+        argv.includes("bind-room")
+          ? { bound: true, owners: [owner] }
+          : argv.includes("context")
+          ? { ...envelope(packet), public_only: false }
+          : { updated: true },
+      ),
+    }),
+  });
+  const recall = __moonTest.createMoonPromptRecall(f.api, {
+    client: null,
+    stopping: false,
+  }, {
+    access: () => Promise.resolve({ readers, owners: [owner] }),
+    human: () => Promise.resolve(false),
+  });
+  const ctx = {
+    ...context,
+    channel: "discord",
+    accountId: "default",
+    sessionId: "fixture",
+    senderId,
+    chatId: "333333333333333333",
+    assertMemoryAudienceCurrent() {},
+    memoryAudience: {
+      kind: "conversation",
+      agentId: context.agentId,
+      sessionKey: context.sessionKey,
+      sessionId: "fixture",
+    },
+  };
+  try {
+    const response = await recall.prepare({
+      ...event,
+      currentUserMessage: "Show our chat history",
+    }, ctx);
+    assert(!response?.prependContext?.includes(packet));
+    const bound = f.calls.find((argv) => argv.includes("bind-room"));
+    assert(bound);
+    equal(JSON.parse(bound[bound.indexOf("--owners-json") + 1]), [owner]);
+    equal(
+      JSON.parse(bound[bound.indexOf("--audience-json") + 1]),
+      [...readers].sort(),
+    );
+    assert(!f.calls.some((argv) => argv.includes("history")));
+    const query = f.calls.find((argv) => argv.includes("context"));
+    assert(query);
+    equal(JSON.parse(query[query.indexOf("--audience-json") + 1]), []);
+  } finally {
+    await f.service.stop();
+  }
+});
+
 Deno.test("commit skips absent or historic speaker bindings and rejects a sender outside the audience", async () => {
   const user = "discord:111111111111111111";
   let binding: { audience: string[] | null; sender?: string | null } = {
@@ -1119,6 +1180,192 @@ Deno.test("delivered replies freeze their own route permissions and protect earl
       uncorrelated,
     );
     equal(f.calls.filter((v) => v.includes("reply-history")).length, 1);
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("the Master profile binds web evidence and requests only public context and history", async () => {
+  const profile = "personal-profile";
+  const principal = "openclaw:" + profile;
+  const master = {
+    profile_id: profile,
+    memory_principal: principal,
+    channels: [],
+  };
+  const f = fixture({
+    result: (argv) => {
+      const data = argv.includes("bind-room")
+        ? { bound: true, owners: [principal] }
+        : argv.includes("context")
+        ? { ...envelope(), public_only: false }
+        : { updated: true };
+      return { code: 0, stdout: JSON.stringify(data), stderr: "" };
+    },
+  });
+  const ctx = {
+    ...context,
+    channel: "webchat",
+    sessionId: "web-one",
+    sessionKey: "agent:main:web-fixture",
+    accountId: "default",
+    senderId: profile,
+    inputProvenance: { kind: "external_user" },
+    memoryAudience: { kind: "owner-private", agentId: "main" },
+    assertMemoryAudienceCurrent() {},
+  };
+  const access = {
+    ...f.api,
+    config: { ...f.api.config, plugins: { slots: { contextEngine: "moon" } } },
+  };
+  const recall = __moonTest.createMoonPromptRecall(access, {
+    client: null,
+    stopping: false,
+  }, {
+    masterConfig: () => Promise.resolve(master),
+    masterTurn: (...args: Parameters<typeof __moonTest.resolveMasterTurn>) =>
+      __moonTest.resolveMasterTurn(args[0], args[1], args[2], args[3], {
+        admission: () =>
+          Promise.resolve({
+            identity: { type: "profile", id: profile },
+            sender: profile,
+            origin: {
+              messageProvider: "webchat",
+              chatType: "direct",
+              sessionKey: ctx.sessionKey,
+              senderId: profile,
+            },
+            transport: { clients: [{ id: "openclaw-control-ui" }] },
+          }),
+        currentMaster: () => Promise.resolve(master),
+        enroll: () => Promise.resolve(false),
+        authority: () =>
+          Promise.resolve({ senders: new Set(), linkedProfile: profile }),
+      }),
+  });
+  try {
+    const shared = await recall.prepare(event, ctx);
+    assert(!JSON.stringify(shared ?? {}).includes("Synthetic recall"));
+    assert(
+      f.calls.some((argv) =>
+        argv.includes("bind-room") && argv.includes(principal)
+      ),
+    );
+    assert(
+      f.calls.some((argv) => argv.includes("context") && argv.includes("[]")),
+    );
+    const history = await recall.prepare({
+      ...event,
+      currentUserMessage: "What did we say in our chat history?",
+      currentUserMessageId: "second-admission",
+    }, { ...ctx, runId: "private-web-run" });
+    assert(!JSON.stringify(history ?? {}).includes("Synthetic recall"));
+    assert(!f.calls.some((args) => args.includes("history")));
+    equal(f.calls.filter((args) => args.includes("bind-room")).length, 2);
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("unlinking, disabling or rotating the Master keeps cross-channel recall fenced", async () => {
+  const original = "111111111111111111";
+  const master = {
+    profile_id: "p-master",
+    memory_principal: "discord:" + original,
+    channels: [],
+  };
+  let configured: typeof master | null = master;
+  let links = new Set([original]);
+  const protectedPrincipals = new Set<string>();
+  const f = fixture({
+    result: (argv) => {
+      if (argv.includes("--master-memory-principal")) {
+        protectedPrincipals.add(
+          argv[argv.indexOf("--master-memory-principal") + 1],
+        );
+      }
+      const data = argv.includes("bind-room")
+        ? {
+          bound: true,
+          owners: JSON.parse(argv[argv.indexOf("--owners-json") + 1]),
+        }
+        : argv.includes("context")
+        ? { ...envelope(), public_only: false }
+        : { updated: true };
+      return { code: 0, stderr: "", stdout: JSON.stringify(data) };
+    },
+  });
+  const ctx = {
+    ...context,
+    channel: "discord",
+    senderId: original,
+    chatId: original,
+    accountId: "default",
+    sessionId: "fixture-session",
+    inputProvenance: { kind: "external_user" },
+    memoryAudience: { kind: "owner-private", agentId: "main" },
+    assertMemoryAudienceCurrent() {},
+  };
+  const recall = __moonTest.createMoonPromptRecall(f.api, {
+    client: null,
+    stopping: false,
+  }, {
+    masterConfig: () => Promise.resolve(configured),
+    masterSenders: () => Promise.resolve(links),
+    protectedMasterPrincipals: () => Promise.resolve([...protectedPrincipals]),
+    human: () => Promise.resolve(true),
+  });
+  try {
+    assert(
+      (await recall.prepare(event, ctx))?.prependContext.includes(
+        master.memory_principal,
+      ),
+    );
+    links = new Set();
+    equal(
+      await recall.guardDelivery({
+        runId: ctx.runId,
+        sessionKey: ctx.sessionKey,
+        to: original,
+      }, {
+        runId: ctx.runId,
+        sessionKey: ctx.sessionKey,
+        channelId: "discord",
+        accountId: "default",
+      }),
+      { cancel: true },
+    );
+    equal([...protectedPrincipals], [master.memory_principal]);
+    for (
+      const [index, config] of [
+        master,
+        null,
+        {
+          ...master,
+          profile_id: "replacement",
+          memory_principal: "openclaw:replacement",
+        },
+      ].entries()
+    ) {
+      configured = config;
+      await recall.prepare({
+        ...event,
+        currentUserMessageId: "subsequent-" + index,
+      }, {
+        ...ctx,
+        runId: "new-run-" + index,
+      });
+      const last = f.calls.filter((args) => args.includes("bind-room")).at(-1)!;
+      assert(/^peer:[a-f0-9]{64}$/.test(last[last.indexOf("--sender") + 1]));
+      const readers = JSON.parse(last[last.indexOf("--audience-json") + 1]);
+      assert(!readers.includes(master.memory_principal));
+      const contextQuery = f.calls.filter((args) => args.includes("context"))
+        .at(-1)!;
+      equal(
+        JSON.parse(contextQuery[contextQuery.indexOf("--audience-json") + 1]),
+        readers,
+      );
+    }
   } finally {
     await f.service.stop();
   }

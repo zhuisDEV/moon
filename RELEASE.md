@@ -35,7 +35,7 @@ upgrade instructions are in [Getting started](docs/getting-started.md) and
    - `deno fmt --check assets/openclaw-plugin tools docs README.md RELEASE.md SKILL.md CHANGELOG.md`
    - `deno lint assets/openclaw-plugin tools`
    - `sh tools/test-openclaw-adapter.sh "$PWD/target/release/moon"` (requires
-     all four real-binary integration tests in a temporary synthetic runtime)
+     the real-binary integration tests in a temporary synthetic runtime)
    - an isolated migration and real-binary adapter canary
    - review existing migration/restoration and real-model evidence against the
      unchanged runtime; do not repeat paid calls for documentation-only changes
@@ -58,7 +58,7 @@ cargo run --locked --example moon-release -- bundle \
   --binary target/release/moon \
   --minimum-os-version 13.0 \
   --database-schema-min 6 \
-  --database-schema-max 19 \
+  --database-schema-max 20 \
   --legacy-skill-only \
   --output-dir /path/to/release-staging
 ```
@@ -70,11 +70,13 @@ and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 
-Moon 2.8.0 produces schema 19. **Keep `--legacy-skill-only` in both CI and the
-release workflow for this bridge release**: the 2.6.6 reader rejects additional
-payload files. The six signed payloads include binary, adapter and `SKILL.md`.
-Users copy supporting guides from the same tag; the skill has pinned online
-links and the release notes must flag the skill update.
+The development build produces schema 20. Published Moon 2.8.0 produces schema
+19. Switching back to that release requires its matching database backup. **Keep
+`--legacy-skill-only` in both CI and the release workflow for this bridge
+release**: the 2.6.6 reader rejects additional payload files. The six signed
+payloads include binary, adapter and `SKILL.md`. Users copy supporting guides
+from the same tag; the skill has pinned online links and the release notes must
+flag the skill update.
 
 The new reader also supports bounded optional `skill/docs/*.md`. A later release
 can remove the bridge flag once the supported upgrade path includes 2.7.0. All

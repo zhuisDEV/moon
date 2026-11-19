@@ -223,3 +223,141 @@ fn knowing_the_owner_of_an_unattributed_private_claim_does_not_supply_a_speaker(
         assert!(memory.citations.iter().all(|c| c.verified_sender.is_none()));
     }
 }
+
+#[test]
+fn external_bot_has_its_own_provenance_and_only_master_can_recall_it() {
+    const BOT: &str = "bot:discord:100000000000000044";
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("moon.toml"),
+        format!("[master]\nprofile_id='person-one'\nmemory_principal='{FIRST}'\n"),
+    )
+    .unwrap();
+    let master = moon::config::load(home.path()).unwrap().master.unwrap();
+    let mut store = Store::open(home.path().join("moon.sqlite"), 64).unwrap();
+    let key = "b".repeat(64);
+    let session = "bot:fixture";
+    let readers = vec![FIRST.to_owned(), SECOND.to_owned(), BOT.to_owned()];
+    assert!(
+        store
+            .bind_bot_turn(&key, &readers[1..], BOT, &master)
+            .is_err()
+    );
+    assert!(
+        store
+            .bind_bot_turn(&key, &readers[..2], BOT, &master)
+            .is_err()
+    );
+    assert!(
+        store
+            .bind_bot_turn(&key, &readers, SECOND, &master)
+            .is_err()
+    );
+    assert!(
+        store
+            .bind_turn_owners(&key, &readers, BOT, &readers)
+            .is_err()
+    );
+    assert!(store.register_private_audience(&[BOT.to_owned()]).is_err());
+    for _ in 0..2 {
+        assert_eq!(
+            store.bind_bot_turn(&key, &readers, BOT, &master).unwrap(),
+            [FIRST]
+        );
+    }
+    assert!(
+        store
+            .bind_turn_owners(&key, &readers, FIRST, &[FIRST.into()])
+            .is_err()
+    );
+    let bot = store.turn_admission(&key).unwrap();
+    assert_eq!(bot.sender.as_deref(), Some(BOT));
+    assert_eq!(bot.sender_kind.as_deref(), Some("bot"));
+    let bot_scope = store.admitted_memory_scope(&key, session).unwrap();
+    let evidence = |role| EvidenceInput {
+        session_id: session.to_owned(),
+        scope: bot_scope.clone(),
+        title: None,
+        content: format!("{role}:\n{QUOTE}"),
+        completed_at_ms: 1,
+        metadata_json: "{}".into(),
+    };
+    assert!(
+        store
+            .record_turn_evidence(evidence("User"), Some(&key))
+            .is_err()
+    );
+    assert!(
+        store
+            .record_turn_evidence(evidence("Bot"), Some(&key))
+            .unwrap()
+            .changed
+    );
+    assert!(
+        !store
+            .record_turn_evidence(evidence("Bot"), Some(&key))
+            .unwrap()
+            .changed
+    );
+    store
+        .distill_memory(proposal(&(bot_scope.clone(), session.to_owned()), KEY))
+        .unwrap();
+    let admitted_human = store
+        .bind_turn_owners(&"c".repeat(64), &readers, FIRST, &[FIRST.to_owned()])
+        .unwrap();
+    assert_eq!(admitted_human, [FIRST]);
+    assert_ne!(
+        store
+            .admitted_memory_scope(&"c".repeat(64), "human")
+            .unwrap(),
+        bot_scope
+    );
+    let private = recall(&mut store, &[FIRST], 1);
+    assert_eq!(private.memories.len(), 1);
+    assert_eq!(private.memories[0].source_speakers, [BOT]);
+    assert_eq!(
+        private.memories[0].citations[0].verified_sender.as_deref(),
+        Some(BOT)
+    );
+    for viewers in [
+        vec![SECOND],
+        vec![BOT],
+        vec![FIRST, BOT],
+        vec![FIRST, SECOND],
+    ] {
+        assert!(recall(&mut store, &viewers, 0).is_empty());
+    }
+    let history = store.private_turn_history(&[FIRST.into()], 3).unwrap();
+    assert_eq!(history[0]["role"], "bot");
+    assert_eq!(history[0]["turn_sender"], BOT);
+    assert_eq!(history[0]["text"], QUOTE);
+    assert!(
+        store
+            .private_turn_history(&[SECOND.into()], 3)
+            .unwrap()
+            .is_empty()
+    );
+    let batch = store
+        .learning_prepare(&PrepareRequest {
+            run_key: "bot-test".into(),
+            rule_version: "bot-rule".into(),
+            review_session: None,
+            occurrence: None,
+            limit: 5,
+            max_chars: 16000,
+            lease_ms: 60000,
+            max_attempts: 3,
+            before_ms: None,
+            after_ms: None,
+            preview: true,
+        })
+        .unwrap();
+    assert_eq!(batch["evidence"][0]["verified_sender"], BOT);
+    assert!(
+        batch["evidence"][0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Bot:\n")
+    );
+    assert!(store.health().unwrap().ok);
+}

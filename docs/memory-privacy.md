@@ -1,7 +1,79 @@
 # Public and private memory
 
-Moon 2.8.0 uses schema 19. Rehearse the migration on a copy in a separate Moon
-home with the matching 2.8.0 binary and adapter.
+Published Moon 2.8.0 uses schema 19. The personal profile and bot-capture
+features below require the schema 20 binary and its matching adapter. See
+[migration and rollback](migration.md#schema-20-personal-profiles-and-bot-evidence).
+
+## Personal OpenClaw profile
+
+Sign in to OpenClaw as an individual and identify your personal profile with
+`openclaw users list`. The shared `gateway-owner` represents clients using the
+same Gateway credential. OpenClaw cannot link a channel identity to it. A
+Gateway administrator can link the personal profile to the channel `discord`,
+the configured bot account ID and the human's immutable Discord user ID.
+Substitute the identifiers from your Gateway in these examples.
+
+```sh
+openclaw gateway call users.linkChannelIdentity --json --params \
+  '{"profileId":"PERSONAL_PROFILE_ID","identity":{"channelId":"discord","accountId":"default","senderId":"DISCORD_USER_ID"}}'
+openclaw gateway call users.listChannelIdentities --json --params \
+  '{"profileId":"PERSONAL_PROFILE_ID"}'
+```
+
+OpenClaw can grant its linked channel sender owner authority when the profile
+has an administrator role. Check the profile's effective role before linking.
+
+Set the profile once in the operator-owned Moon home:
+
+```toml
+[master]
+profile_id = "YOUR_PERSONAL_PROFILE_ID"
+# Treat the first verified human DM on a new channel account as yours.
+enroll_first_direct_sender = true
+# For an existing installation, preserve the verified owner's existing Discord memories.
+memory_principal = "discord:YOUR_EXISTING_DISCORD_USER_ID"
+```
+
+On a new installation, omitting `memory_principal` uses `openclaw:<profile_id>`.
+To keep using a historical Discord collection, the configured legacy ID must
+match a current Discord link to the personal profile. Once that ID owns
+profile-bound evidence, disabling the setting or changing it to another
+principal does not restore raw Discord access to the old collection.
+
+The installed OpenClaw Gateway is the authority for personal links. Moon uses
+the active local SQLite profile store and the admitted message in the default
+agent session storage. Custom transcript stores and PostgreSQL are outside this
+identity check. A new direct channel must supply a trusted human identity,
+account and direct-conversation receipt. By default Moon can enrol a sender with
+a personal Gateway link or a sole, exact DM allowlist entry. With
+`enroll_first_direct_sender = true`, the first verified human to send a direct
+message on a new channel account is assumed to be Master, even if other people
+can message it. Send the first DM yourself when connecting a new tool. Moon
+records that sender and account under `master.channels` in `moon.toml`.
+Subsequent senders keep their own private learning. Changing the enrolled sender
+requires an operator edit. A conflicting Gateway link blocks first-use enrolment
+and a revoked personal link stops authorising the old identity. This setting
+controls Moon's learning attribution and grants no Gateway role.
+
+In TUI and Control UI chat, Moon checks the personal profile on the accepted
+message. Personal direct turns contribute evidence to the same collection as the
+linked Discord account. Replies in TUI, Control UI and other new chat tools use
+public context only. OpenClaw broadcasts native chat replies by session, and
+external adapters can implement their own delivery. Moon can verify the sender
+on these routes but cannot check all recipients at delivery. Use a verified
+Discord DM to recall what Moon learned across these channels. A shared token
+login, a client label or a display name supplies no personal identity.
+
+New external bot messages in Discord text rooms configured by exact guild and
+channel IDs can enter the Master's private memory when their linked Discord
+identity has both `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY` at receipt.
+Effective guild owner and administrator permissions also qualify. A member with
+live viewing access alone can see new posts, but cannot acquire a durable copy
+of another author's message. The observer captures ordinary new bot posts and
+replies, including rich-card text, after verifying the source message with
+Discord. Moon keeps the bot as the source, deduplicates deliveries and queues
+its evidence for L2 when L2 is enabled. Human turns keep their own ownership.
+Replies in rooms with readable bots receive public context only.
 
 ## What a conversation can recall
 

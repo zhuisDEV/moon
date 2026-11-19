@@ -1689,6 +1689,7 @@ const LEARNING_JOB_TABLES: &[(&str, &str, &str)] = &[
 // a proposal while losing its dependency snapshot would not preserve its work.
 const LEARNING_CHECKPOINT_TABLES: &[(&str, &str)] = &[
     ("privacy_revision", "CAST(id AS TEXT)"),
+    ("master_discord_principals", "principal"),
     ("learning_runs", "run_id"),
     ("source_learning_jobs", "job_id"),
     ("topic_jobs", "job_id"),
@@ -1845,8 +1846,8 @@ fn learning_snapshot(
                 hash.update(bytes);
             }
             let mut key: String = row.get(0)?;
-            if *table == "learning_retry_terms" {
-                // This compound key contains words from private evidence.
+            if matches!(*table, "learning_retry_terms" | "master_discord_principals") {
+                // These keys can reveal private evidence or channel identities.
                 key = sha256_hex(key.as_bytes());
             }
             hashes.insert(key, hex::encode(hash.finalize()));
@@ -3582,7 +3583,7 @@ mod tests {
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 19,
+            database_schema_max: 20,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -3997,7 +3998,7 @@ if [ -z "$version_arg" ] && [ -z "$database_arg" ]; then exit 91; fi
             r#"#!/bin/sh
 for value in "$@"; do
   if [ "$value" = health ]; then
-    printf '%s\n' '{"ok":true,"schema_version":19,"failed_embeddings":0,"dead_embeddings":0}'
+    printf '%s\n' '{"ok":true,"schema_version":20,"failed_embeddings":0,"dead_embeddings":0}'
     exit 0
   fi
 done
@@ -4088,7 +4089,7 @@ done
             ""
         };
         let script = format!(
-            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":19,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+            "#!/bin/sh\nfor value in \"$@\"; do\n  if [ \"$value\" = \"--version\" ]; then\n    printf '%s\\n' '{{\"ok\":true,\"name\":\"moon\",\"version\":\"2.2.0\",\"git_commit\":\"{commit}\",\"git_dirty\":false,\"build_target\":\"{}\",\"build_profile\":\"release\",\"executable\":\"fixture\",\"canonical_executable\":\"fixture\",\"canonical\":true,\"bundle_format\":1}}'\n    exit 0\n  fi\n{migration_failure}done\n{migration_exit}for value in \"$@\"; do\n{candidate_failure}  if [ \"$value\" = \"health\" ]; then printf '%s\\n' '{{\"ok\":true,\"schema_version\":20,\"failed_embeddings\":0,\"dead_embeddings\":0}}'; exit 0; fi\n  if [ \"$value\" = \"search\" ]; then printf '%s\\n' '[{{\"content\":\"Moon isolated update canary\"}}]'; exit 0; fi\ndone\nprintf '%s\\n' '{{\"ok\":true}}'\n",
             current_target()
         );
         let script = require_explicit_database(&script).into_bytes();
@@ -4143,7 +4144,7 @@ done
             adapter_version: "2.2.0".to_owned(),
             skill_version: "2.2.0".to_owned(),
             database_schema_min: 7,
-            database_schema_max: 19,
+            database_schema_max: 20,
             openclaw_min_version: "2026.7.1".to_owned(),
             rollback: RollbackCompatibility {
                 previous_release_supported: true,
@@ -4280,7 +4281,7 @@ done
         assert!(result.ok && result.changed && result.gateway_reachable);
         assert_eq!(result.from_version, "2.1.0");
         assert_eq!(result.to_version, "2.2.0");
-        assert_eq!(result.schema_after, Some(19));
+        assert_eq!(result.schema_after, Some(20));
         assert_eq!(result.verified_key_ids, ["test-release-key"]);
         assert!(fixture.context.home.join("current").is_symlink());
         assert!(fixture.context.home.join("bin/moon").is_symlink());
@@ -5083,6 +5084,16 @@ done
         let before = learning_snapshot(&database, None).unwrap();
         crate::Store::open(&database, 64).unwrap();
         verify_learning_jobs(&database, &before).unwrap();
+        let migrated = learning_snapshot(&database, None).unwrap();
+        connection
+            .execute_batch("DROP TABLE master_discord_principals")
+            .unwrap();
+        assert!(
+            verify_learning_jobs(&database, &migrated)
+                .unwrap_err()
+                .to_string()
+                .contains("removed a learning job table")
+        );
         for sql in [
             "UPDATE source_learning_jobs SET proposals_json='changed proposal' WHERE status='review'",
             "UPDATE topic_jobs SET result_hash='changed result' WHERE status='review'",

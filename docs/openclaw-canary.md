@@ -47,6 +47,43 @@ conflicts for review. The default configuration leaves L2 disabled. Read
 [learning.md](learning.md) for date keys, DST, catch-up, partial-context, and
 retry semantics.
 
+## Check a running installation
+
+The health probe inspects the configured Gateway and its Moon database without
+sending any messages or starting a model run. Use the binary and adapter from
+the same release when comparing production and the probe.
+
+```sh
+deno run --no-prompt --allow-run tools/check-openclaw-moon.js
+```
+
+The health report includes Gateway and Discord connectivity, Codex OAuth, Moon
+integrity, turn admissions and the current scheduled L2 batch. Pass
+`--since <ISO timestamp with timezone>` to count only turns since an upgrade.
+Successful retrievals with zero verified admissions mean those turns supplied no
+new private evidence for L1. An empty L2 window leaves no durable receipt. An
+exhausted scheduled batch remains visible even if a separate operator run later
+succeeds. Inspect `scheduled_batches` and `retry_pending` for those cases.
+
+The isolated adapter suite below verifies private recall after L1, duplicate
+suppression, shared profile ownership and the effect of another bot's room
+permissions. On the development checkout, use the binary built from that same
+checkout. The tests exercise real Moon SQLite storage with synthetic Gateway
+records and model responses. They also advance a simulated Sydney clock across
+03:00 and restart the service to check that L2 commits the due batch once.
+
+For a configured Discord guild text room, run the following with the path to the
+installed OpenClaw package. The probe checks the current permissions using
+Discord's read-only endpoints and the installed Moon verifier. It can choose the
+room and sender automatically when both are unambiguous.
+
+```sh
+node tools/check-discord-learning.mjs /path/to/openclaw
+```
+
+Exit 0 means the room audience was verified. Exit 1 means Moon declined private
+learning there. Exit 2 means the check could not finish.
+
 ## Reproducible checks
 
 Build and test the engine and adapter:

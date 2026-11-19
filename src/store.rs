@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 19;
+const SCHEMA_VERSION: i64 = 20;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -48,6 +48,49 @@ pub(crate) struct PreparedIngest {
 }
 
 impl Store {
+    /// Probe the durable Discord restrictions before the adapter resolves a raw
+    /// sender. Compatible with unused homes and stores awaiting migration.
+    pub fn master_discord_principals(path: &Path) -> Result<Vec<String>> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => anyhow::bail!("master principal lookup requires a regular database file"),
+            Err(error) => return Err(error.into()),
+        }
+        // SQLite's NOFOLLOW also rejects symlinked ancestors, including /var
+        // on macOS. Resolve the directory while keeping the final name pinned.
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let path = parent
+            .canonicalize()?
+            .join(path.file_name().context("database filename missing")?);
+        let mut connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        let tx = connection.transaction()?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version < 20 {
+            return Ok(Vec::new());
+        }
+        anyhow::ensure!(version <= SCHEMA_VERSION, "unsupported database schema");
+        let mut statement =
+            tx.prepare("SELECT principal FROM master_discord_principals ORDER BY principal")?;
+        let principals = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            principals.iter().all(|p| p
+                .strip_prefix("discord:")
+                .is_some_and(crate::config::is_discord_id)),
+            "invalid stored master Discord principal"
+        );
+        Ok(principals)
+    }
+
     pub fn open(path: impl AsRef<Path>, embedding_dimensions: usize) -> Result<Self> {
         validate_dimensions(embedding_dimensions)?;
         register_vector_extension();
@@ -336,6 +379,14 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0019_speaker_scopes.sql"))?;
             transaction.execute(
                 "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(19, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 20 {
+            transaction.execute_batch(include_str!("../migrations/0020_bot_evidence.sql"))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(20, ?1)",
                 [now_ms()],
             )?;
         }

@@ -2,6 +2,7 @@
 //! transport; these APIs do not authenticate a caller running the local CLI.
 use crate::Store;
 use crate::chunking::sha256_hex;
+use crate::config::MasterConfig;
 use crate::model::IngestDocument;
 use crate::privacy::{canonical_readers, validate_reader};
 use crate::redaction::redact_text;
@@ -27,6 +28,8 @@ pub struct TurnAdmission {
     pub audience: Option<Vec<String>>,
     pub sender: Option<String>,
     pub owners: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_kind: Option<String>,
 }
 
 impl Store {
@@ -39,30 +42,101 @@ impl Store {
         sender: &str,
         owners: &[String],
     ) -> Result<Vec<String>> {
+        self.bind_admission(key, readers, sender, owners, "human", None)
+    }
+
+    /// A trusted profile binding can adopt an existing personal Discord scope.
+    pub fn bind_master_turn_owners(
+        &mut self,
+        key: &str,
+        readers: &[String],
+        sender: &str,
+        owners: &[String],
+        master: &MasterConfig,
+    ) -> Result<Vec<String>> {
+        self.bind_admission(key, readers, sender, owners, "human", Some(master))
+    }
+
+    /// The transport verified the external bot author and the owner's access
+    /// to this message. A bot never acquires ownership of the resulting memory.
+    pub fn bind_bot_turn(
+        &mut self,
+        key: &str,
+        readers: &[String],
+        sender: &str,
+        master: &MasterConfig,
+    ) -> Result<Vec<String>> {
+        ensure!(
+            sender
+                .strip_prefix("bot:discord:")
+                .is_some_and(crate::config::is_discord_id),
+            "invalid external Discord bot principal"
+        );
+        self.bind_admission(
+            key,
+            readers,
+            sender,
+            std::slice::from_ref(&master.memory_principal),
+            "bot",
+            Some(master),
+        )
+    }
+
+    fn bind_admission(
+        &mut self,
+        key: &str,
+        readers: &[String],
+        sender: &str,
+        owners: &[String],
+        kind: &str,
+        master: Option<&MasterConfig>,
+    ) -> Result<Vec<String>> {
         validate_admission_key(key)?;
         let audience = canonical_readers(readers)?;
         let owner_set = canonical_readers(owners)?;
         ensure!(
-            owners.iter().any(|p| p == sender) && owners.iter().all(|p| readers.contains(p)),
-            "question owners must include the sender and be verified readers"
+            kind != "human" || (!sender.starts_with("bot:") && owners.iter().any(|p| p == sender)),
+            "human messages must include the verified speaker among their owners"
+        );
+        if let Some(master) = master {
+            ensure!(
+                owners.contains(&master.memory_principal),
+                "Master-bound admissions must include the configured memory principal among their owners"
+            );
+        }
+        ensure!(
+            readers.iter().any(|p| p == sender)
+                && owners
+                    .iter()
+                    .all(|p| !p.starts_with("bot:") && readers.contains(p)),
+            "source and human owners must be verified readers"
         );
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO privacy_admissions(admission_key,audience_json,sender,owners_json,room_access_at_ms)
-             VALUES(?1,?2,?3,?4,?5) ON CONFLICT(admission_key) DO NOTHING",
-            params![key,audience,sender,owner_set,now_ms()],
+            "INSERT INTO privacy_admissions(admission_key,audience_json,sender,owners_json,room_access_at_ms,sender_kind)
+             VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(admission_key) DO NOTHING",
+            params![key,audience,sender,owner_set,now_ms(),kind],
         )?;
         let matches: bool = tx.query_row(
-            "SELECT room_access_at_ms IS NOT NULL AND audience_json=?2 AND sender IS ?3 AND owners_json IS ?4
+            "SELECT room_access_at_ms IS NOT NULL AND audience_json=?2 AND sender IS ?3 AND owners_json IS ?4 AND sender_kind=?5
              FROM privacy_admissions WHERE admission_key=?1",
-            params![key,audience,sender,owner_set], |row| row.get(0),
+            params![key,audience,sender,owner_set,kind], |row| row.get(0),
         )?;
         ensure!(
             matches,
             "conflicting sender, owners or audience for this question"
         );
+        if let Some(master) = master
+            && master.memory_principal.starts_with("discord:")
+        {
+            tx.execute(
+                "INSERT INTO master_discord_principals(principal) VALUES(?1)
+                 ON CONFLICT(principal) DO NOTHING",
+                [&master.memory_principal],
+            )?;
+        }
         tx.commit()?;
         Ok(serde_json::from_str(&owner_set)?)
     }
@@ -70,16 +144,17 @@ impl Store {
     pub fn turn_admission(&self, key: &str) -> Result<TurnAdmission> {
         validate_admission_key(key)?;
         let row = self.connection.query_row(
-            "SELECT audience_json,sender,owners_json FROM privacy_admissions WHERE admission_key=?1",
-            [key], |r| Ok((r.get::<_,String>(0)?, r.get(1)?, r.get::<_,Option<String>>(2)?))
+            "SELECT audience_json,sender,owners_json,sender_kind FROM privacy_admissions WHERE admission_key=?1",
+            [key], |r| Ok((r.get::<_,String>(0)?, r.get(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,String>(3)?))
         ).optional()?;
-        let Some((audience, sender, owners)) = row else {
+        let Some((audience, sender, owners, kind)) = row else {
             return Ok(TurnAdmission::default());
         };
         Ok(TurnAdmission {
             audience: Some(serde_json::from_str(&audience)?),
             sender,
             owners: owners.as_deref().map(serde_json::from_str).transpose()?,
+            sender_kind: (kind == "bot").then_some(kind),
         })
     }
 

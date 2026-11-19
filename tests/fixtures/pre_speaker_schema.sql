@@ -1,4 +1,17 @@
 -- Test-only reconstruction of the schema-18 ACL views and guards.
+DROP TABLE master_discord_principals;
+DROP TRIGGER bot_evidence_requires_role;
+DROP TRIGGER speaker_scope_requires_admission;
+DROP TRIGGER private_audiences_require_human_owners;
+DROP TRIGGER privacy_admissions_require_owners;
+ALTER TABLE privacy_admissions DROP COLUMN sender_kind;
+CREATE TRIGGER privacy_admissions_require_owners BEFORE INSERT ON privacy_admissions
+WHEN NEW.owners_json IS NULL
+    OR NOT EXISTS(SELECT 1 FROM json_each(NEW.owners_json) WHERE value=NEW.sender)
+    OR EXISTS(SELECT value FROM json_each(NEW.owners_json)
+              EXCEPT SELECT value FROM json_each(NEW.audience_json))
+BEGIN SELECT RAISE(ABORT,'admission owners must include sender and be verified readers'); END;
+DELETE FROM schema_migrations WHERE version=20;
 DROP TRIGGER evidence_admissions_require_audience;
 DROP VIEW audience_recallable_memories;
 DROP TRIGGER canonical_document_scope_guard;
