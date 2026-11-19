@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
@@ -62,7 +63,7 @@ function committedTurn(
 
 Deno.test({
   name:
-    "registered TUI and website admissions share private history with a linked Discord DM and fence the legacy principal after settings change",
+    "registered profiles fence private history and exact Discord room admissions can learn with native memory disabled",
   ignore: !binary || !fixtureRoot,
   fn: async () => {
     const directory = await Deno.makeTempDir({ dir: fixtureRoot });
@@ -112,8 +113,9 @@ Deno.test({
           families?: Record<string, { engine: string }>;
         };
         session?: { store: string };
+        plugins?: { slots: { memory: string } };
       };
-      let current: StorageConfig = {};
+      let current: StorageConfig = { plugins: { slots: { memory: "none" } } };
       const identityRuntime = {
         config: { current: () => current },
         agent: {
@@ -324,6 +326,7 @@ Deno.test({
         otherId = "789456123012345678";
       const services = __moonTest.promptRecallServices;
       const verifyHuman = services.human;
+      const verifyAccess = services.access;
       services.human = (
         _api: unknown,
         target: { accountId: string; senderId: string },
@@ -427,8 +430,241 @@ Deno.test({
           !otherHistory.text.includes(cases[0].text) &&
             !otherHistory.text.includes(cases[1].text),
         );
+
+        // OpenClaw omits its memory audience when native memory is disabled.
+        // A live Discord prompt can bind only its exact active user receipt.
+        const chatId = "345678901234567890";
+        const messageId = "456789012345678901";
+        const sessionKey = `agent:main:discord:channel:${chatId}`;
+        const sessionId = "native-memory-disabled";
+        const sourceId = (postId: string) =>
+          "channel-user:v1:" + createHash("sha256").update(
+            JSON.stringify([
+              "discord",
+              "default",
+              `channel:${chatId}`,
+              postId,
+            ]),
+          ).digest("hex");
+        const id = sourceId(messageId);
+        const text =
+          "Show our chat history for the synthetic apricot workflow.";
+        const native = JSON.stringify({
+          message: {
+            content: text,
+            __openclaw: {
+              senderId: otherId,
+              senderIdentity: {
+                type: "observation",
+                id: otherId,
+                senderKind: "unknown",
+                pluginId: "discord",
+                accountId: "default",
+              },
+              requesterOrigin: {
+                accountId: "default",
+                chatType: "channel",
+                conversationId: chatId,
+                messageProvider: "discord",
+                senderId: otherId,
+                sessionKey,
+              },
+              transport: { channel: "discord", messageId },
+              upstreamUserText: text + "\nCurrent time: 09:30 UTC",
+            },
+          },
+        });
+        transcript.prepare("INSERT INTO session_nodes VALUES(?,?,1,?)").run(
+          sessionKey,
+          sessionId,
+          '{"chatType":"channel"}',
+        );
+        transcript.prepare(
+          "INSERT INTO transcript_event_identities VALUES(?,1,?,'message')",
+        ).run(sessionId, id);
+        transcript.prepare(
+          "INSERT INTO transcript_events VALUES(?,1,NULL,?,?,'user')",
+        ).run(
+          sessionId,
+          zstdCompressSync(Buffer.from(native)),
+          Buffer.byteLength(native),
+        );
+        const ctx = {
+          agentId: "main",
+          sessionId,
+          sessionKey,
+          runId: "discord-room-run",
+          channel: "discord",
+          accountId: "default",
+          senderId: otherId,
+          chatId,
+          trigger: "user",
+          hookInvocation: { assertActive() {} },
+        };
+        const owner = `discord:${otherId}`;
+        const bot = "bot:discord:567890123456789012";
+        const laterReader = "discord:456789012345678923";
+        const originalHash = createHash("sha256").update(text).digest("hex");
+        let inspections = 0;
+        services.access = (_api, target) => {
+          assert.equal(target.learningReceipt.messageId, messageId);
+          assert.equal(target.channelId, chatId);
+          assert.equal(target.senderId, otherId);
+          inspections++;
+          return Promise.resolve(
+            target.learningReceipt.textHash === originalHash
+              ? {
+                readers: [owner, laterReader, bot],
+                owners: [owner, laterReader],
+              }
+              : null,
+          );
+        };
+        const request = { currentUserMessage: text, currentUserMessageId: id };
+        const key = __moonTest.admissionKey("main", sessionId, sessionKey, id);
+        const binding = () =>
+          database.prepare(
+            "SELECT sender,owners_json,audience_json FROM privacy_admissions WHERE admission_key=?",
+          ).get(key);
+        await prepare(request, ctx);
+        assert.equal(
+          inspections,
+          0,
+          "an inactive receipt fails before Discord I/O",
+        );
+        assert.equal(binding(), undefined);
+        transcript.prepare(
+          "INSERT INTO session_transcript_active_events VALUES(?,1)",
+        ).run(sessionId);
+        await prepare(request, {
+          ...ctx,
+          memoryAudience: { agentId: "other" },
+        });
+        await prepare(request, { ...ctx, senderId: masterId });
+        assert.equal(
+          inspections,
+          0,
+          "an invalid host grant or sender cannot fall back",
+        );
+        assert.equal(binding(), undefined);
+        // A queued batch uses the last Discord ID with combined text. The
+        // active uncompressed event must not admit any preceding message.
+        const stored = JSON.parse(native);
+        stored.message.content = "An earlier Discord post.\n" + text;
+        transcript.prepare(
+          "UPDATE transcript_events SET event_json=?,event_zstd=NULL WHERE session_id=?",
+        ).run(JSON.stringify(stored), sessionId);
+        await prepare(request, ctx);
+        assert.equal(binding(), undefined);
+        stored.message.content = [{
+          type: "text",
+          text,
+          summary: "An extra projected passage.",
+        }];
+        transcript.prepare(
+          "UPDATE transcript_events SET event_json=? WHERE session_id=?",
+        ).run(JSON.stringify(stored), sessionId);
+        await prepare(request, ctx);
+        assert.equal(binding(), undefined);
+        stored.message.content = [{ type: "text", text }];
+        transcript.prepare(
+          "UPDATE transcript_events SET event_json=? WHERE session_id=?",
+        ).run(JSON.stringify(stored), sessionId);
+        const host = { config: {}, runtime: identityRuntime };
+        assert.equal(
+          (await __moonTest.readHostAdmission(host, ctx, id, "channel"))
+            ?.sourceTextHash,
+          originalHash,
+          "a single host text block has the same exact source as a string",
+        );
+        transcript.prepare(
+          "UPDATE transcript_events SET event_json=NULL,event_zstd=? WHERE session_id=?",
+        ).run(zstdCompressSync(Buffer.from(native)), sessionId);
+        const result = await prepare(request, ctx) as
+          | { prependContext?: string }
+          | undefined;
+        assert(!result?.prependContext?.includes(ordinaryText));
+        assert(!result?.prependContext?.includes("could not verify"));
+        const saved = binding();
+        assert.equal(saved?.sender, owner);
+        assert.deepEqual(JSON.parse(String(saved.owners_json)), [owner]);
+        assert.deepEqual(
+          JSON.parse(String(saved.audience_json)),
+          [bot, laterReader, owner].sort(),
+        );
+        const turnInput = committedTurn(sessionId, sessionKey, id, text);
+        assert.deepEqual(await engine.commitTurn(turnInput), {
+          status: "committed",
+        });
+        assert.deepEqual(await engine.commitTurn(turnInput), {
+          status: "duplicate",
+        });
+        const evidence = database.prepare(`
+          SELECT d.body,p.kind FROM evidence_admissions a
+          JOIN evidence_sessions e ON e.id=a.evidence_id JOIN documents d ON d.id=e.document_id
+          JOIN speaker_memory_scopes s ON s.scope=d.scope
+          JOIN privacy_audiences p ON p.scope=s.audience_scope WHERE a.admission_key=?
+        `).all(key);
+        assert.deepEqual(evidence.map((entry) => [entry.body, entry.kind]), [
+          [`User:\n${text}`, "private"],
+        ]);
+        // Older versions recorded multiple owners under the same stable key.
+        // A later sender-only prompt cannot widen or replace that binding.
+        const legacyPostId = "456789012345678902",
+          legacyId = sourceId(legacyPostId);
+        const legacyRequest = { ...request, currentUserMessageId: legacyId };
+        const legacyTurn = committedTurn(sessionId, sessionKey, legacyId, text);
+        const room = {
+          readers: [owner, laterReader, bot],
+          owners: [owner, laterReader],
+        };
+        services.access = () => Promise.resolve(room);
+        await prepare(legacyRequest, {
+          ...ctx,
+          runId: "legacy-room-run",
+          memoryAudience: {
+            kind: "conversation",
+            agentId: "main",
+            sessionKey,
+            sessionId,
+          },
+          assertMemoryAudienceCurrent() {},
+        });
+        assert.deepEqual(await engine.commitTurn(legacyTurn), {
+          status: "committed",
+        });
+        stored.message.content = text;
+        stored.message.__openclaw.transport.messageId = legacyPostId;
+        transcript.prepare(
+          "INSERT INTO transcript_event_identities VALUES(?,2,?,'message')",
+        ).run(sessionId, legacyId);
+        transcript.prepare(
+          "INSERT INTO transcript_events VALUES(?,2,?,NULL,0,'user')",
+        ).run(sessionId, JSON.stringify(stored));
+        transcript.prepare(
+          "INSERT INTO session_transcript_active_events VALUES(?,2)",
+        ).run(sessionId);
+        await prepare(legacyRequest, { ...ctx, runId: "legacy-room-retry" });
+        assert.deepEqual(await engine.commitTurn(legacyTurn), {
+          status: "duplicate",
+        });
+        const legacyKey = __moonTest.admissionKey(
+          "main",
+          sessionId,
+          sessionKey,
+          legacyId,
+        );
+        const preserved = database.prepare(
+          `SELECT owners_json FROM privacy_admissions
+          JOIN evidence_admissions USING(admission_key) WHERE admission_key=?`,
+        ).all(legacyKey);
+        assert.deepEqual(
+          preserved.map((r) => JSON.parse(String(r.owners_json))),
+          [[laterReader, owner].sort()],
+        );
       } finally {
         services.human = verifyHuman;
+        services.access = verifyAccess;
         database.close();
       }
       assert.deepEqual(errors, []);

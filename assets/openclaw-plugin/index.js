@@ -2227,7 +2227,11 @@ function synthesisPrompt(prepared, settings, maxActions) {
     `Return exactly one JSON object, no Markdown, with at most ${maxActions} actions. Use an empty actions array when nothing deserves retention.`,
     'Schema: {"actions":[{"action":"create|confirm|supersede|merge|review","canonical_key":string,"kind":"fact|preference|decision|workflow|relationship|summary|observation","durability":"durable|temporary","title":string|null,"content":string,"importance":number,"confidence":number,"target_document_id":number|null,"merge_document_ids":number[],"evidence":[{"session_id":string,"quote":string}]}]}',
     prepared.context_limited
-      ? `Context is partial: ${prepared.omitted_memory_count} related memories were omitted by the input budget. Absence from this packet does not prove a claim is new. Only act on a clearly identified entity/property; use review for an uncertain target that is included.`
+      ? `Context is partial. The packet omits ${prepared.omitted_memory_count} known matches.${
+        prepared.candidate_scan_limited
+          ? " More candidates remain unexamined."
+          : ""
+      } A matching claim may already exist outside this packet. Only act on a clearly identified entity and property. Use review for an uncertain target in the packet.`
       : "",
     `Scope: ${prepared.scope}`,
     `Existing memories (JSON): ${JSON.stringify(prepared.memories)}`,
@@ -3567,9 +3571,9 @@ async function readProtectedDiscordPrincipals(api, settings) {
   return principals;
 }
 
-function selectHostAdmission(db, ctx, messageId) {
-  // Read only identity fields of the exact accepted user event on the active
-  // branch. Never use a display name, a prior sender or projected history.
+function selectHostAdmission(db, ctx, messageId, readSourceText = false) {
+  // Only a Discord channel receipt needs the bounded canonical user content.
+  // The model projection lives separately in __openclaw.upstreamUserText.
   return db.prepare(`SELECT
     CASE WHEN e.event_zstd IS NULL THEN json_object(
       'senderIdentity', json_extract(e.event_json,'$.message.__openclaw.senderIdentity'),
@@ -3577,6 +3581,9 @@ function selectHostAdmission(db, ctx, messageId) {
       'requesterOrigin', json_extract(e.event_json,'$.message.__openclaw.requesterOrigin'),
       'transport', json_extract(e.event_json,'$.message.__openclaw.transport')
     ) END AS metadata,
+    CASE WHEN ? AND e.event_zstd IS NULL
+      AND length(CAST(json_extract(e.event_json,'$.message.content') AS BLOB)) <= 32768
+      THEN json_quote(json_extract(e.event_json,'$.message.content')) END AS source_json,
     CASE WHEN e.event_utf8_bytes BETWEEN 1 AND 2097152 THEN e.event_zstd END AS compressed,
     json_extract(s.entry_json,'$.chatType') AS chat_type,
     json_extract(s.entry_json,'$.incognito') AS incognito
@@ -3586,33 +3593,56 @@ function selectHostAdmission(db, ctx, messageId) {
     JOIN session_transcript_active_events a ON a.session_id=e.session_id AND a.event_seq=e.seq
     WHERE s.session_key=? AND s.current_session_id=? AND s.entry_valid=1
       AND i.message_idempotency_key=? AND i.event_type='message' AND e.message_role='user'
-    LIMIT 1`).get(ctx.sessionKey, ctx.sessionId, messageId);
+    LIMIT 1`).get(
+    readSourceText ? 1 : 0,
+    ctx.sessionKey,
+    ctx.sessionId,
+    messageId,
+  );
 }
 
-async function readHostAdmission(api, ctx, messageId) {
+function discordSourceTextHash(content) {
+  // A single literal post may be stored as a string or one text block.
+  // Never strip a prompt prefix, timestamp, or preceding batched message.
+  let text = content;
+  if (Array.isArray(content)) {
+    if (content.length !== 1 || content[0]?.type !== "text") return null;
+    text = content[0].text;
+    if (visibleText(content) !== text) return null;
+  }
+  return nonEmptyString(text) && Buffer.byteLength(text, "utf8") <= 16_000
+    ? createHash("sha256").update(text).digest("hex")
+    : null;
+}
+
+async function readHostAdmission(api, ctx, messageId, chatType = "direct") {
   try {
     const row = await withHostIdentityDatabase(
       api,
       "agent",
       ctx.agentId,
-      (db) => selectHostAdmission(db, ctx, messageId),
+      (db) => selectHostAdmission(db, ctx, messageId, chatType === "channel"),
     );
     if (
       !row || row.incognito ||
-      (row.chat_type != null && row.chat_type !== "direct")
+      (row.chat_type !== chatType &&
+        !(chatType === "direct" && row.chat_type == null))
     ) return null;
-    let metadata;
+    let metadata, sourceContent;
     if (row.metadata) {
       metadata = JSON.parse(row.metadata);
+      if (row.source_json) sourceContent = JSON.parse(row.source_json);
     } else if (row.compressed) {
       // OpenClaw may compress long user entries. Bound decompression to the
       // identity reader's limit and immediately discard the private text.
       const { zstdDecompressSync } = await import("node:zlib");
-      metadata = JSON.parse(
+      const message = JSON.parse(
         zstdDecompressSync(row.compressed, {
           maxOutputLength: 2097152,
         }).toString("utf8"),
-      ).message?.__openclaw;
+      ).message;
+      metadata = message?.__openclaw;
+      if (chatType === "channel") sourceContent = message?.content;
     }
     if (!metadata) return null;
     // Native Gateway sessions can omit the optional session chatType.
@@ -3627,6 +3657,9 @@ async function readHostAdmission(api, ctx, messageId) {
       sender: metadata.senderId,
       origin: metadata.requesterOrigin,
       transport: metadata.transport,
+      ...(chatType === "channel" && {
+        sourceTextHash: discordSourceTextHash(sourceContent),
+      }),
     };
   } catch {
     return null;
@@ -3947,7 +3980,13 @@ async function verifiedTurnGrant(api, settings, event, ctx, services) {
     return null;
   }
   if (ctx.channel === "discord") {
-    const grant = await discordTurnReaders(api, ctx, services);
+    const grant = await discordTurnReaders(
+      api,
+      ctx,
+      services,
+      event.currentUserMessageId,
+      settings.learningEnabled,
+    );
     if (!grant) return null;
     return await profileDiscordGrant(api, settings, ctx, grant, services);
   }
@@ -3960,31 +3999,97 @@ async function verifiedTurnGrant(api, settings, event, ctx, services) {
   return master ? await services.masterTurn(api, master, event, ctx) : null;
 }
 
-async function discordTurnReaders(api, ctx, services) {
+function discordLearningReceipt(row, ctx, hostId) {
+  const { identity, origin, transport } = row ?? {};
+  if (
+    identity?.type !== "observation" || identity.id !== ctx.senderId ||
+    !["human", "unknown"].includes(identity.senderKind) ||
+    identity.pluginId !== "discord" || identity.accountId !== ctx.accountId ||
+    row.sender !== ctx.senderId || origin?.messageProvider !== "discord" ||
+    origin.chatType !== "channel" || origin.sessionKey !== ctx.sessionKey ||
+    origin.accountId !== ctx.accountId || origin.senderId !== ctx.senderId ||
+    origin.conversationId !== ctx.chatId || origin.messageThreadId != null ||
+    transport?.channel !== "discord" ||
+    !discordSnowflake(transport.messageId) ||
+    !/^[a-f0-9]{64}$/.test(row.sourceTextHash ?? "")
+  ) return null;
+  // OpenClaw derives this ID from the channel, account and original message.
+  // A Gateway turn with Discord-looking sender metadata is a different source.
+  const digest = createHash("sha256").update(JSON.stringify([
+    "discord",
+    ctx.accountId,
+    `channel:${ctx.chatId}`,
+    transport.messageId,
+  ])).digest("hex");
+  return hostId === `channel-user:v1:${digest}`
+    ? { messageId: transport.messageId, textHash: row.sourceTextHash }
+    : null;
+}
+
+async function discordLearningRoute(api, ctx, hostId, services) {
+  if (
+    ctx.chatId === ctx.senderId ||
+    ctx.sessionKey !== `agent:${ctx.agentId}:discord:channel:${ctx.chatId}` ||
+    typeof ctx.hookInvocation?.assertActive !== "function"
+  ) return null;
+  const currentReceipt = async () => {
+    ctx.hookInvocation.assertActive();
+    const config = api.runtime?.config?.current?.() ?? api.config;
+    if (config?.plugins?.slots?.memory !== "none") return null;
+    const row = await services.admission?.(api, ctx, hostId, "channel");
+    ctx.hookInvocation.assertActive();
+    return discordLearningReceipt(row, ctx, hostId);
+  };
+  const receipt = await currentReceipt();
+  return receipt && {
+    receipt,
+    async recheck() {
+      const current = await currentReceipt();
+      if (
+        current?.messageId !== receipt.messageId ||
+        current.textHash !== receipt.textHash
+      ) {
+        throw new AudienceUnavailable();
+      }
+    },
+  };
+}
+
+async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
   if (
     ctx.channel !== "discord" || ctx.trigger !== "user" ||
     !nonEmptyString(ctx.runId) ||
     (ctx.inputProvenance && ctx.inputProvenance.kind !== "external_user") ||
     !nonEmptyString(ctx.accountId) || !ctx.agentId || !ctx.sessionId ||
     !ctx.sessionKey ||
-    !/^\d{15,20}$/.test(ctx.senderId ?? "") ||
-    !/^\d{15,20}$/.test(ctx.chatId ?? "") ||
-    typeof ctx.assertMemoryAudienceCurrent !== "function" ||
-    ctx.memoryAudience?.agentId !== ctx.agentId
+    !discordSnowflake(ctx.senderId) || !discordSnowflake(ctx.chatId)
   ) return null;
   const direct = ctx.chatId === ctx.senderId;
   const audience = ctx.memoryAudience;
-  if (
-    audience.kind !== "owner-private" &&
-    (audience.kind !== "conversation" ||
-      audience.sessionKey !== ctx.sessionKey ||
-      audience.sessionId !== ctx.sessionId)
+  // A rejected or stale host grant must never be replaced. With the native
+  // memory slot disabled a live, exact Discord admission can authorise learning
+  // only; it provides no authority to disclose private context.
+  const noHostGrant = audience === undefined &&
+    ctx.assertMemoryAudienceCurrent === undefined;
+  let learningRoute;
+  if (noHostGrant) {
+    if (!learningEnabled) return null;
+    learningRoute = await discordLearningRoute(api, ctx, hostId, services);
+    if (!learningRoute) return null;
+  } else if (
+    typeof ctx.assertMemoryAudienceCurrent !== "function" ||
+    audience?.agentId !== ctx.agentId ||
+    (audience.kind !== "owner-private" &&
+      (audience.kind !== "conversation" ||
+        audience.sessionKey !== ctx.sessionKey ||
+        audience.sessionId !== ctx.sessionId))
   ) return null;
   const target = {
     accountId: ctx.accountId,
     senderId: ctx.senderId,
     channelId: ctx.chatId,
-    requireDirect: audience.kind === "owner-private",
+    requireDirect: audience?.kind === "owner-private",
+    ...(learningRoute && { learningReceipt: learningRoute.receipt }),
   };
   checkAudienceGuard(ctx);
   const actor = `discord:${ctx.senderId}`;
@@ -4021,14 +4126,20 @@ async function discordTurnReaders(api, ctx, services) {
     return null;
   }
   checkAudienceGuard(ctx);
+  if (learningRoute) await learningRoute.recheck();
   if (!initial.readers.includes(actor)) return null;
   // The author owns their own question even when they can only see live posts.
-  const owners = [...new Set([...initial.owners, actor])].sort();
+  // The source proves its author's ownership even after queueing. This
+  // fallback has no historical ACL for granting ownership to other readers.
+  const owners = learningRoute
+    ? [actor]
+    : [...new Set([...initial.owners, actor])].sort();
   return {
     readers: initial.readers,
     sender: actor,
     directPeer: initial.directPeer,
     owners,
+    ...(learningRoute && { privateRecall: false }),
     snapshot,
     async recheck() {
       checkAudienceGuard(ctx);
@@ -4039,6 +4150,7 @@ async function discordTurnReaders(api, ctx, services) {
         }
       }
       checkAudienceGuard(ctx);
+      if (learningRoute) await learningRoute.recheck();
     },
   };
 }
@@ -4166,6 +4278,7 @@ function replyDigest(content) {
 const promptRecallServices = {
   access: (...args) => resolveDiscordRoomAccess(...args),
   human: (...args) => isDiscordHuman(...args),
+  admission: readHostAdmission,
   masterConfig: (api, settings) => readMasterConfig(api, settings),
   protectedMasterPrincipals: readProtectedDiscordPrincipals,
   masterSenders: (...args) => readMasterChannelSenders(...args),
@@ -4391,6 +4504,7 @@ function createMoonPromptRecall(
           );
           if (key && settings.learningEnabled) {
             await grant.recheck();
+            assertActive();
             try {
               const result = JSON.parse(
                 await runMoonCommand(api, [
@@ -4420,7 +4534,7 @@ function createMoonPromptRecall(
             } catch {
               throw new AudienceUnavailable();
             }
-            if (ctx.channel === "discord") {
+            if (ctx.channel === "discord" && grant.privateRecall !== false) {
               rememberDelivery(ctx, grant, key, false);
             }
           }
@@ -5375,11 +5489,34 @@ export async function discordRoomAccess(
   senderId,
   requireDirect = false,
   includeBotReaders = false,
+  learningReceipt,
 ) {
   if (!discordSnowflake(channelId) || !discordSnowflake(senderId)) return null;
   const channel = await get(`/channels/${channelId}`);
   if (channel?.id !== channelId || (requireDirect && channel.type !== 1)) {
     return null;
+  }
+  if (learningReceipt !== undefined) {
+    const { messageId, textHash } = learningReceipt ?? {};
+    if (
+      channel.type !== 0 || !discordSnowflake(messageId) ||
+      !/^[a-f0-9]{64}$/.test(textHash ?? "")
+    ) return null;
+    const message = await get(
+      `/channels/${channelId}/messages/${messageId}`,
+    );
+    if (
+      message?.id !== messageId || message.channel_id !== channelId ||
+      typeof message.content !== "string" ||
+      discordSourceTextHash(message.content) !== textHash ||
+      message.author?.id !== senderId || message.author.bot ||
+      message.author.system || message.webhook_id || message.edited_timestamp ||
+      !Number.isSafeInteger(message.flags ?? 0) ||
+      ((message.flags ?? 0) & (2 | 64 | 128)) !== 0 ||
+      ![0, 19].includes(message.type) ||
+      message.message_reference?.type === 1 ||
+      message.message_snapshots?.length
+    ) return null;
   }
   if (channel.type === 1 || channel.type === 3) {
     // Discord returns the other recipients of a DM. Unknown participants,
@@ -5488,12 +5625,19 @@ export async function discordRoomAccess(
 
 export async function resolveDiscordRoomAccess(
   api,
-  { accountId, channelId, senderId, requireDirect = false },
+  { accountId, channelId, senderId, requireDirect = false, learningReceipt },
 ) {
   try {
     const get = await discordPrivacyClient(api, accountId);
     return get
-      ? await discordRoomAccess(get, channelId, senderId, requireDirect, true)
+      ? await discordRoomAccess(
+        get,
+        channelId,
+        senderId,
+        requireDirect,
+        true,
+        learningReceipt,
+      )
       : null;
   } catch {
     return null;

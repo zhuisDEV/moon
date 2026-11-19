@@ -31,16 +31,22 @@ Delivered replies have a separate owner list. Chat recall uses the destination
 reader set verified by the host. Local `search`, unscoped `context`, exports,
 legacy review and storage inspection are operator commands and must never serve
 as fallbacks in chat. When readers cannot be verified, use public recall only
-and ask in a verified DM. Use `/moonpublic` for explicit sharing. See
-[privacy and legacy review](docs/memory-privacy.md).
+and ask in a DM where the host can verify the audience. Use `/moonpublic` for
+explicit sharing. See [privacy and legacy review](docs/memory-privacy.md).
+
+With OpenClaw's native memory disabled, verified human turns in Discord guild
+text rooms can still contribute private evidence. Moon checks the exact text of
+one original Discord post and attributes ownership to the author. These turns
+use public Moon context in replies. A prompt acknowledgement alone does not
+confirm learning.
 
 On schema 20, `[master].profile_id` selects a personal OpenClaw profile. Require
-an authenticated turn from that profile or an enrolled channel sender. Use a
-verified Discord DM to recall private memories learned through TUI, Control UI
-and other enrolled chat tools. Those tools use public context in replies. A room
-with a readable external bot can learn from its human speakers and return public
-context. Externally authored bot reports belong to the verified Master who could
-read them and retain their bot attribution. See the
+an authenticated turn from that profile or an enrolled channel sender. A Discord
+DM with a verified host audience can recall private memories learned through
+TUI, Control UI and other enrolled chat tools. Those tools use public context in
+replies. A room with a readable external bot can learn from its human speakers
+and return public context. Externally authored bot reports belong to the
+verified Master who could read them and retain their bot attribution. See the
 [profile setup guide](docs/memory-privacy.md#personal-openclaw-profile).
 
 ## Choose the right runtime

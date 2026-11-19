@@ -1161,6 +1161,65 @@ fn prepare_reserves_room_for_original_context_and_reports_omissions() {
 }
 
 #[test]
+fn prepare_reports_known_omissions_and_unscanned_candidates_separately() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let mut req = request("bounded-comparison");
+    req.preview = true;
+    req.max_chars = 2_097_152;
+    req.after_ms = Some(200);
+    record(
+        &mut store,
+        "new",
+        "global",
+        "Cedar reconciliation verifies checklist entries.",
+        200,
+    );
+    let mut first = 0;
+    for (count, omitted, scan_limited) in [
+        (128, 0, false),
+        (130, 2, false),
+        (512, 384, false),
+        (513, 384, true),
+    ] {
+        let lines: Vec<String> = (first..count)
+            .map(|n| format!("Cedar reconciliation verifies checklist entry {n}."))
+            .collect();
+        let session = format!("old-{count}");
+        record(&mut store, &session, "global", &lines.join("\n"), 100);
+        let claims: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| proposal(&format!("cedar:{}", first + i), &session, line))
+            .collect();
+        for batch in claims.chunks(32) {
+            store.distill_batch(batch.to_vec()).unwrap();
+        }
+        let packet = store.learning_prepare(&req).unwrap();
+        assert_eq!(packet["memories"].as_array().unwrap().len(), 128);
+        assert_eq!(packet["omitted_memory_count"], omitted);
+        assert_eq!(packet["candidate_scan_limited"], scan_limited);
+        assert_eq!(packet["context_limited"], omitted > 0 || scan_limited);
+        first = count;
+    }
+    // Newer candidates may all be irrelevant. The scan cap still prevents
+    // a complete comparison even when no scored match was omitted.
+    record(
+        &mut store,
+        "unrelated",
+        "global",
+        "Packed vinegar bottles.",
+        300,
+    );
+    req.after_ms = Some(300);
+    let packet = store.learning_prepare(&req).unwrap();
+    assert!(packet["memories"].as_array().unwrap().is_empty());
+    assert_eq!(packet["omitted_memory_count"], 0);
+    assert_eq!(packet["candidate_scan_limited"], true);
+    assert_eq!(packet["context_limited"], true);
+}
+
+#[test]
 fn numeric_claims_preserve_complete_tokens_and_normalize_only_grouped_commas() {
     for (source, changed) in [
         ("100", "-100"),

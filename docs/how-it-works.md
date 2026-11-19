@@ -44,6 +44,13 @@ transaction. This makes retries and concurrent acknowledgements idempotent. The
 parent session and channel identity stay in sanitized metadata. Moon does not
 read the growing transcript during assembly or commit.
 
+When OpenClaw's native memory slot is disabled, the prompt hook can verify an
+ordinary guild text turn before inference. It looks up the exact active user
+admission in the default host SQLite store, matches its canonical text to one
+original Discord post, and verifies room access. The author owns the question.
+The same durable commit path records the evidence after the reply. This route
+uses public recall and does not confirm private reply delivery.
+
 Development builds with schema 20 can verify the accepted sender against a
 [personal OpenClaw profile](memory-privacy.md#personal-openclaw-profile). In
 configured Discord text rooms, a fresh bot post can also become private L2

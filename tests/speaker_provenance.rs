@@ -194,6 +194,62 @@ fn another_speakers_record_cannot_be_a_correction_merge_or_confirmation_target()
 }
 
 #[test]
+fn expired_speaker_head_is_hidden_from_recall_and_eligible_for_correction() {
+    let home = tempfile::tempdir().unwrap();
+    let mut store = Store::open(home.path().join("moon.sqlite"), 64).unwrap();
+    let original = record(&mut store, FIRST, 1, QUOTE);
+    let old = store
+        .distill_memory(DistillInput {
+            valid_until_ms: Some(2),
+            ..proposal(&original, KEY)
+        })
+        .unwrap();
+    assert!(recall(&mut store, &[FIRST], 1).is_empty());
+
+    let update = "I now prefer chamomile tea with breakfast.";
+    let correction = record(&mut store, FIRST, 3, update);
+    let prepared = store
+        .learning_prepare(&PrepareRequest {
+            run_key: "correct-expired".into(),
+            rule_version: String::new(),
+            occurrence: None,
+            review_session: None,
+            limit: 8,
+            max_chars: 32_000,
+            lease_ms: 60_000,
+            max_attempts: 3,
+            before_ms: None,
+            after_ms: Some(3),
+            preview: false,
+        })
+        .unwrap();
+    assert_eq!(prepared["memories"][0]["document_id"], old.document_id);
+    assert!(
+        prepared["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["session_id"] == original.1
+                && e["selected"] == false
+                && e["verified_sender"] == FIRST)
+    );
+    let action = serde_json::from_value(json!({"actions":[{
+        "action":"supersede","canonical_key":KEY,"kind":"preference","content":update,
+        "confidence":0.95,"importance":0.9,"target_document_id":old.document_id,
+        "evidence":[{"session_id":correction.1,"quote":update}]
+    }]}))
+    .unwrap();
+    let applied = store
+        .learning_apply(prepared["run_id"].as_str().unwrap(), action, false)
+        .unwrap();
+    assert_eq!(
+        applied["outcomes"][0]["superseded_document_id"],
+        old.document_id
+    );
+    assert!(recall(&mut store, &[OUTSIDER], 1).is_empty());
+}
+
+#[test]
 fn knowing_the_owner_of_an_unattributed_private_claim_does_not_supply_a_speaker() {
     let home = tempfile::tempdir().unwrap();
     let mut store = Store::open(home.path().join("moon.sqlite"), 64).unwrap();

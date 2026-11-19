@@ -133,13 +133,13 @@ not. Queued, pending-review and completed jobs must survive. Recovery also
 checks leases before replacing an intact database; a corrupt failed-migration
 database remains restorable after workers have stopped.
 
-Before restarting the candidate host, the updater persists a full post-migration
-learning checkpoint. If the host then changes learning jobs and validation
-fails, automatic rollback stops with the current database and candidate retained
-for operator recovery. This protects completed work even when no lease remains.
-Do not report that outcome as a completed rollback or force replacement with the
-older snapshot. Migration failures before restart still use normal verified
-restoration; unreadable corrupt databases retain the existing recovery path.
+Before restarting the candidate host, the updater fingerprints a consistent
+SQLite backup that includes committed WAL pages. If validation later fails, Moon
+locks the candidate database, compares the full fingerprint and holds the lock
+through restoration. Any database change, including an operator write, stops
+restoration for review. An unreadable post-restart database or an older journal
+missing the full fingerprint also requires operator recovery. Migration failures
+before the candidate starts can still restore the verified backup.
 
 Signed bundles may include up to 32 regular `skill/docs/*.md` files, each at
 most 4 MiB, in addition to the existing required payload. The archive manifest
@@ -316,6 +316,12 @@ both an exact signed version and `--allow-downgrade`, and still cannot open a
 newer unsupported schema. Recover with the old binary's matching database rather
 than treating downgrade as a reverse migration.
 
+The updater installs and recovers the agent skill for the active OpenClaw
+profile. It uses `OPENCLAW_STATE_DIR`, then the parent of
+`OPENCLAW_CONFIG_PATH`, then the selected profile under the OpenClaw home.
+`MOON_SKILL_PATH` explicitly selects a different `SKILL.md`. Use the same
+profile and skill path when resuming an interrupted update.
+
 The transaction performs these durable phases:
 
 1. Check for interrupted transactions before fetching a release or checking
@@ -353,7 +359,7 @@ incident review.
 If a post-quiesce gate fails and restoration is safe, Moon switches back to the
 prior immutable release, restores the prior skill and verified SQLite backup,
 restarts OpenClaw, and verifies rollback health before returning
-`rollback_completed`. Post-restart learning changes or conflicting skill edits
+`rollback_completed`. Post-restart database changes or conflicting skill edits
 stop restoration for operator review, preserving newer work. If rollback cannot
 itself be proven, it returns `rollback_failed`, preserves the lock, journal,
 failed database, releases, and backup, and must not be reported as a safe

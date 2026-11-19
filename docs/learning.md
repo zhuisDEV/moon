@@ -214,18 +214,21 @@ supporting evidence time plus `observation_ttl_hours`, not the date a historical
 batch happens to run. New temporary claims use `observation`; legacy claims can
 receive expiry while retaining their kind. `observed_at_ms` and
 `last_confirmed_at_ms` distinguish source observation from later confirmation.
-Expired memories leave normal recall but remain available with their evidence
-for audit. This does not retroactively classify every old memory as temporary.
+Expired memories leave normal recall. Within the same learning scope, fresh
+evidence can still confirm or correct an expired head under its original key.
+The learner checks its original citations before reconciling it. This does not
+retroactively classify every old memory as temporary.
 
-Related-memory selection is bounded, not a full database review. A prepared
-packet reports `context_limited` and `omitted_memory_count` when related claims
-cannot all fit. The model is told that comparison may be incomplete. If the
-oldest pending evidence is too large, or no related claim and its original
-evidence can fit, preparation fails and preserves the backlog. Inspect the
-packet before increasing its budget; do not treat a partial packet as proof that
-no conflict exists. `learning status` exposes review reasons and evidence
-session IDs for human inspection; it is not an automatic review-resolution
-command.
+L2 scores up to 512 recent candidate memories and selects up to 128 matches. A
+prepared packet sets `context_limited` when any of those bounds or the character
+budget reduces coverage. `omitted_memory_count` counts scored matches left out
+of the packet. `candidate_scan_limited` means more candidates remained unscored.
+The model is told when comparison is incomplete. If the oldest pending evidence
+is too large, or no related claim and its original evidence can fit, preparation
+fails and preserves the backlog. Inspect the packet before increasing its
+budget; do not treat a partial packet as proof that no conflict exists.
+`learning status` exposes review reasons and evidence session IDs for human
+inspection; it is not an automatic review-resolution command.
 
 ## Daily schedule and recovery
 

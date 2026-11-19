@@ -11,6 +11,17 @@
   records a bot's new posts as bot-authored evidence for the linked person with
   access to the room and its history. Replies there use public Moon context.
   [Setup and privacy rules](docs/memory-privacy.md#personal-openclaw-profile)
+- Restore verified human learning in ordinary Discord text rooms when OpenClaw's
+  native memory is disabled. Use the exact active host admission and Discord
+  post to verify the source. Replies on this path use public Moon context.
+- Verify the complete text of a Discord post before learning from it without a
+  host audience grant. Only the author gains ownership through this check.
+- Let L2 correct expired observations and report when candidate limits make its
+  input incomplete. Protect recorded evidence against replacement through raw
+  ingestion in operator scopes.
+- Check the full candidate database before automatic rollback, resolve the
+  installed skill in the selected OpenClaw profile, and verify the source of
+  adapter and skill files when building release archives.
 
 ## 2.8.0 - 2026-11-19
 

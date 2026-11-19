@@ -1,4 +1,5 @@
 import { __moonTest, discordRoomAccess } from "./index.js";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 const [
   guild,
@@ -111,6 +112,56 @@ Deno.test("learning counts a readable bot in the audience but never as a private
   ) {
     throw Error("wrong human and bot ACLs for private learning");
   }
+});
+
+Deno.test("learning without a host audience checks the exact human Discord post before verifying room owners", async () => {
+  const messageId = "20000000000000000";
+  const message = {
+    id: messageId,
+    channel_id: channel,
+    type: 19,
+    author: { id: sender },
+    content: "One exact Discord post.\nPreserve this second line.",
+  };
+  const verify = (reply: Record<string, unknown>, channelType = 0) => {
+    const get = fixtures(true, channelType);
+    return discordRoomAccess(
+      (route: string) =>
+        route === `/channels/${channel}/messages/${messageId}`
+          ? Promise.resolve(reply)
+          : get(route),
+      channel,
+      sender,
+      false,
+      true,
+      {
+        messageId,
+        textHash: createHash("sha256").update(message.content).digest("hex"),
+      },
+    );
+  };
+  const valid = await verify(message);
+  if (
+    !valid?.readers.includes(`discord:${sender}`) ||
+    !valid.readers.includes(`bot:discord:${admin}`)
+  ) throw Error("an exact human reply should admit the mixed room");
+  for (
+    const invalid of [
+      { ...message, author: { id: sender, bot: true } },
+      { ...message, author: { id: owner } },
+      { ...message, id: owner },
+      { ...message, channel_id: guild },
+      { ...message, webhook_id: admin },
+      { ...message, edited_timestamp: "2026-11-19T00:00:00Z" },
+      { ...message, message_reference: { type: 1 } },
+      { ...message, content: "Only the final post in a batch." },
+      { ...message, content: message.content + "\nCurrent time: 09:30 UTC" },
+      { ...message, content: "" },
+    ]
+  ) {
+    if (await verify(invalid)) throw Error("unverified Discord source message");
+  }
+  if (await verify(message, 11)) throw Error("a thread should not be admitted");
 });
 
 Deno.test("fresh external bot reports use an immutable private admission only for a linked master in the room", async () => {

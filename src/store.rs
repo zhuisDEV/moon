@@ -1874,9 +1874,8 @@ pub(crate) fn ingest_prepared(
         // evidence, reactivate a withdrawn publication, or edit a legacy original.
         let protected: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM privacy_legacy_documents WHERE document_id=?1)
-                 OR EXISTS(SELECT 1 FROM documents d JOIN memory_audiences a ON a.scope=d.scope
-                           WHERE d.id=?1 AND (EXISTS(SELECT 1 FROM memory_items WHERE document_id=d.id)
-                            OR EXISTS(SELECT 1 FROM evidence_sessions WHERE document_id=d.id)))",
+                 OR EXISTS(SELECT 1 FROM memory_items WHERE document_id=?1)
+                 OR EXISTS(SELECT 1 FROM evidence_sessions WHERE document_id=?1)",
             [document_id],
             |row| row.get(0),
         )?;

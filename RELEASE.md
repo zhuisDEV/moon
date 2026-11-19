@@ -96,10 +96,12 @@ operator defaults `--openclaw-min-version` to that floor; keep it aligned with
 the adapter package's `openclaw.compat.minGatewayVersion`. Do not lower the
 signed floor without verifying the required host capabilities.
 
-The command executes the candidate's offline JSON version check and refuses
-non-release, mismatched, dirty, or unverifiable binaries. `--allow-dirty` exists
-only for local development fixtures and must never be used for a published
-release. Archive generation runs twice and requires byte-identical output.
+Run the command from the Moon checkout. It checks the binary's offline JSON
+identity and compares the adapter, skill and any bundled guides against the Git
+objects at that commit. Full bundles must contain every tracked guide. For local
+development builds, `--allow-dirty` permits uncommitted inputs and labels the
+output as an unsigned, unverified local fixture. Use verified inputs for
+publication. Archive generation runs twice and requires byte-identical output.
 
 After all supported platform asset descriptors have been collected, assemble the
 canonical outer manifest:
