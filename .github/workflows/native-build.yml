@@ -35,15 +35,9 @@ jobs:
         "aarch64-unknown-linux-gnu": "ubuntu-24.04-arm",
         "x86_64-unknown-linux-gnu": "ubuntu-24.04"
       }')[inputs.target] }}
-    # Linux release archives promise glibc 2.35. Keep that build environment on newer runner hosts.
-    container: ${{ endsWith(inputs.target, '-linux-gnu') && 'ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde' || '' }}
+    # The Ubuntu 22.04 buildpack includes native build tools and keeps the glibc 2.35 baseline.
+    container: ${{ endsWith(inputs.target, '-linux-gnu') && 'buildpack-deps:jammy@sha256:3dbfcff54e02773819d50726a21517583fa71c115282d26aad87f9cd22333ae1' || '' }}
     steps:
-      - name: Install Ubuntu 22.04 build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl git libssl-dev pkg-config unzip zstd
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.commit }}
@@ -70,7 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: moon-native-${{ inputs.target }}
-          key: ${{ runner.os == 'Linux' && 'ubuntu-22.04-glibc-2.35' || 'macos-15' }}
+          key: ${{ runner.os == 'Linux' && 'ubuntu-22.04-buildpack' || 'macos-15' }}
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
       - name: Verify native release target
         env:
