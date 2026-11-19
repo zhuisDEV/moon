@@ -352,7 +352,7 @@ fn schema_thirteen_is_additive_atomic_and_preserves_jobs_and_accepted_topic() {
                 .unwrap();
         }
         let store = Store::open(&path, 64).unwrap();
-        assert_eq!(store.health().unwrap().schema_version, 19);
+        assert_eq!(store.health().unwrap().schema_version, 20);
         assert!(store.health().unwrap().ok);
         assert_eq!(
             store.topic_get(SCOPE, "published-topic").unwrap(),

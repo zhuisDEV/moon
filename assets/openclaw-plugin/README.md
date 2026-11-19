@@ -62,12 +62,18 @@ The adapter keeps strict ownership boundaries:
   boundaries, preserves recent turns, writes checkpoints, and owns rollback.
 - Retrieval failures fail open by default and preserve the original messages.
 - The durable `commitTurn` hook stores the accepted human message for its
-  recorded owners with the original sender’s verified Discord ID. It excludes
-  assistant answers and tool traffic from learning. Confirmed Discord replies
-  can be recalled as role-labelled history by their verified delivery owners.
-  OpenClaw supplies the closed transcript range; Moon never rereads the growing
+  recorded owners with a verified speaker identity. It excludes assistant
+  answers and tool traffic from learning. Confirmed Discord replies can be
+  recalled as role-labelled history by their verified delivery owners. OpenClaw
+  supplies the closed transcript range; Moon never rereads the growing
   transcript. Its advancement identity and evidence commit in one SQLite
   transaction, so retries cannot duplicate evidence or learning.
+- With schema 20 and a
+  [personal profile](../../docs/memory-privacy.md#personal-openclaw-profile),
+  authenticated Discord, Control UI, TUI and enrolled direct chat messages can
+  share the same private owner. Private recall uses verified Discord delivery.
+  Fresh posts by other bots in configured Discord text rooms can enter the
+  profile owner's L2 queue with bot authorship.
 - Storage failures reject the commit for OpenClaw's durable retry queue, even
   with `failOpen` enabled. Model-based extraction is best effort after the
   commit; a crash after the evidence write can skip extraction, but preserves

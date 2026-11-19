@@ -9,6 +9,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod enrollment;
+pub use enrollment::{EnrollmentSource, MasterChannel, enroll_master_channel};
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 /// A starter file deliberately leaves daily synthesis disabled until its model
@@ -55,13 +57,70 @@ max_input_chars = 64000
 pub struct ResolvedConfig {
     pub path: PathBuf,
     pub present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub master: Option<MasterConfig>,
     pub learning: LearningConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
+    master: Option<MasterSetting>,
     learning: LearningConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MasterSetting {
+    profile_id: String,
+    memory_principal: Option<String>,
+    #[serde(default)]
+    enroll_first_direct_sender: bool,
+    #[serde(default)]
+    channels: Vec<MasterChannel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MasterConfig {
+    pub profile_id: String,
+    pub memory_principal: String,
+    pub enroll_first_direct_sender: bool,
+    pub channels: Vec<MasterChannel>,
+}
+
+impl MasterSetting {
+    fn resolve(self) -> Result<MasterConfig> {
+        let profile = self.profile_id;
+        anyhow::ensure!(
+            !profile.is_empty()
+                && profile.len() <= 128
+                && profile != "gateway-owner"
+                && profile
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':')),
+            "master.profile_id must identify a personal OpenClaw profile"
+        );
+        let canonical = format!("openclaw:{profile}");
+        let principal = self.memory_principal.unwrap_or_else(|| canonical.clone());
+        anyhow::ensure!(
+            principal == canonical
+                || principal
+                    .strip_prefix("discord:")
+                    .is_some_and(is_discord_id),
+            "master.memory_principal must be the profile principal or its existing Discord memory ID"
+        );
+        enrollment::validate_channels(&self.channels)?;
+        Ok(MasterConfig {
+            profile_id: profile,
+            memory_principal: principal,
+            enroll_first_direct_sender: self.enroll_first_direct_sender,
+            channels: self.channels,
+        })
+    }
+}
+
+pub(crate) fn is_discord_id(id: &str) -> bool {
+    (15..=20).contains(&id.len()) && !id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -193,7 +252,7 @@ pub fn load(home: &Path) -> Result<ResolvedConfig> {
             // Do not propagate them: a misplaced credential must remain private.
             toml::from_str::<ConfigFile>(source).map_err(|_| {
                 anyhow::anyhow!(
-                    "moon.toml is invalid; check TOML syntax, field types and supported learning fields"
+                    "moon.toml is invalid; check TOML syntax, field types and supported fields"
                 )
             })?
         }
@@ -204,6 +263,7 @@ pub fn load(home: &Path) -> Result<ResolvedConfig> {
     Ok(ResolvedConfig {
         path,
         present,
+        master: config.master.map(MasterSetting::resolve).transpose()?,
         learning: config.learning,
     })
 }

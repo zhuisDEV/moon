@@ -34,6 +34,15 @@ as fallbacks in chat. When readers cannot be verified, use public recall only
 and ask in a verified DM. Use `/moonpublic` for explicit sharing. See
 [privacy and legacy review](docs/memory-privacy.md).
 
+On schema 20, `[master].profile_id` selects a personal OpenClaw profile. Require
+an authenticated turn from that profile or an enrolled channel sender. Use a
+verified Discord DM to recall private memories learned through TUI, Control UI
+and other enrolled chat tools. Those tools use public context in replies. A room
+with a readable external bot can learn from its human speakers and return public
+context. Externally authored bot reports belong to the verified Master who could
+read them and retain their bot attribution. See the
+[profile setup guide](docs/memory-privacy.md#personal-openclaw-profile).
+
 ## Choose the right runtime
 
 Before maintenance, compare the invoked binary with OpenClaw's `moonPath`:

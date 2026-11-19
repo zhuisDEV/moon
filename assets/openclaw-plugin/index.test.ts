@@ -1,5 +1,6 @@
 import moonPlugin, { __moonTest } from "./index.js";
 import { EventEmitter } from "node:events";
+import { mock } from "node:test";
 import type { spawn } from "node:child_process";
 
 const TEST_READERS = ["discord:111111111111111111"];
@@ -36,11 +37,14 @@ const realMoonConfig = realMoonBinary && realMoonHome
   ? { binary: realMoonBinary, home: realMoonHome }
   : null;
 
-function acceptedParams(messages: Array<Record<string, unknown>>) {
+function acceptedParams(
+  messages: Array<Record<string, unknown>>,
+  sessionKey = "agent:main:discord:channel:123",
+) {
   const admission = {
     agentId: "main",
     sessionId: "session-1",
-    sessionKey: "agent:main:discord:channel:123",
+    sessionKey,
     storePath: "/tmp/openclaw-agent.sqlite",
     generation: "generation-1",
     entryId: "user-1",
@@ -3549,6 +3553,73 @@ Deno.test("daily L2 skips committed batches and sends xhigh with a fixed evidenc
   assert(!("prompt" in payload.metadata));
 });
 
+Deno.test("the registered service polls across 03:00 Sydney and resumes the same daily batch on restart", async () => {
+  // Sydney is on daylight saving time in November.
+  const due = Date.parse("2026-11-18T16:00:00Z");
+  const previous = "l2:2026-11-18:0";
+  const today = "l2:2026-11-19:0";
+  const { prepared, action } = synthesisFixture();
+  const windows: Array<[string, number]> = [];
+  let modelCalls = 0;
+  let commits = 0;
+  const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {}, () => {
+    modelCalls++;
+    return { payloads: [{ text: JSON.stringify({ actions: [action] }) }] };
+  });
+  api.runtime.system.runCommandWithTimeout = (argv) => {
+    let output;
+    if (argv.includes("config")) {
+      output = learningConfig({}, {
+        enabled: true,
+        max_batches_per_day: 1,
+        fallback_enabled: false,
+      });
+    } else if (argv.includes("prepare")) {
+      const key = argv[argv.indexOf("--run-key") + 1];
+      windows.push([key, Number(argv[argv.indexOf("--before-ms") + 1])]);
+      output = key === today && !commits ? prepared : { status: "committed" };
+    } else if (argv.includes("apply")) {
+      commits++;
+      output = { status: "committed", action_count: 1, processed_evidence: 1 };
+    } else throw new Error("unexpected scheduler command");
+    return { code: 0, stdout: JSON.stringify(output), stderr: "" };
+  };
+  const services: Array<{ start(): void; stop(): Promise<void> }> = [];
+  moonPlugin.register({
+    ...api,
+    registerService(service: typeof services[number]) {
+      services.push(service);
+    },
+    registerContextEngine() {},
+    registerCompactionProvider() {},
+  });
+  const [service] = services;
+  // Let each asynchronous, in-memory tick finish before advancing the clock.
+  const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  mock.timers.enable({ apis: ["Date", "setInterval"], now: due - 60_000 });
+  try {
+    service.start();
+    await settled();
+    assertEquals(windows, [[previous, due - 86_400_000]]);
+    assertEquals(modelCalls, 0);
+    mock.timers.tick(60_000);
+    await settled();
+    assertEquals(windows, [[previous, due - 86_400_000], [today, due]]);
+    assertEquals([modelCalls, commits], [1, 1]);
+    await service.stop();
+    mock.timers.tick(60_000);
+    await settled();
+    assertEquals(windows.length, 2);
+    service.start();
+    await settled();
+    assertEquals(windows.slice(2), [[today, due]]);
+    assertEquals([modelCalls, commits], [1, 1]);
+  } finally {
+    await service.stop();
+    mock.timers.reset();
+  }
+});
+
 Deno.test("failed L2 releases its lease and never applies an invalid proposal", async () => {
   const { prepared } = synthesisFixture();
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
@@ -3629,7 +3700,7 @@ Deno.test("Astra inherits supported explicit effort and question-only correction
 
 Deno.test({
   name:
-    "real SQLite L1 capture and daily L2 correction retain evidence and resume idempotently",
+    "Discord prompt admissions feed real SQLite L1 capture, private recall and daily L2 correction",
   ignore: !realMoonConfig,
   fn: async () => {
     assert(realMoonConfig);
@@ -3672,6 +3743,7 @@ Deno.test({
       assertEquals(result.code, 0);
       return JSON.parse(result.stdout);
     };
+    await cli(["init"]);
     await cli(["config", "init"]);
     const oldQuote = "Remember: The release colour for Project Canary is blue.";
     const newQuote =
@@ -3756,6 +3828,21 @@ Deno.test({
     };
     const engine = __moonTest.createMoonContextEngine(api);
     const group = [TEST_READERS[0], "discord:222222222222222222"];
+    const room = "333333333333333333";
+    const recall = __moonTest.createMoonPromptRecall(
+      {
+        ...api,
+        config: {
+          ...api.config,
+          plugins: { slots: { contextEngine: "moon" } },
+        },
+      },
+      { client: null, stopping: false },
+      {
+        access: () => Promise.resolve({ readers: group, owners: group }),
+        human: () => Promise.resolve(false),
+      },
+    );
     for (const [index, quote] of [oldQuote, newQuote, oldQuote].entries()) {
       const time = Date.parse("2026-09-10T00:00:00Z") + index * 86_400_000;
       const params = acceptedParams([{
@@ -3766,27 +3853,56 @@ Deno.test({
         role: "assistant",
         content: "Understood.",
         timestamp: time + 1000,
-      }]);
+      }], `agent:main:discord:channel:${room}`);
       params.advancementKey = `l2-sqlite-${index}`;
       params.admission.idempotencyKey = `synthetic-turn-${index}`;
-      await cli([
-        "privacy",
-        "bind-room",
-        "--admission-key",
-        __moonTest.admissionKey(
-          params.admission.agentId,
-          params.sessionId,
-          params.sessionKey,
-          params.admission.idempotencyKey,
-        )!,
-        "--sender",
-        index === 2 ? group[1] : group[0],
-        "--audience-json",
-        JSON.stringify(group),
-        "--owners-json",
-        JSON.stringify(group),
-      ]);
+      const speaker = index === 2 ? group[1] : group[0];
+      const ctx = {
+        agentId: params.admission.agentId,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        channel: "discord",
+        trigger: "user",
+        runId: `run-${index}`,
+        accountId: "fixture",
+        chatId: room,
+        senderId: speaker.slice("discord:".length),
+        assertMemoryAudienceCurrent() {},
+        memoryAudience: {
+          kind: "conversation",
+          agentId: params.admission.agentId,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+        },
+      };
+      // The host may acknowledge an unbound turn as a successful no-op.
+      // Verify actual evidence, then prove the next prompt can recall it.
+      if (index === 0) {
+        const unverifiedId = "unverified-room-turn";
+        const unavailable = await recall.prepare({
+          currentUserMessage: quote,
+          currentUserMessageId: unverifiedId,
+        }, { ...ctx, assertMemoryAudienceCurrent: undefined });
+        assert(unavailable?.prependContext.includes("could not verify"));
+        const unbound = {
+          ...params,
+          advancementKey: "unverified-advancement",
+          admission: { ...params.admission, idempotencyKey: unverifiedId },
+        };
+        assertEquals(await engine.commitTurn(unbound), { status: "committed" });
+        assertEquals((await cli(["health"])).evidence_sessions, 0);
+      }
+      const contribution = await recall.prepare({
+        currentUserMessage: quote,
+        currentUserMessageId: params.admission.idempotencyKey,
+      }, ctx);
+      if (index === 1) {
+        assert(contribution?.prependContext.includes("Project Canary is blue"));
+        assert(contribution.prependContext.includes(group[0]));
+      }
       assertEquals(await engine.commitTurn(params), { status: "committed" });
+      assertEquals(await engine.commitTurn(params), { status: "duplicate" });
+      assertEquals(l1Runs, index + 1);
     }
     const before = await cli(["health"]);
     assertEquals(before.evidence_sessions, 3);

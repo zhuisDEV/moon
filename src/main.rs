@@ -109,6 +109,19 @@ enum ConfigCommand {
     Validate,
     /// Create a starter moon.toml; never replace an existing file.
     Init,
+    /// Pin the first verified sender for one channel account to the configured Master.
+    EnrollMasterChannel {
+        #[arg(long)]
+        profile_id: String,
+        #[arg(long)]
+        channel: String,
+        #[arg(long)]
+        account_id: String,
+        #[arg(long)]
+        sender_id: String,
+        #[arg(long, value_enum, default_value = "allowlist")]
+        source: moon::config::EnrollmentSource,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -553,12 +566,53 @@ enum PrivacyCommand {
         audience_json: String,
         #[arg(long)]
         owners_json: String,
+        #[command(flatten)]
+        master: MasterSnapshot,
     },
+    /// Trusted bridge for externally authored bot evidence readable by Master.
+    #[command(hide = true)]
+    BindBot {
+        #[arg(long)]
+        sender: String,
+        #[arg(long)]
+        admission_key: String,
+        #[arg(long)]
+        audience_json: String,
+        #[command(flatten)]
+        master: MasterSnapshot,
+    },
+    /// Restricted Discord principals, including those from retired profiles.
+    #[command(hide = true)]
+    MasterDiscordPrincipals,
     #[command(hide = true)]
     Audience {
         #[arg(long)]
         admission_key: String,
     },
+}
+
+#[derive(Debug, Args)]
+struct MasterSnapshot {
+    #[arg(long, requires = "master_memory_principal")]
+    master_profile_id: Option<String>,
+    #[arg(long, requires = "master_profile_id")]
+    master_memory_principal: Option<String>,
+}
+
+impl MasterSnapshot {
+    fn configured(&self, home: &std::path::Path) -> Result<moon::config::MasterConfig> {
+        let master = moon::config::load(home)?
+            .master
+            .context("a configured Master profile is required")?;
+        if let Some(profile) = &self.master_profile_id {
+            anyhow::ensure!(
+                profile == &master.profile_id
+                    && self.master_memory_principal.as_ref() == Some(&master.memory_principal),
+                "Master profile or memory principal changed"
+            );
+        }
+        Ok(master)
+    }
 }
 
 fn parse_audience(json: &str) -> Result<Vec<String>> {
@@ -1094,6 +1148,24 @@ fn run(cli: Cli) -> Result<()> {
             ConfigCommand::Show => moon::config::load(&home)?,
             ConfigCommand::Validate => moon::config::validate(&home)?,
             ConfigCommand::Init => moon::config::init(&home)?,
+            ConfigCommand::EnrollMasterChannel {
+                ref profile_id,
+                ref channel,
+                ref account_id,
+                ref sender_id,
+                source,
+            } => {
+                let identity = moon::config::MasterChannel {
+                    channel: channel.clone(),
+                    account_id: account_id.clone(),
+                    sender_id: sender_id.clone(),
+                    source,
+                };
+                return emit(
+                    &moon::config::enroll_master_channel(&home, profile_id, identity)?,
+                    cli.json,
+                );
+            }
         };
         return emit(&config, cli.json);
     }
@@ -1101,6 +1173,14 @@ fn run(cli: Cli) -> Result<()> {
         .database
         .clone()
         .unwrap_or_else(|| home.join("state/moon.sqlite"));
+    if matches!(
+        &cli.command,
+        Command::Privacy(PrivacyArgs {
+            command: PrivacyCommand::MasterDiscordPrincipals
+        })
+    ) {
+        return emit(&Store::master_discord_principals(&database)?, cli.json);
+    }
     if let Command::Source(args) = &cli.command {
         return run_source(&database, cli.dimensions, args);
     }
@@ -1239,18 +1319,41 @@ fn run(cli: Cli) -> Result<()> {
                     admission_key,
                     audience_json,
                     owners_json,
+                    master,
                 } => {
-                    let owners = store.bind_turn_owners(
-                        &admission_key,
-                        &parse_audience(&audience_json)?,
-                        &sender,
-                        &parse_audience(&owners_json)?,
-                    )?;
+                    let audience = parse_audience(&audience_json)?;
+                    let owners = parse_audience(&owners_json)?;
+                    let owners = if master.master_profile_id.is_some() {
+                        store.bind_master_turn_owners(
+                            &admission_key,
+                            &audience,
+                            &sender,
+                            &owners,
+                            &master.configured(&home)?,
+                        )?
+                    } else {
+                        store.bind_turn_owners(&admission_key, &audience, &sender, &owners)?
+                    };
                     serde_json::json!({"bound":true,"owners":owners})
                 }
                 PrivacyCommand::Audience { admission_key } => {
                     serde_json::to_value(store.turn_admission(&admission_key)?)?
                 }
+                PrivacyCommand::BindBot {
+                    sender,
+                    admission_key,
+                    audience_json,
+                    master,
+                } => {
+                    let owners = store.bind_bot_turn(
+                        &admission_key,
+                        &parse_audience(&audience_json)?,
+                        &sender,
+                        &master.configured(&home)?,
+                    )?;
+                    serde_json::json!({"bound":true,"owners":owners})
+                }
+                PrivacyCommand::MasterDiscordPrincipals => unreachable!("read-only path above"),
             };
             emit(&result, cli.json)
         }

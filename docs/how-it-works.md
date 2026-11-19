@@ -44,6 +44,11 @@ transaction. This makes retries and concurrent acknowledgements idempotent. The
 parent session and channel identity stay in sanitized metadata. Moon does not
 read the growing transcript during assembly or commit.
 
+Development builds with schema 20 can verify the accepted sender against a
+[personal OpenClaw profile](memory-privacy.md#personal-openclaw-profile). In
+configured Discord text rooms, a fresh bot post can also become private L2
+evidence for the linked human owner. Its citation preserves the bot as author.
+
 Storage failures remain in OpenClaw's durable retry queue. Extraction runs only
 after a new evidence commit and is best effort: a crash between the commit and
 extraction can skip L1, while the evidence remains available for optional daily

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Link a personal OpenClaw profile to a private Moon collection across Discord,
+  TUI, the Control UI and supported direct chats. Operators can opt into
+  enrolling the first verified human sender on a new channel account.
+- Preserve the link requirement for cross-channel Discord collections after the
+  Master setting is disabled or changed.
+- Keep human learning active in Discord rooms with another bot. Schema 20 also
+  records a bot's new posts as bot-authored evidence for the linked person with
+  access to the room and its history. Replies there use public Moon context.
+  [Setup and privacy rules](docs/memory-privacy.md#personal-openclaw-profile)
+
 ## 2.8.0 - 2026-11-19
 
 Moon 2.8.0 accepts database schemas **6–19** and migrates to **19**. Back up

@@ -32,6 +32,12 @@ have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
 owns authentication and model execution; Moon creates no provider login or
 API-key store.
 
+The development adapter can give one personal OpenClaw profile a private Moon
+memory across linked accounts. It can also save new messages from external bots
+for that person in Discord rooms they can read. The bot remains the recorded
+author. See
+[profile setup and supported chat routes](docs/memory-privacy.md#personal-openclaw-profile).
+
 The new public collection starts empty. Assign a known owner or review legacy
 global memories using the
 [audience and migration guide](docs/memory-privacy.md).

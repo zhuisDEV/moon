@@ -183,7 +183,12 @@ impl Store {
     /// A room may recall a memory only if every current reader was in the
     /// original audience. An empty/unknown room never passes by vacuous truth.
     pub fn readable_memory_scopes(&self, readers: &[String]) -> Result<Vec<String>> {
-        let readers = canonical_readers(readers)?;
+        let audience = canonical_readers(readers)?;
+        // A bot-readable destination can recall public material. Never honour
+        // an operator-authored legacy audience that used the reserved bot prefix.
+        if readers.iter().any(|id| id.starts_with("bot:")) {
+            return Ok(vec![self.public_memory_scope()?]);
+        }
         let mut stmt = self.connection.prepare(
             "SELECT scope FROM memory_audiences a WHERE a.kind='public'
                OR (?1<>'[]' AND NOT EXISTS (
@@ -191,7 +196,7 @@ impl Store {
                )) ORDER BY a.kind='public' DESC, scope"
         )?;
         Ok(stmt
-            .query_map([readers], |r| r.get(0))?
+            .query_map([audience], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)
     }
 
