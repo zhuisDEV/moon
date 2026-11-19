@@ -154,13 +154,15 @@ environment.
 2. Create and push an annotated tag at the merged commit:
    - `git tag -a vX.Y.Z -m "moon vX.Y.Z"`
    - `git push origin vX.Y.Z`
-3. Start the workflow at the exact tag:
-   - `gh workflow run release.yml --ref vX.Y.Z`
+3. Wait for push CI on `main` to succeed for the tagged commit. Dispatch the
+   release workflow from `main` with the exact release tag:
+   - `gh workflow run release.yml --ref main -f tag=vX.Y.Z`
 4. Review and approve the `production-release` deployment after reviewing its
-   tag and unsigned build evidence. The workflow creates the release with the
-   version's changelog, pinned user guides and generated commit notes, the
-   signed canonical manifest, detached signature set, and four platform
-   archives. It refuses an existing release.
+   tag, `main` CI run and unsigned build evidence. The packaged Linux binary
+   must pass the real OpenClaw adapter tests before the approval. The release
+   includes the version's changelog, pinned user guides, generated commit notes,
+   signed canonical manifest, detached signature set and four platform archives.
+   The workflow refuses an existing release.
 5. Include the tagged version's highlights from `CHANGELOG.md`, schema
    compatibility, the six-file bridge boundary and **the instruction to refresh
    separately installed `SKILL.md` copies** in the release notes. Generated
@@ -168,7 +170,7 @@ environment.
 
 ## Post-release
 
-1. Confirm CI green on release tag.
+1. Confirm the release run recorded successful `main` CI for the tagged commit.
 2. Verify the remote tag and GitHub release target the pushed `main` commit.
 3. Smoke test the installed binary, plugin registration, gateway, hybrid recall,
    automatic embedding, and rollback bundle. Confirm that `command -v moon`
