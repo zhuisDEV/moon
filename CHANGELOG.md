@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.9.0 - 2026-11-20
+
+- L1 can recognise a short correction without a cue word. When the current turn
+  cannot support the whole change, its original evidence stays available to L2.
+  L1 may run more often on short messages.
+- L2 can use several original messages to interpret a correction. It can carry
+  an unchanged detail forward when the user changes its owner or referent, and
+  leave ambiguous corrections unresolved.
+- Moon verifies exact citations, numeric literals, privacy scope and active
+  targets. It saves linked proposals together, including their citations and
+  revision history.
+
+Moon 2.9.0 uses schema 20 and the six-file signed bundle. Refresh separately
+installed copies of `SKILL.md` and use the guides from this tag.
+
 ## 2.8.2 - 2026-11-20
 
 - Restore private recall in one-to-one Discord DMs when OpenClaw’s native memory

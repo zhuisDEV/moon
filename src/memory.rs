@@ -950,9 +950,6 @@ pub(crate) fn distill_in_transaction(
     if input.content.trim().is_empty() {
         anyhow::bail!("memory content must not be empty");
     }
-    if input.evidence_quote.trim().chars().count() < 8 {
-        anyhow::bail!("evidence_quote must contain at least 8 characters");
-    }
     if input.evidence_quote.len() > MAX_EVIDENCE_QUOTE_BYTES {
         anyhow::bail!(
             "evidence_quote exceeds the maximum size of {MAX_EVIDENCE_QUOTE_BYTES} bytes"
@@ -975,7 +972,13 @@ pub(crate) fn distill_in_transaction(
     {
         anyhow::bail!("valid_until_ms must be later than the evidence observation time");
     }
-    let citation = locate_citation(&evidence.body, redacted_quote.value.trim())?;
+    let citation = evidence.locate_quote(redacted_quote.value.trim())?;
+    if input.supersedes.is_some() {
+        anyhow::ensure!(
+            evidence.speaker_quoted(redacted_quote.value.trim()),
+            "supersession requires evidence from the original speaker"
+        );
+    }
     let content_hash = sha256_hex(&redacted_content.value);
 
     // An alias names the same claim; revisions retain its original canonical key.
@@ -1701,9 +1704,11 @@ pub(crate) fn load_evidence(
 ) -> Result<EvidenceRecord> {
     transaction
         .query_row(
-            "SELECT e.id, e.document_id, d.body, d.scope, e.completed_at_ms
+            "SELECT e.id, e.document_id, d.body, d.scope, e.completed_at_ms, a.sender_kind
              FROM evidence_sessions e
              JOIN documents d ON d.id = e.document_id
+             LEFT JOIN evidence_admissions b ON b.evidence_id=e.id
+             LEFT JOIN privacy_admissions a ON a.admission_key=b.admission_key
              WHERE e.session_id = ?1 AND d.active = 1",
             [session_id],
             |row| {
@@ -1713,6 +1718,7 @@ pub(crate) fn load_evidence(
                     body: row.get(2)?,
                     scope: row.get(3)?,
                     completed_at_ms: row.get(4)?,
+                    sender_kind: row.get(5)?,
                 })
             },
         )
@@ -1727,6 +1733,65 @@ pub(crate) struct EvidenceRecord {
     pub(crate) body: String,
     pub(crate) scope: String,
     pub(crate) completed_at_ms: i64,
+    sender_kind: Option<String>,
+}
+
+impl EvidenceRecord {
+    /// The source speaker and, for older transcripts, other recorded text.
+    /// Framing labels are outside both roles. Plain operator evidence has no envelope.
+    fn message_parts(&self) -> (Option<&str>, Option<&str>) {
+        if let Some(bot) = self.body.strip_prefix("Bot:\n") {
+            return if self.sender_kind.as_deref() == Some("bot") {
+                (Some(bot), None)
+            } else {
+                (None, Some(bot))
+            };
+        }
+        if let Some(user) = self.body.strip_prefix("User:\n") {
+            return match user.split_once("\n\nAssistant:\n") {
+                Some((user, assistant)) => (Some(user), Some(assistant)),
+                None => (Some(user), None),
+            };
+        }
+        if let Some(assistant) = self.body.strip_prefix("Assistant:\n") {
+            return (None, Some(assistant));
+        }
+        if self.sender_kind.is_none() {
+            (Some(&self.body), None)
+        } else {
+            (None, Some(&self.body))
+        }
+    }
+
+    pub(crate) fn speaker_quoted(&self, quote: &str) -> bool {
+        self.message_parts()
+            .0
+            .is_some_and(|text| text.contains(quote))
+    }
+
+    pub(crate) fn locate_quote(&self, quote: &str) -> Result<CitationLocation> {
+        anyhow::ensure!(
+            quote.len() <= MAX_EVIDENCE_QUOTE_BYTES,
+            "evidence_quote exceeds the maximum size of {MAX_EVIDENCE_QUOTE_BYTES} bytes"
+        );
+        let (speaker, other) = self.message_parts();
+        if quote.trim().chars().take(8).count() < 8 {
+            static LETTER_OR_NUMBER: std::sync::LazyLock<regex::Regex> =
+                std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}\p{N}]").unwrap());
+            anyhow::ensure!(
+                speaker.is_some_and(|text| text.trim() == quote)
+                    && LETTER_OR_NUMBER.is_match(quote),
+                "a quotation under 8 characters must be a complete speaker utterance containing a letter or number"
+            );
+        } else {
+            anyhow::ensure!(
+                speaker.is_some_and(|text| text.contains(quote))
+                    || other.is_some_and(|text| text.contains(quote)),
+                "evidence_quote was not found exactly within one recorded message"
+            );
+        }
+        locate_citation(&self.body, quote)
+    }
 }
 
 #[derive(Debug)]
@@ -1737,7 +1802,7 @@ pub(crate) struct CitationLocation {
     end_line: usize,
 }
 
-pub(crate) fn locate_citation(body: &str, quote: &str) -> Result<CitationLocation> {
+fn locate_citation(body: &str, quote: &str) -> Result<CitationLocation> {
     let matches = body.match_indices(quote).collect::<Vec<_>>();
     if matches.is_empty() {
         anyhow::bail!("evidence_quote was not found exactly in the recorded evidence");

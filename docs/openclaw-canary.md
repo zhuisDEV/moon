@@ -33,10 +33,11 @@ For each agent turn:
 9. Greetings stop there. Eligible turns use the L1 model, then its enabled
    provider-neutral fallback if needed, to propose a bounded number of memories,
    three by default.
-10. Deterministic confidence, importance, exact-quote, numeric, uncertainty,
-    correction, and freshness checks run before SQLite accepts a proposal.
-11. Valid proposals are sent in one bounded, atomic batch. A rejected proposal
-    leaves all memories from that batch unchanged.
+10. The model interprets the evidence. Moon verifies the score bounds, exact
+    quotes, numeric literals and freshness of the correction target.
+11. Moon writes the turn's valid proposals in one transaction. If a proposal
+    fails validation, its siblings cannot change a memory on their own.
+
 12. Moon drains a bounded local-embedding batch. Active memories are processed
     before references; raw evidence is excluded.
 
@@ -356,7 +357,7 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.8.2, back up with the installed pre-upgrade binary,
+Before deploying Moon 2.9.0, back up with the installed pre-upgrade binary,
 retain configuration and rehearse schema 20 on a copy. Preserve the prior binary
 with its matching database backup. The signed release schema range is 6–20;
 schema 8 was the earlier 2.6.x target. Follow the

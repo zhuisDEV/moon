@@ -5,7 +5,7 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-This guide describes Moon 2.8.2 (database schema 20). For installation, start
+This guide describes Moon 2.9.0 (database schema 20). For installation, start
 with [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
@@ -51,7 +51,7 @@ recipient before releasing eligible private context. In an ordinary guild text
 room, Moon verifies room access and uses public context. The author owns the
 question, and the same durable commit path records the evidence after the reply.
 
-Moon 2.8.2 can verify the accepted sender against a
+Moon 2.9.0 can verify the accepted sender against a
 [personal OpenClaw profile](memory-privacy.md#personal-openclaw-profile). In
 configured Discord text rooms, a fresh bot post can also become private L2
 evidence for the linked human owner. Its citation preserves the bot as author.
@@ -112,32 +112,20 @@ moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlit
 Moon stores the exact byte and line range of the quote. The memory can therefore
 show where it came from instead of presenting an unsupported recollection.
 
-In OpenClaw, local eligibility rules first reject greetings and trivial turns.
-The adapter asks the independently configured L1 model for conservative
-proposals, three by default. The runtime's `moon.toml` can select a different L1
-model and effort without changing the conversation model or L2's effort. It may
-try an enabled fallback for temporary model or response failures. Known setup,
-authentication and route failures stop instead of silently changing routes. A
-proposal is accepted only when:
+L1 receives the current eligible turn and a bounded selection of active claims
+from the same learning scope. It decides what is worth remembering and whether
+the speaker is making a correction. The default limit is three proposals. When a
+correction needs an earlier original message, L1 can leave it for L2. The
+runtime's `moon.toml` selects L1's model and reasoning effort independently.
+Known setup, authentication and route failures stop the attempt.
 
-- its kind, key, confidence, and importance pass deterministic validation;
-- its evidence quote is one exact substring of the completed turn;
-- every numeric claim in the memory appears in that quote;
-- the quote has sufficient wording overlap and preserves uncertainty,
-  hypothetical wording, negation, and temporary status; and
-- any requested supersession points to an active retrieved memory and the user
-  explicitly expressed a correction.
+Moon verifies the proposed keys, score bounds, numeric literals, exact source
+quotes and correction targets. L1 writes the turn's proposals together. A
+confirmation of an active user claim needs evidence from the user. An assistant
+repeating that claim cannot confirm it.
 
-An assistant merely recalling an existing memory cannot confirm that same
-memory. Confirmation of an active claim requires an exact quote from the user's
-new message, preventing circular self-citation.
-
-Correction turns receive a larger bounded set of related claims for comparison.
-New operational-status memories receive a temporary observation lifetime. Expiry
-is measured from source evidence time, and a legacy claim can acquire an expiry
-while preserving its existing kind. Expired claims are omitted from normal
-recall while their revisions and evidence remain available. These deterministic
-checks are conservative heuristics, not a proof of semantic truth.
+Temporary observations expire relative to the source evidence time. Their
+revisions and evidence remain available after expiry.
 
 The model prompt stays inside OpenClaw's embedded runner. Proposal payloads
 travel to the Moon binary through stdin, not process arguments.
@@ -304,13 +292,17 @@ batch. A batch key permits three failed attempts before that occurrence stops;
 each attempt can use one primary and one enabled fallback. Lease expiry and
 committed run keys survive restarts.
 
-L2 can create, confirm, supersede, merge, or request review. Every action needs
-an exact citation from selected evidence, and new claims must be grounded in the
-newest cited source. Confirmations preserve exact content. Merges require
-identical content, scope, and kind, and retain citations, aliases, expiry,
-confirmation history, and unresolved review information. Uncertain or semantic
-duplicates remain review items. Bounded related selection does not guarantee
-that all possible conflicts were compared.
+L2 can create, confirm, supersede, merge, or request review. Each action needs
+an exact citation from selected evidence. A correction can also cite older
+original messages in the same snapshot. For example, one message gives a
+notebook its label and the next corrects its colour. L2 can cite both, update
+the old notebook and record the label on the right notebook as one change. It
+should defer or request review when several notebooks fit the correction.
+
+Moon validates linked actions together. Confirmations preserve exact content.
+Merges require identical content, scope and kind, and retain citations, aliases,
+expiry, confirmation history and unresolved reviews. The model only sees the
+related records that fit in the prepared snapshot.
 
 `learning apply` checks that the leased snapshot is still current and commits
 all actions and evidence-processing marks atomically. Failed or cancelled work

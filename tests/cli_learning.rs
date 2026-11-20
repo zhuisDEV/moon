@@ -540,6 +540,61 @@ fn l1_change_invalidates_l2_snapshot_and_cross_scope_quotes_are_rejected() {
 }
 
 #[test]
+fn concurrent_correction_leaves_all_members_of_a_stale_l2_batch_unapplied() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let seed = "The blue notebook label is Topaz.";
+    let correction = "The blue is blank. The green notebook has the Topaz label.";
+    record(&mut store, "seed", "global", seed, 100);
+    let old = store
+        .distill_memory(proposal("blue:label", "seed", seed))
+        .unwrap();
+    record(&mut store, "correction", "global", correction, 200);
+    let packet = store.learning_prepare(&request("concurrent")).unwrap();
+    let run = packet["run_id"].as_str().unwrap();
+    let mut blue = action(
+        "supersede",
+        "blue:label",
+        "correction",
+        "The blue is blank.",
+    );
+    blue["target_document_id"] = old.document_id.into();
+    let batch = input(vec![
+        action(
+            "create",
+            "green:label",
+            "correction",
+            "The green notebook has the Topaz label.",
+        ),
+        blue,
+    ]);
+
+    let latest = "The blue notebook now has a Pine label.";
+    record(&mut store, "latest", "global", latest, 300);
+    let mut concurrent = proposal("blue:label", "latest", latest);
+    concurrent.supersedes = Some(old.document_id);
+    let newest = store.distill_memory(concurrent).unwrap();
+    assert!(
+        store
+            .learning_apply(run, batch, false)
+            .unwrap_err()
+            .to_string()
+            .contains("memory changed")
+    );
+    assert_eq!(store.health().unwrap().active_memories, 1);
+    let db = rusqlite::Connection::open(store.path()).unwrap();
+    let head: i64 = db
+        .query_row(
+            "SELECT document_id FROM memory_items WHERE superseded_by IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(head, newest.document_id);
+    assert_eq!(store.learning_status().unwrap()["processed_evidence"], 0);
+}
+
+#[test]
 fn exact_duplicates_get_aliases_and_corrections_require_newer_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);
@@ -757,15 +812,20 @@ fn fresh_confirmation_restores_expired_indexes_after_maintenance() {
 }
 
 #[test]
-fn l2_rejects_negation_hypothetical_and_unsupported_numbers() {
+fn l2_accepts_source_faithful_paraphrases_without_matching_qualifier_words() {
     for (quote, content) in [
-        ("No Atlas API key is stored.", "Atlas API key is stored."),
         (
-            "If Atlas uses SQLite, this is hypothetical.",
-            "Atlas uses SQLite.",
+            "No Atlas backups are stored.",
+            "Atlas has zero stored backups.",
         ),
-        ("Atlas previously used Live Room.", "Atlas uses Live Room."),
-        ("Atlas supports 20 tools.", "Atlas supports 200 tools."),
+        (
+            "If Atlas uses SQLite, local search is possible.",
+            "Using SQLite would enable local search for Atlas.",
+        ),
+        (
+            "Atlas previously used Live Room.",
+            "Live Room saw use in an earlier Atlas setup.",
+        ),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let mut store = store(&temp);
@@ -773,17 +833,14 @@ fn l2_rejects_negation_hypothetical_and_unsupported_numbers() {
         let prepared = store.learning_prepare(&request("day")).unwrap();
         let mut value = action("create", "atlas:claim", "one", content);
         value["evidence"][0]["quote"] = quote.into();
-        assert!(
-            store
-                .learning_apply(
-                    prepared["run_id"].as_str().unwrap(),
-                    input(vec![value]),
-                    false
-                )
-                .is_err(),
-            "{quote} -> {content}"
-        );
-        assert_eq!(store.health().unwrap().active_memories, 0);
+        let result = store
+            .learning_apply(
+                prepared["run_id"].as_str().unwrap(),
+                input(vec![value]),
+                false,
+            )
+            .unwrap();
+        assert_eq!(result["action_count"], 1);
     }
 }
 
@@ -1274,44 +1331,203 @@ fn numeric_claims_preserve_complete_tokens_and_normalize_only_grouped_commas() {
 }
 
 #[test]
-fn unrelated_new_quote_cannot_make_an_old_claim_fresh() {
+fn l2_transfers_a_notebook_label_across_turns_as_one_atomic_correction() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);
-    record(
-        &mut store,
-        "old",
-        "global",
-        "Atlas stores its API key in shared configuration.",
-        100,
+    let original = "The blue Fieldwork notebook has cover label Topaz 42.";
+    let correction = "I meant the green Fieldwork notebook. The blue is blank.";
+    record(&mut store, "seed", "global", original, 100);
+    let blue = store
+        .distill_memory(proposal("fieldwork:blue", "seed", original))
+        .unwrap();
+    // The earlier source may already be processed. L2 brings it back through the old head.
+    let prepared = store.learning_prepare(&request("seed")).unwrap();
+    store
+        .learning_apply(prepared["run_id"].as_str().unwrap(), input(vec![]), false)
+        .unwrap();
+    record(&mut store, "correction", "global", correction, 200);
+    let prepared = store
+        .learning_prepare(&request("reconcile-notebooks"))
+        .unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    assert!(
+        prepared["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["session_id"] == "seed" && item["selected"] == false)
     );
-    record(
-        &mut store,
-        "new",
-        "global",
-        "Atlas completed unrelated mailbox maintenance.",
-        200,
+    let mut blank = action(
+        "supersede",
+        "fieldwork:blue",
+        "correction",
+        "The blue is blank.",
     );
-    let prepared = store.learning_prepare(&request("day")).unwrap();
-    let mut value = action(
+    blank["target_document_id"] = blue.document_id.into();
+    let mut green = action(
         "create",
-        "atlas:key",
-        "old",
-        "Atlas stores its API key in shared configuration.",
+        "fieldwork:green",
+        "seed",
+        "The green Fieldwork notebook has cover label Topaz 42.",
     );
-    value["evidence"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"session_id":"new","quote":"Atlas completed unrelated mailbox maintenance."}));
+    green["evidence"] = json!([{"session_id":"seed","quote":original},{"session_id":"correction","quote":correction}]);
+    let mut bad_green = green.clone();
+    bad_green["evidence"][1]["quote"] = "I meant the other Fieldwork notebook.".into();
     assert!(
         store
-            .learning_apply(
-                prepared["run_id"].as_str().unwrap(),
-                input(vec![value]),
-                false
-            )
-            .is_err()
+            .learning_apply(run, input(vec![blank.clone(), bad_green]), false)
+            .unwrap_err()
+            .to_string()
+            .contains("not found exactly")
     );
-    assert_eq!(store.health().unwrap().active_memories, 0);
+    let db = rusqlite::Connection::open(store.path()).unwrap();
+    let heads = || -> Vec<String> {
+        db.prepare("SELECT d.body FROM documents d JOIN memory_items m ON m.document_id=d.id WHERE d.active AND m.superseded_by IS NULL ORDER BY m.canonical_key").unwrap()
+            .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(heads(), [original]);
+    assert_eq!(store.learning_status().unwrap()["pending_evidence"], 1);
+    let batch = input(vec![blank, green]);
+    let committed = store.learning_apply(run, batch.clone(), false).unwrap();
+    assert_eq!(committed["action_count"], 2);
+    assert_eq!(
+        heads(),
+        [
+            "The blue is blank.",
+            "The green Fieldwork notebook has cover label Topaz 42."
+        ]
+    );
+    assert_eq!(store.learning_apply(run, batch, false).unwrap(), committed);
+    let citations: i64 = db
+        .query_row(
+            "SELECT count(*) FROM memory_citations WHERE memory_document_id=?1",
+            [committed["outcomes"][1]["document_id"].as_i64().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(citations, 2);
+
+    let ambiguous = "Fieldwork notebook correction: I meant the other one.";
+    record(&mut store, "ambiguous", "global", ambiguous, 300);
+    let prepared = store.learning_prepare(&request("ambiguous")).unwrap();
+    let run = prepared["run_id"].as_str().unwrap();
+    let before = heads();
+    let deferred = store
+        .learning_apply(
+            run,
+            input_with_deferred(vec![], vec!["ambiguous".into()]),
+            false,
+        )
+        .unwrap();
+    assert_eq!(deferred["deferred_evidence"], 1);
+    assert_eq!(heads(), before);
+}
+
+#[test]
+fn l1_and_l2_accept_short_complete_speaker_replies_and_reject_fragments() {
+    for (body, quote, valid) in [
+        ("Green.", "Green.", true),
+        ("User:\n是绿色的。", "是绿色的。", true),
+        ("User:\n7", "7", true),
+        ("User:\nGreen.", "Green", false),
+        ("User:\nGreen.", "User:\nGreen.", false),
+        ("User:\nGreen.", "User:", false),
+        ("User:\nGreen.", "Green!  ", false),
+        ("User:\nGreen notebook", "Green", false),
+        ("User:\n?!", "?!", false),
+        ("User:\n🌳", "🌳", false),
+        ("User:\nAsk me.\n\nAssistant:\nGreen.", "Green.", false),
+        (
+            "User:\nAsk me.\n\nAssistant:\nGreen.",
+            "me.\n\nAssistant:",
+            false,
+        ),
+        ("Assistant:\nGreen.", "Green.", false),
+        ("Bot:\nGreen.", "Green.", false),
+        ("User:\nGreen.\n\nAssistant:\nGreen.", "Green.", false),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = store(&temp);
+        record(&mut store, "short", "global", body, 100);
+        let claim = "The speaker's answer has been recorded.";
+        let mut l2 = action("create", "reply:short", "short", claim);
+        l2["evidence"][0]["quote"] = quote.into();
+        let prepared = store.learning_prepare(&request("short")).unwrap();
+        let run = prepared["run_id"].as_str().unwrap();
+        assert_eq!(
+            store.learning_apply(run, input(vec![l2]), true).is_ok(),
+            valid,
+            "L2: {body:?} {quote:?}"
+        );
+        let mut l1 = proposal("reply:short", "short", claim);
+        l1.evidence_quote = quote.into();
+        assert_eq!(
+            store.distill_memory(l1).is_ok(),
+            valid,
+            "L1: {body:?} {quote:?}"
+        );
+        assert_eq!(store.health().unwrap().active_memories, usize::from(valid));
+    }
+}
+
+#[test]
+fn newer_assistant_text_cannot_refresh_a_stale_human_correction() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let old = "The Atlas deadline was Thursday.";
+    let current = "The Atlas deadline is Friday.";
+    let echo = "The Atlas deadline is Thursday.";
+    record(&mut store, "old", "global", &format!("User:\n{old}"), 100);
+    record(
+        &mut store,
+        "head",
+        "global",
+        &format!("User:\n{current}"),
+        200,
+    );
+    let head = store
+        .distill_memory(proposal("atlas:deadline", "head", current))
+        .unwrap();
+    record(
+        &mut store,
+        "later",
+        "global",
+        &format!("User:\nWhen is it?\n\nAssistant:\n{echo}"),
+        300,
+    );
+    let mut bad_l1 = proposal("atlas:deadline", "later", echo);
+    bad_l1.supersedes = Some(head.document_id);
+    assert!(
+        store
+            .distill_memory(bad_l1)
+            .unwrap_err()
+            .to_string()
+            .contains("original speaker")
+    );
+
+    let prepared = store.learning_prepare(&request("stale")).unwrap();
+    let mut change = action("supersede", "atlas:deadline", "later", echo);
+    change["target_document_id"] = head.document_id.into();
+    let run = prepared["run_id"].as_str().unwrap();
+    assert!(
+        store
+            .learning_apply(run, input(vec![change.clone()]), false)
+            .unwrap_err()
+            .to_string()
+            .contains("original speaker")
+    );
+    change["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"session_id":"old","quote":old}));
+    assert!(
+        store
+            .learning_apply(run, input(vec![change]), false)
+            .unwrap_err()
+            .to_string()
+            .contains("newer than")
+    );
+    assert_eq!(store.health().unwrap().active_memories, 1);
 }
 
 #[test]

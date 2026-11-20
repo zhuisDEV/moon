@@ -30,13 +30,13 @@ controlled [signed bootstrap](updating.md#v210-bootstrap-boundary).
 Clone the release into a new directory and build:
 
 ```bash
-git clone --branch v2.8.2 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.8.2
-cd moon-2.8.2
+git clone --branch v2.9.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.9.0
+cd moon-2.9.0
 cargo build --locked --release
 target/release/moon --json --version
 ```
 
-Check version `2.8.2`, the expected target/commit and `git_dirty: false`. This
+Check version `2.9.0`, the expected target/commit and `git_dirty: false`. This
 block refuses an existing runtime and installs a versioned layout:
 
 ```bash
@@ -46,7 +46,7 @@ if [ -e "$HOME/.moon" ] || [ -L "$HOME/.moon" ]; then
   echo 'Moon already exists; use the upgrade guide instead.' >&2
   exit 1
 fi
-moon_release="$HOME/.moon/releases/2.8.2"
+moon_release="$HOME/.moon/releases/2.9.0"
 install -d -m 700 "$HOME/.moon" "$HOME/.moon/releases" "$moon_release" \
   "$moon_release/bin" "$moon_release/openclaw-plugin" "$moon_release/skill" \
   "$moon_release/skill/docs" "$HOME/.moon/bin"
@@ -56,7 +56,7 @@ install -m 644 assets/openclaw-plugin/index.js assets/openclaw-plugin/package.js
   "$moon_release/openclaw-plugin/"
 install -m 644 SKILL.md "$moon_release/skill/SKILL.md"
 install -m 644 docs/*.md "$moon_release/skill/docs/"
-ln -s releases/2.8.2 "$HOME/.moon/current"
+ln -s releases/2.9.0 "$HOME/.moon/current"
 ln -s ../current/bin/moon "$HOME/.moon/bin/moon"
 ln -s current/openclaw-plugin "$HOME/.moon/openclaw-plugin"
 SH

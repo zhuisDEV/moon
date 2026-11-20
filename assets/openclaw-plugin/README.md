@@ -4,7 +4,7 @@ This adapter registers the `moon` context engine, supplies one bounded SQLite
 context packet for the current user message, and records completed turns for
 selective durable-memory learning.
 
-This 2.8.2 adapter requires the matching schema-20 binary and 2.8.2 skill. See
+This 2.9.0 adapter requires the matching schema-20 binary and 2.9.0 skill. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an
 existing installation, use [updating](../../docs/updating.md); do not copy this
@@ -14,7 +14,7 @@ production.
 ## Installation and upgrade checks
 
 The signed updater treats the binary, adapter, skill and database as one
-compatibility set. Moon 2.8.2 retains the six-file bundle for older updaters.
+compatibility set. Moon 2.9.0 retains the six-file bundle for older updaters.
 Its companion documentation must be installed from the same reviewed release tag
 when an agent needs local references. Refresh separately installed skill copies
 as well. The upgrade guide explains which skill files are updated automatically
@@ -82,18 +82,19 @@ The adapter keeps strict ownership boundaries:
   still records evidence.
 - L1's configured primary or fallback model may propose up to
   `learningMaxMemories` memories, three by default. Exact-quote, numeric,
-  confidence, importance, correction, and freshness checks run before a proposal
+  confidence, importance, target and freshness checks run before a proposal
   reaches SQLite.
 - L2 is disabled by default. When enabled, the plugin service reconciles bounded
   evidence batches daily, using durable leases, date keys, and three attempts
   per batch key. It retains review items for uncertain conflicts, preserves
-  evidence, and never merges differently worded claims automatically.
-  Independent candidates that pass validation can commit while sources behind
-  rejected candidates remain pending. With schema 14, the scheduler continues
-  through fresh batches and gives rejected evidence one routine retry on a later
-  occurrence. Further attempts require related new evidence, changed grounding
-  rules, or an explicit session review. Fixed failure phases and codes never
-  include generated claims or provider error bodies.
+  evidence, and never merges differently worded claims automatically. The model
+  can cite multiple original turns to interpret a correction. Linked changes
+  succeed together. An independent change can still commit when a separate group
+  is deferred. With schema 14, the scheduler continues through fresh batches and
+  gives rejected evidence one routine retry on a later occurrence. Further
+  attempts require related new evidence, changed grounding rules, or an explicit
+  session review. Fixed failure phases and codes never include generated claims
+  or provider error bodies.
 - Greetings and irrelevant queries inject no context packet.
 - The optional `moon_source_learn` tool explicitly processes one queued eligible
   source and submits verbatim proposals for separate operator review. It does
