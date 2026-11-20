@@ -267,6 +267,15 @@ function queryFromParams(params) {
   return query;
 }
 
+function questionBeforeReplyInstructions(query) {
+  // Preserve multiple questions and substantive follow-ups. Only a single
+  // question followed by instructions for the answer is eligible for a retry.
+  const match =
+    /^([^?？]+[?？])\s*(?:(?:please\s+)?(?:answer|reply|respond)\b|(?:请|請)?(?:回答|回复|回覆))[^?？]*$/iu
+      .exec(query);
+  return match?.[1].trim();
+}
+
 function resolvePath(api, value) {
   if (!nonEmptyString(value)) {
     return null;
@@ -3572,7 +3581,7 @@ async function readProtectedDiscordPrincipals(api, settings) {
 }
 
 function selectHostAdmission(db, ctx, messageId, readSourceText = false) {
-  // Only a Discord channel receipt needs the bounded canonical user content.
+  // Discord source receipts need the bounded canonical user content.
   // The model projection lives separately in __openclaw.upstreamUserText.
   return db.prepare(`SELECT
     CASE WHEN e.event_zstd IS NULL THEN json_object(
@@ -3617,11 +3626,12 @@ function discordSourceTextHash(content) {
 
 async function readHostAdmission(api, ctx, messageId, chatType = "direct") {
   try {
+    const readSourceText = chatType === "channel" || ctx.channel === "discord";
     const row = await withHostIdentityDatabase(
       api,
       "agent",
       ctx.agentId,
-      (db) => selectHostAdmission(db, ctx, messageId, chatType === "channel"),
+      (db) => selectHostAdmission(db, ctx, messageId, readSourceText),
     );
     if (
       !row || row.incognito ||
@@ -3642,7 +3652,7 @@ async function readHostAdmission(api, ctx, messageId, chatType = "direct") {
         }).toString("utf8"),
       ).message;
       metadata = message?.__openclaw;
-      if (chatType === "channel") sourceContent = message?.content;
+      if (readSourceText) sourceContent = message?.content;
     }
     if (!metadata) return null;
     // Native Gateway sessions can omit the optional session chatType.
@@ -3657,7 +3667,7 @@ async function readHostAdmission(api, ctx, messageId, chatType = "direct") {
       sender: metadata.senderId,
       origin: metadata.requesterOrigin,
       transport: metadata.transport,
-      ...(chatType === "channel" && {
+      ...(readSourceText && {
         sourceTextHash: discordSourceTextHash(sourceContent),
       }),
     };
@@ -3999,54 +4009,106 @@ async function verifiedTurnGrant(api, settings, event, ctx, services) {
   return master ? await services.masterTurn(api, master, event, ctx) : null;
 }
 
-function discordLearningReceipt(row, ctx, hostId) {
+function discordAdmissionReceipt(row, ctx, hostId, direct) {
   const { identity, origin, transport } = row ?? {};
   if (
     identity?.type !== "observation" || identity.id !== ctx.senderId ||
     !["human", "unknown"].includes(identity.senderKind) ||
     identity.pluginId !== "discord" || identity.accountId !== ctx.accountId ||
     row.sender !== ctx.senderId || origin?.messageProvider !== "discord" ||
-    origin.chatType !== "channel" || origin.sessionKey !== ctx.sessionKey ||
+    origin.chatType !== (direct ? "direct" : "channel") ||
+    origin.sessionKey !== ctx.sessionKey ||
     origin.accountId !== ctx.accountId || origin.senderId !== ctx.senderId ||
-    origin.conversationId !== ctx.chatId || origin.messageThreadId != null ||
+    origin.messageThreadId != null ||
     transport?.channel !== "discord" ||
     !discordSnowflake(transport.messageId) ||
     !/^[a-f0-9]{64}$/.test(row.sourceTextHash ?? "")
   ) return null;
+  // For DMs the host hashes the peer destination but records the actual DM
+  // channel in the admitted origin. Discord must verify that channel itself.
+  const channelId = origin.conversationId;
+  if (!discordSnowflake(channelId) || channelId === ctx.senderId) return null;
+  if (direct) {
+    if (
+      (ctx.chatId !== ctx.senderId && ctx.chatId !== channelId) ||
+      origin.groupId != null || origin.groupChannel != null ||
+      origin.groupSpace != null || origin.delegatedCreatorProfileId != null
+    ) return null;
+  } else if (channelId !== ctx.chatId) return null;
   // OpenClaw derives this ID from the channel, account and original message.
   // A Gateway turn with Discord-looking sender metadata is a different source.
   const digest = createHash("sha256").update(JSON.stringify([
     "discord",
     ctx.accountId,
-    `channel:${ctx.chatId}`,
+    direct ? `user:${ctx.senderId}` : `channel:${channelId}`,
     transport.messageId,
   ])).digest("hex");
   return hostId === `channel-user:v1:${digest}`
-    ? { messageId: transport.messageId, textHash: row.sourceTextHash }
+    ? {
+      channelId,
+      messageId: transport.messageId,
+      textHash: row.sourceTextHash,
+    }
     : null;
 }
 
-async function discordLearningRoute(api, ctx, hostId, services) {
+function isolatedDiscordDm(session, senderId) {
+  if (session?.dmScope !== "per-account-channel-peer") return false;
+  // An identityLinks alias can make two Discord peers share even a
+  // per-account session, including when the alias itself is a Discord ID.
+  for (const [alias, links] of Object.entries(session.identityLinks ?? {})) {
+    const peers = links.map((link) =>
+      /^(?:discord:)?([0-9]{15,20})$/i.exec(link.trim())?.[1]
+    ).filter(Boolean);
+    if (
+      alias.trim() === senderId
+        ? peers.some((id) => id !== senderId)
+        : peers.includes(senderId)
+    ) return false;
+  }
+  return true;
+}
+
+async function discordAdmissionRoute(
+  api,
+  ctx,
+  hostId,
+  services,
+  learningEnabled,
+) {
+  const direct = ctx.sessionKey ===
+    `agent:${ctx.agentId}:discord:${ctx.accountId}:direct:${ctx.senderId}`;
   if (
-    ctx.chatId === ctx.senderId ||
-    ctx.sessionKey !== `agent:${ctx.agentId}:discord:channel:${ctx.chatId}` ||
+    (!direct && (!learningEnabled ||
+      ctx.sessionKey !==
+        `agent:${ctx.agentId}:discord:channel:${ctx.chatId}`)) ||
     typeof ctx.hookInvocation?.assertActive !== "function"
   ) return null;
   const currentReceipt = async () => {
     ctx.hookInvocation.assertActive();
     const config = api.runtime?.config?.current?.() ?? api.config;
-    if (config?.plugins?.slots?.memory !== "none") return null;
-    const row = await services.admission?.(api, ctx, hostId, "channel");
+    if (
+      config?.plugins?.slots?.memory !== "none" ||
+      (direct && !isolatedDiscordDm(config.session, ctx.senderId))
+    ) return null;
+    const row = await services.admission?.(
+      api,
+      ctx,
+      hostId,
+      direct ? "direct" : "channel",
+    );
     ctx.hookInvocation.assertActive();
-    return discordLearningReceipt(row, ctx, hostId);
+    return discordAdmissionReceipt(row, ctx, hostId, direct);
   };
   const receipt = await currentReceipt();
   return receipt && {
+    direct,
     receipt,
     async recheck() {
       const current = await currentReceipt();
       if (
-        current?.messageId !== receipt.messageId ||
+        current?.channelId !== receipt.channelId ||
+        current.messageId !== receipt.messageId ||
         current.textHash !== receipt.textHash
       ) {
         throw new AudienceUnavailable();
@@ -4064,18 +4126,21 @@ async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
     !ctx.sessionKey ||
     !discordSnowflake(ctx.senderId) || !discordSnowflake(ctx.chatId)
   ) return null;
-  const direct = ctx.chatId === ctx.senderId;
   const audience = ctx.memoryAudience;
-  // A rejected or stale host grant must never be replaced. With the native
-  // memory slot disabled a live, exact Discord admission can authorise learning
-  // only; it provides no authority to disclose private context.
+  // A rejected or stale host grant must never be replaced. An independent
+  // Discord receipt authorises private recall only in an isolated, verified DM.
   const noHostGrant = audience === undefined &&
     ctx.assertMemoryAudienceCurrent === undefined;
-  let learningRoute;
+  let admitted;
   if (noHostGrant) {
-    if (!learningEnabled) return null;
-    learningRoute = await discordLearningRoute(api, ctx, hostId, services);
-    if (!learningRoute) return null;
+    admitted = await discordAdmissionRoute(
+      api,
+      ctx,
+      hostId,
+      services,
+      learningEnabled,
+    );
+    if (!admitted) return null;
   } else if (
     typeof ctx.assertMemoryAudienceCurrent !== "function" ||
     audience?.agentId !== ctx.agentId ||
@@ -4087,18 +4152,20 @@ async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
   const target = {
     accountId: ctx.accountId,
     senderId: ctx.senderId,
-    channelId: ctx.chatId,
-    requireDirect: audience?.kind === "owner-private",
-    ...(learningRoute && { learningReceipt: learningRoute.receipt }),
+    channelId: admitted?.receipt.channelId ?? ctx.chatId,
+    requireDirect: admitted?.direct === true ||
+      audience?.kind === "owner-private",
+    ...(admitted && { learningReceipt: admitted.receipt }),
   };
   checkAudienceGuard(ctx);
   const actor = `discord:${ctx.senderId}`;
+  const hostPeer = !admitted && ctx.chatId === ctx.senderId;
   // Discord user and channel snowflakes identify different objects. The DM
   // peer route uses the user's ID; real channel routes need a fresh ACL walk.
   const snapshot = async () => {
     let access;
     try {
-      access = direct
+      access = hostPeer
         ? (await services.human(api, target)
           ? { readers: [actor], owners: [actor], directPeer: true }
           : null)
@@ -4107,6 +4174,9 @@ async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
       throw new AudienceUnavailable();
     }
     if (
+      (admitted?.direct && (access?.directPeer !== true ||
+        access.readers?.length !== 1 || access.readers[0] !== actor ||
+        access.owners?.length !== 1 || access.owners[0] !== actor)) ||
       !validReaders(access?.readers) || !Array.isArray(access.owners) ||
       (access.owners.length && !validReaders(access.owners)) ||
       !access.owners.every((id) => access.readers.includes(id))
@@ -4126,12 +4196,12 @@ async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
     return null;
   }
   checkAudienceGuard(ctx);
-  if (learningRoute) await learningRoute.recheck();
+  if (admitted) await admitted.recheck();
   if (!initial.readers.includes(actor)) return null;
   // The author owns their own question even when they can only see live posts.
   // The source proves its author's ownership even after queueing. This
   // fallback has no historical ACL for granting ownership to other readers.
-  const owners = learningRoute
+  const owners = admitted
     ? [actor]
     : [...new Set([...initial.owners, actor])].sort();
   return {
@@ -4139,18 +4209,19 @@ async function discordTurnReaders(api, ctx, services, hostId, learningEnabled) {
     sender: actor,
     directPeer: initial.directPeer,
     owners,
-    ...(learningRoute && { privateRecall: false }),
+    ...(admitted && { privateRecall: admitted.direct, replyHistory: false }),
+    ...(admitted?.direct && { directChannelId: target.channelId }),
     snapshot,
     async recheck() {
       checkAudienceGuard(ctx);
-      if (!direct) {
+      if (!hostPeer) {
         const current = await snapshot();
         if (JSON.stringify(current) !== JSON.stringify(initial)) {
           throw new AudienceUnavailable();
         }
       }
       checkAudienceGuard(ctx);
-      if (learningRoute) await learningRoute.recheck();
+      if (admitted) await admitted.recheck();
     },
   };
 }
@@ -4177,7 +4248,9 @@ function sameDiscordDestination(entry, event, ctx) {
     // Discord routes can name a raw DM channel or its human peer.
     if (target[1] === "user") {
       if (!entry.grant.directPeer || target[2] !== entry.senderId) return false;
-    } else if (target[2] !== entry.chatId) return false;
+    } else if (target[2] !== (entry.grant.directChannelId ?? entry.chatId)) {
+      return false;
+    }
   }
   return true;
 }
@@ -4310,6 +4383,7 @@ function createMoonPromptRecall(
         previous.chatId !== ctx.chatId ||
         previous.accountId !== ctx.accountId ||
         previous.senderId !== ctx.senderId ||
+        previous.grant.directChannelId !== grant.directChannelId ||
         (previous.key && key && previous.key !== key) ||
         JSON.stringify(previous.grant.readers) !==
           JSON.stringify(grant.readers))
@@ -4534,12 +4608,15 @@ function createMoonPromptRecall(
             } catch {
               throw new AudienceUnavailable();
             }
-            if (ctx.channel === "discord" && grant.privateRecall !== false) {
+            if (ctx.channel === "discord" && grant.replyHistory !== false) {
               rememberDelivery(ctx, grant, key, false);
             }
           }
         }
-        if (grant && !publicOnly && requestsPrivateHistory(query)) {
+        if (
+          grant && !publicOnly && grant.replyHistory !== false &&
+          requestsPrivateHistory(query)
+        ) {
           const history = await privateHistoryPacket(api, {
             ...settings,
             maxChars: available,
@@ -4597,6 +4674,30 @@ function createMoonPromptRecall(
         let observation;
         try {
           observation = await entry.observation;
+          if (
+            grant?.directChannelId && !observation.packet &&
+            !observation.truncated
+          ) {
+            // Reply instructions can outweigh the question's terms. Keep any
+            // full-query match and use the same verified audience and limits.
+            const question = questionBeforeReplyInstructions(query);
+            if (question) {
+              await markContextInjection(
+                api,
+                settings,
+                worker,
+                observation.requestId,
+                false,
+              );
+              assertActive();
+              observation = await retrievePacket(
+                api,
+                settings,
+                question,
+                worker,
+              );
+            }
+          }
           if (publicOnly && observation.packet && !observation.publicOnly) {
             observation = { ...observation, packet: null };
           }
@@ -5499,7 +5600,9 @@ export async function discordRoomAccess(
   if (learningReceipt !== undefined) {
     const { messageId, textHash } = learningReceipt ?? {};
     if (
-      channel.type !== 0 || !discordSnowflake(messageId) ||
+      channel.type !== (requireDirect ? 1 : 0) ||
+      (requireDirect && channel.guild_id != null) ||
+      !discordSnowflake(messageId) ||
       !/^[a-f0-9]{64}$/.test(textHash ?? "")
     ) return null;
     const message = await get(
@@ -5507,6 +5610,7 @@ export async function discordRoomAccess(
     );
     if (
       message?.id !== messageId || message.channel_id !== channelId ||
+      (requireDirect && message.guild_id != null) ||
       typeof message.content !== "string" ||
       discordSourceTextHash(message.content) !== textHash ||
       message.author?.id !== senderId || message.author.bot ||

@@ -1,4 +1,5 @@
-import moonPlugin, { __moonTest } from "./index.js";
+import { createHash } from "node:crypto";
+import moonPlugin, { __moonTest, discordRoomAccess } from "./index.js";
 
 type Hook = (
   event: Record<string, unknown>,
@@ -847,6 +848,306 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
     assert(legacy?.prependContext.includes("clarification"));
     assert(!legacy?.prependContext.includes(packet));
     assert(!f.calls.slice(from).some((args) => args.includes("context")));
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("Discord DM recall with native memory disabled follows the admitted human post and its single recipient", async () => {
+  const peer = "111111111111111111", channel = "222222222222222222";
+  const post = "333333333333333333", other = "444444444444444444";
+  const owner = `discord:${peer}`, account = "second";
+  const sessionKey = `agent:main:discord:${account}:direct:${peer}`;
+  const question = "From our chat history, what marks the fixture index page?";
+  const hash = (text: string) =>
+    createHash("sha256").update(text).digest("hex");
+  const admissionId = "channel-user:v1:" +
+    hash(JSON.stringify(["discord", account, `user:${peer}`, post]));
+  const request = {
+    currentUserMessage: question,
+    currentUserMessageId: admissionId,
+  };
+  const ctx = {
+    ...context,
+    sessionId: "dm-session",
+    sessionKey,
+    channel: "discord",
+    accountId: account,
+    senderId: peer,
+    chatId: peer,
+    hookInvocation: { assertActive() {} },
+  };
+  const original = {
+    sender: peer,
+    identity: {
+      type: "observation",
+      id: peer,
+      senderKind: "unknown",
+      pluginId: "discord",
+      accountId: account,
+    },
+    origin: {
+      chatType: "direct",
+      conversationId: channel,
+      messageProvider: "discord",
+      accountId: account,
+      senderId: peer,
+      sessionKey,
+    },
+    transport: { channel: "discord", messageId: post },
+    sourceTextHash: hash(question),
+  };
+  let row: typeof original | null = original;
+  let recipient = peer;
+  let matchingQuery = question;
+  let afterQuery = () => {};
+  const f = fixture({
+    result: (argv, input) => {
+      const privateQuery = argv.includes("context") &&
+        argv.includes(JSON.stringify([owner]));
+      if (privateQuery) afterQuery();
+      const data = argv.includes("bind-room")
+        ? { bound: true, owners: [owner] }
+        : argv.includes("context")
+        ? envelope(privateQuery && input === matchingQuery ? packet : null)
+        : { updated: true };
+      return { code: 0, stdout: JSON.stringify(data), stderr: "" };
+    },
+  });
+  const slots = { ...f.api.config.plugins.slots, memory: "none" };
+  const session = {
+    dmScope: "per-account-channel-peer",
+    identityLinks: {} as Record<string, string[]>,
+  };
+  const pluginConfig = { ...f.api.pluginConfig, learningEnabled: true };
+  const api = {
+    ...f.api,
+    pluginConfig,
+    config: { plugins: { ...f.api.config.plugins, slots }, session },
+  };
+  const recall = __moonTest.createMoonPromptRecall(api, {
+    client: null,
+    stopping: false,
+  }, {
+    admission: (_api, hook, id, chatType) =>
+      Promise.resolve(
+        id === admissionId && chatType === "direct" &&
+          hook.sessionId === ctx.sessionId
+          ? row
+          : null,
+      ),
+    access: (_api, target) => {
+      assert(target.accountId === account && target.requireDirect);
+      return discordRoomAccess(
+        (route: string) =>
+          Promise.resolve(
+            route === `/channels/${channel}`
+              ? { id: channel, type: 1, recipients: [{ id: recipient }] }
+              : route === `/channels/${channel}/messages/${post}`
+              ? {
+                id: post,
+                channel_id: channel,
+                type: 0,
+                author: { id: peer },
+                content: request.currentUserMessage,
+              }
+              : null,
+          ),
+        target.channelId,
+        target.senderId,
+        true,
+        true,
+        target.learningReceipt,
+      );
+    },
+  });
+  const privateCalls = () =>
+    f.calls.filter((argv) =>
+      argv.includes("context") && argv.includes(JSON.stringify([owner]))
+    ).length;
+  try {
+    for (
+      const [chatId, learning] of [[peer, true], [channel, false]] as const
+    ) {
+      pluginConfig.learningEnabled = learning;
+      const bindsBefore = f.calls.filter((argv) =>
+        argv.includes("bind-room")
+      ).length;
+      const run = { ...ctx, chatId, runId: "dm-" + chatId };
+      const allowed = await recall.prepare(request, run);
+      assert(allowed?.prependContext.includes(packet));
+      assert(
+        allowed.prependContext.includes(
+          "Current verified Discord speaker: " + owner,
+        ),
+      );
+      equal(
+        f.calls.filter((argv) => argv.includes("bind-room")).length,
+        bindsBefore + Number(pluginConfig.learningEnabled),
+      );
+      const outbound = {
+        runId: run.runId,
+        sessionKey,
+        channelId: "discord",
+        accountId: account,
+      };
+      const send = {
+        to: `user:${peer}`,
+        content: "A private fixture answer.",
+        kind: "final",
+      };
+      equal(await recall.guardDelivery(send, outbound), undefined);
+      await recall.confirmDelivery({
+        ...send,
+        success: true,
+        messageId: String(BigInt(Date.now() - 1420070400000) << 22n),
+      }, outbound);
+      assert(
+        !f.calls.some((argv) =>
+          argv.includes("history") || argv.includes("reply-history")
+        ),
+      );
+      for (const to of [`user:${peer}`, channel, `channel:${channel}`]) {
+        equal(
+          await recall.guardDelivery({ kind: "final", to }, outbound),
+          undefined,
+        );
+      }
+      for (
+        const to of [`user:${other}`, `channel:${other}`, `channel:${peer}`]
+      ) {
+        equal(await recall.guardDelivery({ kind: "final", to }, outbound), {
+          cancel: true,
+        });
+      }
+      recipient = other;
+      equal(
+        await recall.guardDelivery({ kind: "final", to: channel }, outbound),
+        { cancel: true },
+      );
+      recipient = peer;
+    }
+    pluginConfig.learningEnabled = true;
+    const denied = async (overrides: Record<string, unknown> = {}) => {
+      const before = privateCalls();
+      const result = await recall.prepare(request, { ...ctx, ...overrides });
+      assert(!result?.prependContext?.includes(packet));
+      equal(privateCalls(), before);
+    };
+    for (
+      const overrides of [
+        { chatId: other },
+        { senderId: other },
+        { accountId: "other" },
+        { sessionKey: "agent:main:discord:channel:" + channel },
+        { hookInvocation: undefined },
+        { inputProvenance: { kind: "inter_session" } },
+        { memoryAudience: { kind: "owner-private", agentId: "main" } },
+        { assertMemoryAudienceCurrent() {} },
+        {
+          memoryAudience: { kind: "owner-private", agentId: "main" },
+          assertMemoryAudienceCurrent() {
+            throw Error("expired");
+          },
+        },
+      ]
+    ) await denied(overrides);
+    slots.memory = "native";
+    await denied();
+    slots.memory = "none";
+    session.dmScope = "main";
+    await denied();
+    session.dmScope = "per-account-channel-peer";
+    session.identityLinks[peer] = [`discord:${other}`];
+    await denied();
+    delete session.identityLinks[peer];
+    recipient = other;
+    await denied();
+    recipient = peer;
+    for (
+      const invalid of [
+        null,
+        { ...original, sender: other },
+        { ...original, identity: { ...original.identity, accountId: "other" } },
+        { ...original, origin: { ...original.origin, conversationId: other } },
+        { ...original, origin: { ...original.origin, chatType: "channel" } },
+        { ...original, origin: { ...original.origin, groupId: other } },
+        { ...original, origin: { ...original.origin, messageThreadId: other } },
+        { ...original, transport: { ...original.transport, messageId: other } },
+        { ...original, sourceTextHash: hash("A second message.\n" + question) },
+      ]
+    ) {
+      row = invalid;
+      await denied();
+    }
+    const withInstructions = question +
+      " Please answer only from the supplied Moon context.";
+    const substantive = question + " I mean the second edition.";
+    const multiple = question + " Please reply briefly. Which edition was it?";
+    for (
+      const test of [
+        {
+          text: withInstructions,
+          match: question,
+          expected: [withInstructions, question],
+        },
+        {
+          text: withInstructions,
+          match: withInstructions,
+          expected: [withInstructions],
+        },
+        { text: substantive, match: question, expected: [substantive] },
+        { text: multiple, match: question, expected: [multiple] },
+        {
+          text: withInstructions,
+          match: question,
+          expected: [withInstructions],
+          publicOnly: true,
+        },
+      ]
+    ) {
+      request.currentUserMessage = test.text;
+      row = { ...original, sourceTextHash: hash(test.text) };
+      matchingQuery = test.match;
+      recipient = test.publicOnly ? other : peer;
+      const start = f.calls.length;
+      const result = await recall.prepare(request, {
+        ...ctx,
+        runId: "lookup-" + start,
+      });
+      const queries = f.calls.slice(start).flatMap((argv, i) =>
+        argv.includes("context")
+          ? [[
+            f.inputs[start + i],
+            JSON.parse(argv[argv.indexOf("--audience-json") + 1]),
+          ]]
+          : []
+      );
+      equal(
+        queries,
+        test.expected.map((input) => [input, test.publicOnly ? [] : [owner]]),
+      );
+      equal(
+        Boolean(result?.prependContext?.includes(packet)),
+        !test.publicOnly && test.expected.includes(test.match),
+      );
+    }
+    request.currentUserMessage = matchingQuery = question;
+    recipient = peer;
+    row = original;
+    afterQuery = () => {
+      row = {
+        ...original,
+        origin: { ...original.origin, conversationId: other },
+      };
+    };
+    const before = privateCalls();
+    const replaced = await recall.prepare(request, {
+      ...ctx,
+      runId: "changed-receipt",
+    });
+    equal(privateCalls(), before + 1);
+    assert(!replaced?.prependContext?.includes(packet));
   } finally {
     await f.service.stop();
   }

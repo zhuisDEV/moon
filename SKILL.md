@@ -27,23 +27,24 @@ source/topic worker exists.
 An operator may use `privacy assign-legacy --owner discord:USER_ID` on an
 explicit rehearsal database when they have confirmed ownership of its entire
 legacy collection. New questions record the speaker and room-access owners.
-Delivered replies have a separate owner list. Chat recall uses the destination
-reader set verified by the host. Local `search`, unscoped `context`, exports,
-legacy review and storage inspection are operator commands and must never serve
-as fallbacks in chat. When readers cannot be verified, use public recall only
-and ask in a DM where the host can verify the audience. Use `/moonpublic` for
-explicit sharing. See [privacy and legacy review](docs/memory-privacy.md).
+Delivered replies have a separate owner list. Chat recall uses the verified
+readers of the destination. Local `search`, unscoped `context`, exports, legacy
+review and storage inspection are operator commands and must never serve as
+fallbacks in chat. When readers cannot be verified, use public recall only and
+ask in a verified DM. Use `/moonpublic` for explicit sharing. See
+[privacy and legacy review](docs/memory-privacy.md).
 
-With OpenClaw's native memory disabled, verified human turns in Discord guild
-text rooms can still contribute private evidence. Moon checks the exact text of
-one original Discord post and attributes ownership to the author. These turns
-use public Moon context in replies. A prompt acknowledgement alone does not
-confirm learning.
+With OpenClaw's native memory disabled, private recall is available in a
+one-to-one Discord DM when Moon verifies the peer and the exact post against the
+accepted turn in a session dedicated to that bot account and peer. A verified
+guild text post can still contribute private evidence for its author. Replies on
+that guild route use public Moon context. An operator can confirm learning
+against the saved evidence.
 
 On schema 20, `[master].profile_id` selects a personal OpenClaw profile. Require
 an authenticated turn from that profile or an enrolled channel sender. A Discord
-DM with a verified host audience can recall private memories learned through
-TUI, Control UI and other enrolled chat tools. Those tools use public context in
+DM with a verified audience can recall private memories learned through TUI,
+Control UI and other enrolled chat tools. Those tools use public context in
 replies. A room with a readable external bot can learn from its human speakers
 and return public context. Externally authored bot reports belong to the
 verified Master who could read them and retain their bot attribution. See the

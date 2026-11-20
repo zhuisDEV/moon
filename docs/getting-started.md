@@ -127,10 +127,12 @@ OpenClaw's `moonPath` and `command -v moon` should resolve to the same release.
 An empty new database is normal. Health should report integrity `ok`, zero
 logical violations and, once embeddings drain, no pending/failed/dead jobs.
 
-For Discord chat, test an owner-only fact in its authorised DM and check that a
-shared room with an additional reader excludes it. Moon applies this filter to
-recall. Host filesystem, shell and cross-session tools have separate permissions
-and may expose the same data. See
+For one-to-one Discord recall with native memory disabled, use the
+`per-account-channel-peer` DM scope. Test with a fresh DM and a question that
+omits the answer to a known owner-only fact. Check that the DM's Moon context
+contains the memory and a room with an additional reader excludes it. A fact
+already visible in channel history can also reach the model through OpenClaw.
+Host filesystem, shell and cross-session tools have separate permissions. See
 [Public and private memory](memory-privacy.md).
 
 Storage health does not prove a chat received memory. Follow the

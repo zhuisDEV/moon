@@ -32,11 +32,11 @@ have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
 owns authentication and model execution; Moon creates no provider login or
 API-key store.
 
-Moon supports human learning in ordinary Discord text rooms with OpenClaw's
-native memory disabled. Moon verifies the exact text of a single Discord post
-and room access. The author owns the resulting evidence. Replies on this path
-use public Moon context. See the
-[privacy rules](docs/memory-privacy.md#what-a-conversation-can-recall).
+With OpenClaw's native memory disabled, Moon can recall a user's private
+memories in a verified one-to-one Discord DM. The session must be isolated to
+the bot account and the user. In ordinary guild text rooms, Moon can still learn
+from a verified post for its author while using public context for replies. See
+the [privacy rules](docs/memory-privacy.md#what-a-conversation-can-recall).
 
 The adapter can give one personal OpenClaw profile a private Moon memory across
 linked accounts. It can also save new messages from external bots for that
