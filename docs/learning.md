@@ -504,7 +504,7 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.8.1 accepts supported databases from schema 6 through 20 and migrates
+Moon 2.8.2 accepts supported databases from schema 6 through 20 and migrates
 them to schema 20. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
 job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in

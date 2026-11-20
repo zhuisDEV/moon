@@ -114,7 +114,7 @@ Deno.test("learning counts a readable bot in the audience but never as a private
   }
 });
 
-Deno.test("learning without a host audience checks the exact human Discord post before verifying room owners", async () => {
+Deno.test("Discord channel and DM receipts require the exact unedited human post", async () => {
   const messageId = "20000000000000000";
   const message = {
     id: messageId,
@@ -123,16 +123,26 @@ Deno.test("learning without a host audience checks the exact human Discord post 
     author: { id: sender },
     content: "One exact Discord post.\nPreserve this second line.",
   };
-  const verify = (reply: Record<string, unknown>, channelType = 0) => {
+  const verify = (
+    reply: Record<string, unknown>,
+    channelType = 0,
+    requireDirect = false,
+  ) => {
     const get = fixtures(true, channelType);
     return discordRoomAccess(
       (route: string) =>
         route === `/channels/${channel}/messages/${messageId}`
           ? Promise.resolve(reply)
+          : route === `/channels/${channel}` && channelType === 1
+          ? Promise.resolve({
+            id: channel,
+            type: 1,
+            recipients: [{ id: sender }],
+          })
           : get(route),
       channel,
       sender,
-      false,
+      requireDirect,
       true,
       {
         messageId,
@@ -145,6 +155,10 @@ Deno.test("learning without a host audience checks the exact human Discord post 
     !valid?.readers.includes(`discord:${sender}`) ||
     !valid.readers.includes(`bot:discord:${admin}`)
   ) throw Error("an exact human reply should admit the mixed room");
+  const dm = await verify(message, 1, true);
+  if (!dm?.directPeer || dm.readers.join() !== `discord:${sender}`) {
+    throw Error("an exact human DM should admit just its peer");
+  }
   for (
     const invalid of [
       { ...message, author: { id: sender, bot: true } },
@@ -159,7 +173,15 @@ Deno.test("learning without a host audience checks the exact human Discord post 
       { ...message, content: "" },
     ]
   ) {
-    if (await verify(invalid)) throw Error("unverified Discord source message");
+    if (await verify(invalid) || await verify(invalid, 1, true)) {
+      throw Error("unverified Discord source message");
+    }
+  }
+  if (await verify(message, 0, true) || await verify(message, 3, true)) {
+    throw Error("a guild or group channel cannot satisfy a direct receipt");
+  }
+  if (await verify(message, 1)) {
+    throw Error("a DM cannot satisfy a guild receipt");
   }
   if (await verify(message, 11)) throw Error("a thread should not be admitted");
 });

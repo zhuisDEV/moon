@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.8.1 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.8.2 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -32,11 +32,11 @@ have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
 owns authentication and model execution; Moon creates no provider login or
 API-key store.
 
-Moon supports human learning in ordinary Discord text rooms with OpenClaw's
-native memory disabled. Moon verifies the exact text of a single Discord post
-and room access. The author owns the resulting evidence. Replies on this path
-use public Moon context. See the
-[privacy rules](docs/memory-privacy.md#what-a-conversation-can-recall).
+With OpenClaw's native memory disabled, Moon can recall a user's private
+memories in a verified one-to-one Discord DM. The session must be isolated to
+the bot account and the user. In ordinary guild text rooms, Moon can still learn
+from a verified post for its author while using public context for replies. See
+the [privacy rules](docs/memory-privacy.md#what-a-conversation-can-recall).
 
 The adapter can give one personal OpenClaw profile a private Moon memory across
 linked accounts. It can also save new messages from external bots for that
@@ -68,7 +68,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.8.1 uses schema **20**. Signed updates accept schemas **6–20** and
+- Moon 2.8.2 uses schema **20**. Signed updates accept schemas **6–20** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
