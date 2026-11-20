@@ -108,6 +108,7 @@ Deno.test({
             const actions = selected.map((id) => ({
               action: "create",
               canonical_key: `fixture:${id}`,
+              change_set: id,
               kind: "fact",
               content: id === "weak"
                 ? "The kiln currently holds 491 ceramic bowls."

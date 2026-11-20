@@ -2,8 +2,8 @@
 //! evidence selection, leases and atomic validation of the resulting changes.
 use crate::chunking::sha256_hex;
 use crate::memory::{
-    distill_in_transaction, fuzzy_context_score, insert_citation, load_evidence, locate_citation,
-    reference_terms, sync_memory_indexes,
+    distill_in_transaction, fuzzy_context_score, insert_citation, load_evidence, reference_terms,
+    sync_memory_indexes,
 };
 use crate::model::DistillInput;
 use crate::redaction::redact_text;
@@ -518,11 +518,11 @@ impl Store {
         let mut outcomes = Vec::new();
         let mut touched = BTreeSet::new();
         for action in &input.actions {
-            validate_action(&transaction, &scope, &snapshot, action)?;
+            let primary = validate_action(&transaction, &scope, &snapshot, action)?;
             if !touched.insert(action.canonical_key.clone()) {
                 anyhow::bail!("a learning batch may change each canonical key only once");
             }
-            outcomes.push(apply_action(&transaction, run_id, &scope, action)?);
+            outcomes.push(apply_action(&transaction, run_id, &scope, action, primary)?);
         }
         let cited: BTreeSet<_> = input
             .actions
@@ -924,12 +924,12 @@ fn scope_hash(connection: &Connection, scope: &str) -> Result<String> {
     Ok(sha256_hex(&serde_json::to_string(&(rows, aliases))?))
 }
 
-fn validate_action(
+fn validate_action<'a>(
     transaction: &Transaction<'_>,
     scope: &str,
     snapshot: &Snapshot,
-    action: &LearningAction,
-) -> Result<()> {
+    action: &'a LearningAction,
+) -> Result<&'a EvidenceQuote> {
     validate_identifier(&action.canonical_key, "canonical key", 256)?;
     validate_identifier(&action.kind, "memory kind", 128)?;
     if !matches!(
@@ -952,21 +952,24 @@ fn validate_action(
         anyhow::bail!("learning actions need 1..16 evidence quotes and at most 32 merge targets");
     }
     let mut has_selected = false;
-    let mut quotes = Vec::new();
+    let mut primary: Option<(i64, &EvidenceQuote)> = None;
     for citation in &action.evidence {
         if !snapshot.evidence_sessions.contains(&citation.session_id) {
             anyhow::bail!("learning action cites evidence outside its prepared snapshot");
         }
         has_selected |= snapshot.selected_sessions.contains(&citation.session_id);
-        if citation.quote.chars().count() < 8 || citation.quote.len() > 8192 {
-            anyhow::bail!("learning evidence quotes must be 8 characters through 8192 bytes");
-        }
         let evidence = load_evidence(transaction, &citation.session_id)?;
         if evidence.scope != scope {
             anyhow::bail!("learning evidence must remain within its scope");
         }
-        locate_citation(&evidence.body, &citation.quote)?;
-        quotes.push((evidence.completed_at_ms, citation.quote.as_str()));
+        evidence.locate_quote(&citation.quote)?;
+        // A later assistant reply cannot make an older human correction current.
+        // The writer checks this primary source against the target's confirmation time.
+        if (action.action != "supersede" || evidence.speaker_quoted(&citation.quote))
+            && primary.is_none_or(|(at, _)| evidence.completed_at_ms >= at)
+        {
+            primary = Some((evidence.completed_at_ms, citation));
+        }
     }
     if !has_selected {
         anyhow::bail!(
@@ -974,17 +977,18 @@ fn validate_action(
         );
     }
     if action.action != "review" {
-        let newest = quotes
-            .iter()
-            .map(|(date, _)| *date)
-            .max()
-            .context("missing evidence")?;
-        let newest_quotes = quotes
-            .iter()
-            .filter(|(date, _)| *date == newest)
-            .map(|(_, quote)| *quote)
-            .collect::<Vec<_>>();
-        validate_grounding(&action.content, &newest_quotes)?;
+        let numbers = numeric_literals(&action.content);
+        if !numbers.is_empty() {
+            let evidence_numbers = action
+                .evidence
+                .iter()
+                .flat_map(|citation| numeric_literals(&citation.quote))
+                .collect::<BTreeSet<_>>();
+            anyhow::ensure!(
+                numbers.is_subset(&evidence_numbers),
+                "learning content contains a number absent from its evidence"
+            );
+        }
     }
     if action.action == "create"
         && (action.target_document_id.is_some() || !action.merge_document_ids.is_empty())
@@ -1025,7 +1029,9 @@ fn validate_action(
             );
         }
     }
-    Ok(())
+    primary
+        .map(|(_, quote)| quote)
+        .context("supersession requires evidence from the original speaker")
 }
 
 fn apply_action(
@@ -1033,6 +1039,7 @@ fn apply_action(
     run_id: &str,
     scope: &str,
     action: &LearningAction,
+    primary: &EvidenceQuote,
 ) -> Result<Value> {
     if action.action == "review" {
         let reason = redact_text(&action.content)
@@ -1048,20 +1055,6 @@ fn apply_action(
             json!({"action":"review","document_id":action.target_document_id,"review_id":transaction.last_insert_rowid()}),
         );
     }
-    let newest = action
-        .evidence
-        .iter()
-        .map(|quote| {
-            Ok((
-                load_evidence(transaction, &quote.session_id)?.completed_at_ms,
-                quote,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .max_by_key(|(date, _)| *date)
-        .context("missing learning evidence")?
-        .1;
     let outcome = distill_in_transaction(
         transaction,
         DistillInput {
@@ -1073,8 +1066,8 @@ fn apply_action(
             importance: action.importance,
             confidence: action.confidence,
             pinned: false,
-            evidence_session_id: newest.session_id.clone(),
-            evidence_quote: newest.quote.clone(),
+            evidence_session_id: primary.session_id.clone(),
+            evidence_quote: primary.quote.clone(),
             supersedes: if action.action == "supersede" {
                 action.target_document_id
             } else {
@@ -1085,7 +1078,7 @@ fn apply_action(
     )?;
     for quote in &action.evidence {
         let evidence = load_evidence(transaction, &quote.session_id)?;
-        let location = locate_citation(&evidence.body, &quote.quote)?;
+        let location = evidence.locate_quote(&quote.quote)?;
         insert_citation(
             transaction,
             outcome.document_id,
@@ -1254,111 +1247,27 @@ fn validate_metadata(metadata: &LearningMetadata) -> Result<()> {
     Ok(())
 }
 
-fn validate_grounding(content: &str, quotes: &[&str]) -> Result<()> {
-    let (combined, evidence_numbers) = normalize_numeric_evidence(&quotes.join("\n"))?;
-    let (content, claim_numbers) = normalize_numeric_evidence(content)?;
-    if !claim_numbers.is_subset(&evidence_numbers) {
-        anyhow::bail!("learning content contains a number absent from its evidence");
-    }
-    // These checks are conservative failure shields, not an entailment model.
-    // Exact quotation is always the safest way to preserve unfamiliar language.
-    for markers in [
-        &[
-            "not", "never", "no", "without", "isn't", "aren't", "doesn't", "don't", "wasn't",
-            "weren't", "cannot", "can't", "没有", "沒有", "并非", "並非", "不是", "不再", "未能",
-            "无法", "無法",
-        ][..],
-        &[
-            "if",
-            "unless",
-            "hypothetical",
-            "hypothetically",
-            "suppose",
-            "supposing",
-            "assuming",
-            "imagine",
-            "might",
-            "perhaps",
-            "possibly",
-            "如果",
-            "假设",
-            "假設",
-            "假如",
-            "可能",
-            "也许",
-            "也許",
-        ][..],
-        &[
-            "previously",
-            "formerly",
-            "retired",
-            "deprecated",
-            "discontinued",
-            "replaced",
-            "no longer",
-            "used to",
-            "以前",
-            "已退役",
-            "曾经",
-            "曾經",
-            "已停用",
-            "已退休",
-            "已废弃",
-            "已廢棄",
-        ][..],
-    ] {
-        if markers.iter().any(|m| has_marker(&combined, m))
-            && !markers.iter().any(|m| has_marker(&content, m))
-        {
-            anyhow::bail!(
-                "learning content must preserve evidence negation, uncertainty and historical qualifiers"
-            );
-        }
-    }
-    if combined.contains(&content) {
-        return Ok(());
-    }
-    let terms = |text: &str| {
-        text.split(|c: char| !c.is_alphanumeric())
-            .filter(|s| s.chars().count() >= 3)
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>()
-    };
-    let content_terms = terms(&content);
-    let quote_terms = terms(&combined);
-    if content_terms.is_empty()
-        || content_terms.intersection(&quote_terms).count() * 2 < content_terms.len()
-    {
-        anyhow::bail!("learning content is insufficiently supported by its exact evidence quotes");
-    }
-    Ok(())
-}
-
-fn normalize_numeric_evidence(value: &str) -> Result<(String, BTreeSet<String>)> {
-    let numbers =
-        regex::Regex::new(r"[+\-−]?(?:[0-9]+(?:[.,:/+\-−][0-9]+)*|\.[0-9]+)(?:e[+\-−]?[0-9]+)?")?;
-    let grouped =
-        regex::Regex::new(r"^[+-]?[1-9][0-9]{0,2}(?:,[0-9]{3})+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$")?;
-    let mut tokens = BTreeSet::new();
-    // String tokens preserve signs, versions, dates, exponents and integers
-    // beyond floating-point precision. Only valid thousands groups lose commas.
-    let lower = value.to_lowercase();
-    let normalized = numbers.replace_all(&lower, |capture: &regex::Captures<'_>| {
-        let mut token = capture[0].replace('−', "-");
-        if grouped.is_match(&token) {
-            token = token.replace(',', "");
-        }
-        tokens.insert(token.clone());
-        token
+// Exact literal provenance is mechanical. Interpreting references, negation and
+// uncertainty across the cited turns belongs to the learning model.
+fn numeric_literals(value: &str) -> BTreeSet<String> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"[+\-−]?(?:[0-9]+(?:[.,:/+\-−][0-9]+)*|\.[0-9]+)(?:e[+\-−]?[0-9]+)?").unwrap()
     });
-    Ok((normalized.into_owned(), tokens))
-}
-
-fn has_marker(text: &str, marker: &str) -> bool {
-    if !marker.is_ascii() || marker.contains(' ') {
-        text.contains(marker)
-    } else {
-        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .any(|word| word == marker)
-    }
+    static GROUPED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[+-]?[1-9][0-9]{0,2}(?:,[0-9]{3})+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$").unwrap()
+    });
+    // Preserve signs, versions, dates and large integers without floating-point conversion.
+    NUMBERS
+        .find_iter(&value.to_ascii_lowercase())
+        .map(|found| {
+            let token = found.as_str().replace('−', "-");
+            if GROUPED.is_match(&token) {
+                token.replace(',', "")
+            } else {
+                token
+            }
+        })
+        .collect()
 }

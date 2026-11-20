@@ -192,14 +192,24 @@ retries storage failures. L1 model failures do not erase evidence; an enabled L2
 can later revisit it. The default L1 limit is three proposals per eligible turn,
 adjustable through the existing `learningMaxMemories` plugin setting.
 
-L1 compares correction candidates with related active memories. L2 receives
-selected unprocessed evidence, related claims, and the original evidence behind
-those claims. Each L2 action must cite at least one selected record, use exact
-quotes from its prepared snapshot, and stay within one scope. Claims must be
-supported by the newest cited evidence; older citations cannot justify a value
-contradicted by the newer source. Questions, uncertainty, hypothetical wording,
-and negation must not become affirmative user facts. The assistant recalling a
-memory is not independent confirmation of that memory.
+With L1 enabled, short messages now reach the model without a correction
+keyword. Greeting-only turns are skipped. This can increase model calls on busy
+accounts. L1 judges a correction using the current human turn and related active
+memories from the same scope. When the current turn cannot support the whole
+change, L1 leaves the originals for L2. L2 receives selected evidence, related
+claims and the original evidence behind those claims. Each L2 action must cite
+at least one selected record and quote exact text from its prepared snapshot. A
+quote shorter than eight characters must match the entire speaker reply, contain
+a letter or number and identify a unique passage in the original.
+
+A speaker can correct the subject of an earlier statement without repeating its
+value. For example, an earlier turn names a notebook label and a later turn
+changes which notebook it belongs to. L2 can cite both turns and propose the two
+affected claims together. The model decides whether the reference is clear and
+which details, conditions or uncertainties still apply. It can leave an
+ambiguous target unresolved. Moon checks that the quotes exist, numeric literals
+occur in the cited evidence and the target is current and within scope. An
+assistant recalling a memory cannot independently confirm it.
 
 Explicit corrections may supersede the supplied active head while keeping its
 canonical key. Existing kind is preserved when reconciling legacy memories.
@@ -253,11 +263,13 @@ key and stop work for that occurrence. Each attempt can call the configured
 primary and, if enabled, one fallback. Failed input remains available for the
 next due date; exhaustion does not delete or mark it processed.
 
-Moon checks each proposed memory against its cited evidence. A batch can save
-supported claims and defer the sources of rejected claims. If every candidate
-fails grounding, Moon records the attributable deferrals. A transport error,
-malformed proposal, conflicting targets, or a citation that cannot be traced to
-selected evidence fails the batch and preserves each session’s retry allowance.
+The model gives related actions the same response-local `change_set`. All
+unlabelled actions form one set, and a shared original citation connects sets.
+If one action fails evidence validation, Moon defers its linked actions and
+retains their evidence. A review in a set with factual edits holds those edits
+for review. An independent valid set can still commit. A malformed proposal, an
+untraceable citation or a conflicting target can fail the batch before any
+change is saved.
 
 SQLite validates the prepared snapshot and accepted actions again before
 applying. A changed memory scope, stale target, expired lease, invalid citation,
@@ -280,15 +292,15 @@ citation and grounding checks. If the evidence still lacks support, it stays
 parked.
 
 From Moon 2.6.2, gateway diagnostics distinguish fixed failure phases and codes,
-for example `phase=normalise code=lost_qualifier` or `phase=model code=timeout`.
-L1 learning failures now report the same safe phase/code pair as L2 synthesis.
-`phase=model code=backend_error` alone does not identify authentication as the
-cause; correlate it with content-free host route diagnostics. These fields never
-contain generated claims, original conversations or arbitrary provider errors. A
-normalisation failure means the proposed JSON or evidence did not pass Moon's
-checks; it does not imply that the model timed out. An apply failure means the
-SQLite transaction was rejected, which can also happen when L1 changed the
-memory scope while a longer L2 request was running.
+for example `phase=normalise code=unsupported_number` or
+`phase=model code=timeout`. L1 learning failures now report the same safe
+phase/code pair as L2 synthesis. `phase=model code=backend_error` alone does not
+identify authentication as the cause; correlate it with content-free host route
+diagnostics. These fields never contain generated claims, original conversations
+or arbitrary provider errors. A normalisation failure means the proposed JSON or
+evidence did not pass Moon's checks; it does not imply that the model timed out.
+An apply failure means the SQLite transaction was rejected, which can also
+happen when L1 changed the memory scope while a longer L2 request was running.
 
 The schema-13 adapter additionally distinguishes `runtime_unavailable`,
 `runtime_setup_failed`, `authentication_failed`, `model_unavailable` and
@@ -313,19 +325,15 @@ Use the [source-learning canary](source-learning-canary.md) for repeatable
 isolated integration checks. It does not exercise the next scheduled session-L2
 run or demonstrate general synthesis quality.
 
-Grounding codes include `question_only`, `unsupported_number`, `lost_qualifier`
-and `insufficient_overlap`. These are conservative checks, not proof that a
-rejected sentence is false. For example, a useful paraphrase can fail wording
-overlap; review the meaning before choosing a closer quotation.
+For an `unsupported_number` rejection, compare the number in the proposal with
+the exact original quotes it cites. In an isolated copy, check the model's
+proposed changes, the active revisions after application and the recalled packet
+separately. When reviewing meaning, read the original messages in order and
+check who spoke. A citation establishes where the text occurred.
 
-For grounding failures, inspect a proposal against an isolated copy first.
-Prefer narrow claims and short supporting quotations from the newest cited
-evidence; preserve its conditions, uncertainty and negative wording. Omit a
-candidate that cannot pass those checks. Do not weaken the validator or rotate
-run keys to hide repeated failures. After a deliberate correction, an operator
-can use the manual preparation/apply workflow below with the same run key and an
-explicit bounded attempt allowance; ordinary daily retries remain limited to
-three.
+Use the manual preparation/apply workflow below with a stable run key for a
+deliberate retry. Ordinary daily retries remain limited to three attempts per
+batch key.
 
 ## Inspect and rehearse with the CLI
 
@@ -444,8 +452,8 @@ moon --home "$learning_home" --database "$learning_home/state/moon.sqlite" \
 `fail` releases its lease without processing evidence. A dry run does not make
 the snapshot immune to later changes; fail and prepare again if validation
 reports that the scope changed. Manual `apply` accepts at most 32 actions and
-enforces storage invariants; model-level correction and uncertainty checks also
-run in the adapter, so manually authored proposals still require human review.
+enforces storage invariants. Review the meaning of manually authored proposals
+against their original evidence before applying them.
 
 ## Reviewed learning from captured sources
 
@@ -504,7 +512,7 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.8.2 accepts supported databases from schema 6 through 20 and migrates
+Moon 2.9.0 accepts supported databases from schema 6 through 20 and migrates
 them to schema 20. L1/L2 introduced schema 8; source storage, reviewed learning
 and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
 job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in

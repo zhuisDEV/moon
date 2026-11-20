@@ -512,6 +512,94 @@ Deno.test("adapter records one completed turn and distills a validated durable m
   assert(calls[4].argv.includes("--proposed-memories"));
 });
 
+Deno.test("L1 saves an entire turn or leaves its evidence for L2", async () => {
+  const words = "Green bears Topaz. Blue has no cover label.";
+  const params = acceptedParams([{
+    role: "user",
+    content: words,
+    timestamp: 100,
+  }, { role: "assistant", content: "OK.", timestamp: 200 }]);
+  const id = __moonTest.acceptedTurnFromParams(params)!.evidenceSessionId;
+  const base = {
+    canonical_key: "green:label",
+    content: "Topaz labels the green notebook.",
+    evidence_quote: "Green bears Topaz.",
+    kind: "fact",
+    confidence: 0.99,
+    importance: 0.9,
+  };
+  const other = {
+    ...base,
+    canonical_key: "blue:label",
+    content: "The blue notebook is blank.",
+    evidence_quote: "Blue has no cover label.",
+    supersedes_document_id: 42,
+  };
+  for (
+    const test of [
+      { proposals: [base, other], stored: 2 },
+      {
+        proposals: [base, { ...other, evidence_quote: "Made up evidence." }],
+        stored: 0,
+      },
+      {
+        proposals: [base, { ...other, supersedes_document_id: "42" }],
+        stored: 0,
+      },
+      { proposals: [base, { ...other, durability: "forever" }], stored: 0 },
+      {
+        proposals: [base, other, { ...base, canonical_key: "extra:key" }],
+        stored: 0,
+      },
+    ]
+  ) {
+    let distilled = 0;
+    let modelRuns = 0;
+    let recorded = false;
+    const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
+      learningMaxMemories: 2,
+    }, () => {
+      modelRuns++;
+      return {
+        payloads: [{
+          text: JSON.stringify({ eligible: true, memories: test.proposals }),
+        }],
+      };
+    });
+    api.runtime.system.runCommandWithTimeout = (argv, options) => {
+      let value: unknown;
+      if (argv.includes("audience")) return testAudience;
+      if (argv.includes("record")) {
+        recorded = true;
+        value = { session_id: id, scope: testScope, changed: true };
+      } else if (argv.includes("reply-history")) value = { received: true };
+      else if (argv.includes("related")) {
+        value = {
+          memories: [{
+            document_id: 42,
+            canonical_key: "blue:label",
+            kind: "fact",
+            content: "Blue is Topaz.",
+            last_confirmed_at_ms: 99,
+          }],
+        };
+      } else if (argv.includes("config")) value = learningConfig();
+      else if (argv.includes("distill-batch")) {
+        distilled = JSON.parse(options.input ?? "[]").length;
+        value = { distilled };
+      } else if (argv.includes("record-runtime")) {
+        value = { event_id: METRIC_REQUEST_ID };
+      } else throw new Error("unexpected command");
+      return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+    };
+    assertEquals(
+      await __moonTest.createMoonContextEngine(api).commitTurn(params),
+      { status: "committed" },
+    );
+    assertEquals([recorded, modelRuns, distilled], [true, 1, test.stored]);
+  }
+});
+
 Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
   const settings = __moonTest.resolveSettings(createApi(
     { code: 0, stdout: "", stderr: "" },
@@ -1758,14 +1846,14 @@ Deno.test("learning proposals reject a truncated amount and accept a complete gr
   };
   const turn = { userText: quote, transcript: `User:\n${quote}` };
   assertEquals(
-    __moonTest.normalizeProposal(raw, turn, settings, new Set()),
+    __moonTest.normalizeProposal(raw, turn, settings, []),
     null,
   );
   const valid = __moonTest.normalizeProposal(
     { ...raw, content: "The budget is 1000 dollars." },
     turn,
     settings,
-    new Set(),
+    [],
   );
   assertEquals(valid?.content, "The budget is 1000 dollars.");
 });
@@ -1793,7 +1881,7 @@ Deno.test("automatic supersession requires an explicit correction and active hea
         "User:\nActually, the preferred model is Luna.\n\nAssistant:\nUnderstood.",
     },
     settings,
-    new Set([42]),
+    [{ document_id: 42, canonical_key: raw.canonical_key }],
   );
   assert(corrected);
   assertEquals(corrected.supersedesDocumentId, 42);
@@ -1805,7 +1893,7 @@ Deno.test("automatic supersession requires an explicit correction and active hea
         "User:\nTell me about my preference.\n\nAssistant:\nActually, the preferred model is Luna.",
     },
     settings,
-    new Set([42]),
+    [{ document_id: 42, canonical_key: raw.canonical_key }],
   );
   assertEquals(uncorrected, null);
 });
@@ -1833,8 +1921,7 @@ Deno.test("assistant recall cannot create circular confirmation evidence", () =>
         "User:\nWhat is my preferred model?\n\nAssistant:\nThe preferred model is Luna.",
     },
     settings,
-    new Set([42]),
-    new Set(["user:preference:model"]),
+    [{ document_id: 42, canonical_key: raw.canonical_key }],
   );
   assertEquals(recalled, null);
 
@@ -1849,8 +1936,7 @@ Deno.test("assistant recall cannot create circular confirmation evidence", () =>
         "User:\nThe preferred model is Luna.\n\nAssistant:\nConfirmed.",
     },
     settings,
-    new Set([42]),
-    new Set(["user:preference:model"]),
+    [{ document_id: 42, canonical_key: raw.canonical_key }],
   );
   assert(confirmed);
 });
@@ -2331,37 +2417,28 @@ Deno.test("L1 and L2 settings are independent and preserve the native Codex host
   );
 });
 
-Deno.test("learning evidence preserves negation, hypothetical meaning and historical tense", () => {
+Deno.test("L1 asks the model to distinguish qualifiers and defer ambiguous corrections", () => {
+  const prompt = __moonTest.learningPrompt(
+    {
+      transcript: "User:\nI meant the second one.",
+      completedAtMs: 1000,
+    },
+    [],
+    { learningMaxMemories: 3 },
+  );
   for (
-    const [claim, quote] of [
-      ["Astrofaith API key is stored.", "No Astrofaith API key is stored."],
-      [
-        "Diana has Virgo on the second-house cusp.",
-        "If Diana had Virgo on the second-house cusp, this would be a hypothetical example.",
-      ],
-      [
-        "Astrofaith uses Live Room credentials.",
-        "Astrofaith previously used Live Room credentials, which are now retired.",
-      ],
-      ["服务已经修复。", "假设服务已经修复。"],
-      ["密钥已经存储。", "密钥没有存储。"],
+    const instruction of [
+      "Preserve negation, uncertainty",
+      "subject could refer to multiple memories",
+      "return eligible=false",
+      "Never save just one half",
     ]
-  ) assert(!__moonTest.evidenceSupportsContent(claim, quote), claim);
-  assert(
-    __moonTest.evidenceSupportsContent(
-      "No Astrofaith API key is stored.",
-      "No Astrofaith API key is stored.",
-    ),
-  );
-  assert(
-    __moonTest.evidenceSupportsContent(
-      "Astrofaith Live Room is retired.",
-      "Astrofaith Live Room is retired.",
-    ),
-  );
+  ) {
+    assert(prompt.includes(instruction), instruction);
+  }
 });
 
-Deno.test("correction detection includes retirement and Chinese without creating a competing claim", () => {
+Deno.test("short and multilingual turns reach L1 and corrections need a known head", () => {
   const settings = __moonTest.resolveSettings(
     createApi({ code: 0, stdout: "", stderr: "" }, []),
   );
@@ -2371,14 +2448,16 @@ Deno.test("correction detection includes retirement and Chinese without creating
       "Please see any updates because this has been retired.",
       "更正一下，Live Room 已停用。",
       "我们不再使用这个模型。",
+      "I meant the green one.",
+      "是绿色的。",
     ]
   ) {
-    assert(__moonTest.correctionRequested(text));
     assert(
       __moonTest.isLearningCandidate({ userText: text, assistantText: "OK" }),
     );
   }
-  const quote = "Actually, the release colour is violet.";
+  assert(!__moonTest.isLearningCandidate({ userText: "Thanks!" }));
+  const quote = "The release colour is violet.";
   const raw = {
     canonical_key: "project:colour",
     kind: "fact",
@@ -2394,11 +2473,14 @@ Deno.test("correction detection includes retirement and Chinese without creating
     completedAtMs: 1000,
   };
   assertEquals(
-    __moonTest.normalizeProposal(raw, turn, settings, new Set()),
+    __moonTest.normalizeProposal(raw, turn, settings, []),
     null,
   );
   assertEquals(
-    __moonTest.normalizeProposal(raw, turn, settings, new Set([77]))
+    __moonTest.normalizeProposal(raw, turn, settings, [{
+      document_id: 77,
+      canonical_key: raw.canonical_key,
+    }])
       ?.supersedesDocumentId,
     77,
   );
@@ -2438,8 +2520,6 @@ Deno.test("changed canonical keys cannot bypass assistant echo and exploration g
         raw,
         turn,
         settings,
-        new Set([42]),
-        new Set(["diana:old-key"]),
         old,
       ),
       null,
@@ -2458,6 +2538,7 @@ Deno.test("temporary observations expire from evidence time while durable prefer
   const raw = {
     canonical_key: "proton:status",
     kind: "fact",
+    durability: "temporary",
     content: quote,
     evidence_quote: quote,
     importance: 0.9,
@@ -2468,7 +2549,7 @@ Deno.test("temporary observations expire from evidence time while durable prefer
     transcript: `User:\n${quote}`,
     completedAtMs: 1000,
   };
-  const result = __moonTest.normalizeProposal(raw, turn, settings, new Set());
+  const result = __moonTest.normalizeProposal(raw, turn, settings, []);
   assertEquals(result?.kind, "observation");
   assertEquals(result?.validUntilMs, 43_201_000);
   const preference = "I currently prefer concise answers.";
@@ -2476,20 +2557,19 @@ Deno.test("temporary observations expire from evidence time while durable prefer
     {
       ...raw,
       kind: "preference",
+      durability: "durable",
       content: preference,
       evidence_quote: preference,
     },
     { ...turn, userText: preference, transcript: `User:\n${preference}` },
     settings,
-    new Set(),
+    [],
   );
   assertEquals(stable?.validUntilMs, null);
   const legacy = __moonTest.normalizeProposal(
     { ...raw, kind: "observation" },
     turn,
     settings,
-    new Set([42]),
-    new Set([raw.canonical_key]),
     [{
       document_id: 42,
       canonical_key: raw.canonical_key,
@@ -2592,6 +2672,7 @@ function synthesisBatchFixture() {
     actions: quotes.map((quote, index) => ({
       ...action,
       canonical_key: `fixture:claim:${index}`,
+      change_set: `change-${index}`,
       kind: "fact",
       content: quote,
       evidence: [{ session_id: `source:${index}`, quote }],
@@ -2606,81 +2687,157 @@ function synthesisBatchFixture() {
   };
 }
 
-Deno.test("L2 prechecks Rust lexical gates and L1 preserves uncertainty and retirement", () => {
-  const settings = __moonTest.resolveSettings(
-    createApi({ code: 0, stdout: "", stderr: "" }, []),
+Deno.test("short citations must be a complete speaker utterance with a letter or number", () => {
+  const { prepared, action } = synthesisFixture();
+  const { settings } = synthesisBatchFixture();
+  for (
+    const [source, quote, valid] of [
+      ["Green.", "Green.", true],
+      ["是绿色的。", "是绿色的。", true],
+      ["The green one.", "green", false],
+      ["Green.", "User:\nGreen.", false],
+      ["Yes.", "Yes.", false],
+      ["...", "...", false],
+      ["No.", "Yes.", false],
+    ] as const
+  ) {
+    const transcript = `User:\n${source}\n\nAssistant:\nYes.`;
+    const proposal = {
+      canonical_key: action.canonical_key,
+      kind: "fact",
+      content: "It is green.",
+      evidence_quote: quote,
+      confidence: 1,
+      importance: 1,
+    };
+    assertEquals(
+      Boolean(
+        __moonTest.normalizeProposal(
+          proposal,
+          { userText: source, transcript, completedAtMs: 100 },
+          settings,
+          [],
+        ),
+      ),
+      valid,
+    );
+    let accepted = true;
+    try {
+      __moonTest.normalizeSynthesisBatch(
+        {
+          actions: [{
+            ...action,
+            content: proposal.content,
+            evidence: [{ session_id: "source:new", quote }],
+          }],
+        },
+        {
+          ...prepared,
+          evidence: [{ ...prepared.evidence[0], content: transcript }],
+        },
+        settings,
+        16,
+      );
+    } catch {
+      accepted = false;
+    }
+    assertEquals(accepted, valid);
+  }
+});
+
+Deno.test("L2 supports details across time and paraphrases for the corrected referent", () => {
+  const { prepared, action } = synthesisFixture();
+  const { settings } = synthesisBatchFixture();
+  const earlier = "The blue ledger has tag Topaz-27.";
+  const later = "I meant the green book. The blue is blank.";
+  const item = (
+    session_id: string,
+    content: string,
+    completed_at_ms: number,
+    selected: boolean,
+  ) => ({
+    session_id,
+    content: "User:\n" + content,
+    completed_at_ms,
+    selected,
+  });
+  const snapshot = {
+    ...prepared,
+    evidence: [item("old", earlier, 100, false), item("new", later, 150, true)],
+    memories: [{
+      document_id: 5,
+      canonical_key: "blue:tag",
+      kind: "fact",
+      content: earlier,
+      last_confirmed_at_ms: 100,
+    }],
+  };
+  const cite = (session_id: string, quote: string) => ({ session_id, quote });
+  const blue = {
+    ...action,
+    action: "supersede",
+    kind: "fact",
+    canonical_key: "blue:tag",
+    target_document_id: 5,
+    content: "The blue ledger is unlabelled.",
+    evidence: [cite("new", later)],
+    change_set: "move",
+  };
+  const green = {
+    ...action,
+    kind: "fact",
+    canonical_key: "green:tag",
+    content: "Topaz-27 identifies the green volume.",
+    evidence: [cite("old", earlier), cite("new", later)],
+    change_set: "move",
+  };
+  const corrected = __moonTest.normalizeSynthesisBatch(
+    { actions: [blue, green] },
+    snapshot,
+    settings,
+    16,
+  );
+  assertEquals(corrected.actions.length, 2);
+  assert(
+    corrected.actions.every((action: object) => !("change_set" in action)),
   );
   for (
-    const example of [
-      {
-        quote: "I prefer concise answers.",
-        content: "The user prefers concise answers.",
-        code: "insufficient_overlap",
-      },
-      {
-        quote: "Assuming the release colour is violet.",
-        content: "The release colour is violet.",
-        code: "lost_qualifier",
-      },
-      {
-        quote: "Moon 已退役。",
-        content: "Moon",
-        code: "lost_qualifier",
-      },
-    ]
+    const changed of [{
+      ...green,
+      content: "The green book has label Topaz-28.",
+    }, {
+      ...blue,
+      evidence: [cite("old", earlier), cite("new", later)],
+      confidence: 0.1,
+    }]
   ) {
-    assertEquals(
-      __moonTest.evidenceSupportsContent(example.content, example.quote),
-      example.code === "insufficient_overlap",
+    const sibling = changed.canonical_key === blue.canonical_key ? green : blue;
+    const delayed = __moonTest.normalizeSynthesisBatch(
+      { actions: [sibling, changed] },
+      snapshot,
+      settings,
+      16,
     );
-    assertEquals(
-      __moonTest.synthesisEvidenceSupportFailure(
-        example.content,
-        example.quote,
-      ),
-      example.code,
-    );
-    if (example.code === "lost_qualifier") {
-      assertEquals(
-        __moonTest.normalizeProposal(
-          {
-            canonical_key: "fixture:claim",
-            kind: "fact",
-            content: example.content,
-            evidence_quote: example.quote,
-            importance: 0.9,
-            confidence: 0.99,
-          },
-          {
-            userText: example.quote,
-            transcript: `User:\n${example.quote}`,
-            completedAtMs: 1000,
-          },
-          settings,
-          new Set(),
-        ),
-        null,
-      );
-    }
+    assertEquals(delayed, { actions: [], deferred_evidence: ["new"] });
   }
-  for (
-    const quote of [
-      "Assuming the release colour is violet.",
-      "Moon 已退役。",
-      "The total is 2,500.00.",
-      "我喜欢简洁的回答。",
-    ]
-  ) {
-    assertEquals(
-      __moonTest.synthesisEvidenceSupportFailure(quote, quote),
-      null,
-    );
-  }
+  const sameTimestamp = {
+    ...snapshot,
+    memories: [{ ...snapshot.memories[0], last_confirmed_at_ms: 150 }],
+  };
+  assertEquals(
+    __moonTest.normalizeSynthesisBatch(
+      { actions: [blue, green] },
+      sameTimestamp,
+      settings,
+      16,
+    ),
+    { actions: [], deferred_evidence: ["new"] },
+  );
 });
 
 Deno.test("L2 partial batches retain five valid claims and defer rejected correction evidence", () => {
   const { prepared, actions, settings } = synthesisBatchFixture();
-  const secret = "rejected-private-content-do-not-print";
+  const secret = "rejected-private-content-491-do-not-print";
   const raw = {
     actions: actions.map((action, index) =>
       index === 5 ? { ...action, content: secret } : action
@@ -2709,7 +2866,7 @@ Deno.test("L2 partial batches retain five valid claims and defer rejected correc
       canonical_key: correction.canonical_key,
       kind: correction.kind,
       content: "Database snapshots stay elsewhere.",
-      last_confirmed_at_ms: 500,
+      last_confirmed_at_ms: 5000,
     }],
   };
   const rejectedCorrection = __moonTest.normalizeSynthesisBatch(
@@ -2733,8 +2890,60 @@ Deno.test("L2 partial batches retain five valid claims and defer rejected correc
     settings,
     16,
   );
-  assertEquals(sharedSource.actions.length, 1);
+  assertEquals(sharedSource.actions.length, 0);
   assertEquals(sharedSource.deferred_evidence, ["source:0"]);
+});
+
+Deno.test("unlabelled and transitively linked changes defer together, including an unresolved correction", () => {
+  const { prepared, actions, settings } = synthesisBatchFixture();
+  const [a, b, c, d] = actions;
+  const bare = (action: typeof a) => {
+    const { change_set: _label, ...legacy } = action;
+    return legacy;
+  };
+  const run = (proposals: unknown[], memories: unknown[] = []) =>
+    __moonTest.normalizeSynthesisBatch(
+      { actions: proposals },
+      { ...prepared, memories },
+      settings,
+      16,
+    );
+  const broken = { ...b, content: "Label 491 is unsupported." };
+  const unlabelled = run([bare(a), bare(broken), c]);
+  assertEquals(
+    unlabelled.actions.map((entry: typeof a) => entry.canonical_key),
+    [c.canonical_key],
+  );
+  assertEquals(unlabelled.deferred_evidence, ["source:0", "source:1"]);
+  const joined = run([a, { ...b, evidence: [...a.evidence, ...b.evidence] }, {
+    ...c,
+    evidence: [...b.evidence, ...c.evidence],
+    confidence: 0.1,
+  }, d]);
+  assertEquals(joined.actions.map((entry: typeof a) => entry.canonical_key), [
+    d.canonical_key,
+  ]);
+  assertEquals(joined.deferred_evidence, ["source:0", "source:1", "source:2"]);
+  const target = {
+    document_id: 5,
+    canonical_key: a.canonical_key,
+    kind: a.kind,
+    content: a.content,
+  };
+  const review = {
+    ...a,
+    action: "review",
+    target_document_id: 5,
+    content: "The intended ledger is ambiguous.",
+  };
+  const held = run([review, { ...b, change_set: a.change_set }, c], [target]);
+  assertEquals(held.actions.map((entry: typeof a) => entry.canonical_key), [
+    a.canonical_key,
+    c.canonical_key,
+  ]);
+  assertEquals(held.actions[0].action, "review");
+  assertEquals(held.deferred_evidence, ["source:0", "source:1"]);
+  assertEquals(run([review], [target]).deferred_evidence, []);
 });
 
 Deno.test("L2 avoids charging unrelated sources when a mixed response contains an unmappable candidate", () => {
@@ -2840,7 +3049,7 @@ Deno.test("L2 defers attributable grounding failures and rejects malformed or co
   }
   for (
     const proposal of [
-      { ...actions[0], content: "Entirely invented claim." },
+      { ...actions[0], content: "Uncited 491." },
       { ...actions[0], confidence: 0.1 },
     ]
   ) {
@@ -2866,7 +3075,7 @@ Deno.test("daily L2 continues with fresh batches after partial and wholly deferr
   const rejected = synthesisFixture();
   rejected.prepared.evidence[0].session_id = "source:unsupported";
   rejected.action.evidence[0].session_id = "source:unsupported";
-  const secret = "rejected-private-content-do-not-print";
+  const secret = "rejected-private-content-491-do-not-print";
   const logs: string[] = [];
   const rules: string[] = [];
   const applied: Array<{ actions: unknown[]; deferred_evidence: string[] }> =
@@ -2955,8 +3164,8 @@ Deno.test("daily L2 continues with fresh batches after partial and wholly deferr
     assertEquals(new Set(rules).size, 1);
     assert(/^[a-f0-9]{64}$/.test(rules[0]));
     assertEquals(logs, [
-      "moon synthesis status=committed actions=5 evidence=5 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
-      "moon synthesis status=committed actions=0 evidence=0 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=insufficient_overlap",
+      "moon synthesis status=committed actions=5 evidence=5 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=unsupported_number",
+      "moon synthesis status=committed actions=0 evidence=0 model_route=primary deferred_evidence=1 rejected_actions=1 rejection_codes=unsupported_number",
       "moon synthesis status=committed actions=1 evidence=1 model_route=primary",
     ]);
   } finally {
@@ -3014,9 +3223,9 @@ Deno.test("L2 prompt states the configured score and existing validation bounds"
       "selected=true evidence, including review and merge",
       "Confirm must copy the target's exact content",
       "1..32 distinct integer IDs",
-      "NEWEST cited quote or quotes",
-      "Explicitly retain any uncertainty, negation or retirement/historical status",
-      "Return no action for a claim that cannot satisfy these gates",
+      "unchanged details can be supported by an earlier original",
+      "all actions for that change the same change_set",
+      "cannot uniquely identify the intended subject",
     ]
   ) assert(prompt.includes(bound), bound);
 });
@@ -3149,75 +3358,24 @@ Deno.test("L2 diagnostic codes survive model and normalisation failure without l
   }
 });
 
-Deno.test("L2 grounding diagnostics preserve number qualifier question and overlap gates", () => {
-  const settings = __moonTest.stageSettings(
-    __moonTest.resolveSettings(
-      createApi({ code: 0, stdout: "", stderr: "" }, []),
-    ),
-    learningConfig(),
-    "l2",
-  );
-  for (
-    const example of [
-      {
-        content: "The gateway port is 18790.",
-        quote: "The gateway port is 18789.",
-        code: "unsupported_number",
-      },
-      {
-        content: "The gateway is running.",
-        quote: "The gateway is not running.",
-        code: "lost_qualifier",
-      },
-      {
-        content: "Moon is running locally.",
-        quote: "Should Moon run locally?",
-        code: "question_only",
-      },
-      {
-        content: "Venus prefers elaborate paragraphs.",
-        quote: "I prefer concise answers.",
-        code: "insufficient_overlap",
-      },
-    ]
-  ) {
-    const { prepared, action } = synthesisFixture();
-    prepared.evidence[0].content =
-      `User:\n${example.quote}\n\nAssistant:\nUnderstood.`;
-    assertEquals(
-      __moonTest.evidenceSupportFailure(example.content, example.quote),
-      example.code,
+Deno.test("L2 rejects unsupported numeric literals without leaking the private claim", () => {
+  const { prepared, action } = synthesisFixture();
+  const { settings } = synthesisBatchFixture();
+  let failure;
+  try {
+    __moonTest.normalizeSynthesisResult(
+      { actions: [{ ...action, content: "I prefer 491 paragraphs." }] },
+      prepared,
+      settings,
+      16,
     );
-    assert(!__moonTest.evidenceSupportsContent(example.content, example.quote));
-    let failure;
-    try {
-      __moonTest.normalizeSynthesisResult(
-        {
-          actions: [{
-            ...action,
-            content: example.content,
-            evidence: [{ session_id: "source:new", quote: example.quote }],
-          }],
-        },
-        prepared,
-        settings,
-        16,
-      );
-    } catch (error) {
-      failure = error;
-    }
-    assertEquals(__moonTest.failureDiagnostic(failure), {
-      phase: "normalise",
-      code: example.code,
-    });
+  } catch (error) {
+    failure = error;
   }
-  assertEquals(
-    __moonTest.evidenceSupportFailure(
-      "Moon supports local memory.",
-      "Moon supports local memory.",
-    ),
-    null,
-  );
+  assertEquals(__moonTest.failureDiagnostic(failure), {
+    phase: "normalise",
+    code: "unsupported_number",
+  });
 });
 
 Deno.test("L2 command diagnostics identify phases and discard CLI response bodies", async () => {
@@ -3656,7 +3814,7 @@ Deno.test("failed L2 releases its lease and never applies an invalid proposal", 
   assert(!calls.some((call) => call.argv.includes("apply")));
 });
 
-Deno.test("Astra inherits supported explicit effort and question-only correction evidence is rejected", () => {
+Deno.test("Astra inherits supported explicit effort and L1 distinguishes a question from a fact", () => {
   const api = createApi({ code: 0, stdout: "", stderr: "" }, [], {
     primaryModel: "openai/gpt-6-astra",
     primaryReasoning: "xhigh",
@@ -3667,29 +3825,12 @@ Deno.test("Astra inherits supported explicit effort and question-only correction
   const settings = __moonTest.stageSettings(base, learningConfig(), "l1");
   assertEquals(settings.primaryReasoning, "xhigh");
   assertEquals(settings.fallbackReasoning, "max");
-  const userText = "Actually, is the Proton service working?";
-  const raw = {
-    canonical_key: "proton:status",
-    kind: "fact",
-    content: "The Proton service is working.",
-    evidence_quote: userText,
-    importance: 0.9,
-    confidence: 0.99,
-    supersedes_document_id: 4,
-  };
-  assertEquals(
-    __moonTest.normalizeProposal(
-      raw,
-      {
-        userText,
-        transcript: `User:\n${userText}\n\nAssistant:\nYes.`,
-        completedAtMs: 1000,
-      },
-      settings,
-      new Set([4]),
-    ),
-    null,
+  const prompt = __moonTest.learningPrompt(
+    { transcript: "User:\nDoes the service work?", completedAtMs: 1000 },
+    [],
+    settings,
   );
+  assert(prompt.includes("An exploratory question does not establish a fact"));
   assert(
     __moonTest.evidenceSupportsContent(
       "When TLS fails, check the certificate.",

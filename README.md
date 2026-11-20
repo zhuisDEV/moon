@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.8.2 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.9.0 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -26,11 +26,12 @@ Copy the guides from the same release using the
 Moon retrieves public and audience-permitted private memories before a turn.
 Each newly recorded private chat turn keeps the verified sender ID, question
 owners and potential readers. Confirmed replies have separate delivery owners.
-Moon extracts eligible durable memories through L1, and drains local embedding
-work. Daily L2 reconciliation is optional and **disabled by default**. L1 and L2
-have independent model and reasoning settings in `~/.moon/moon.toml`. OpenClaw
-owns authentication and model execution; Moon creates no provider login or
-API-key store.
+L1 interprets the current turn and proposes memories worth keeping. Optional
+daily L2 can reconcile a correction across several original messages. The models
+judge meaning. Moon checks exact citations, privacy scope and current targets,
+saves linked changes together, and drains local embedding work. L1 and L2 have
+independent model and reasoning settings in `~/.moon/moon.toml`. L2 is
+**disabled by default**. OpenClaw owns authentication and model execution.
 
 With OpenClaw's native memory disabled, Moon can recall a user's private
 memories in a verified one-to-one Discord DM. The session must be isolated to
@@ -68,7 +69,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.8.2 uses schema **20**. Signed updates accept schemas **6–20** and
+- Moon 2.9.0 uses schema **20**. Signed updates accept schemas **6–20** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data

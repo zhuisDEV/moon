@@ -415,5 +415,39 @@ fn external_bot_has_its_own_provenance_and_only_master_can_recall_it() {
             .unwrap()
             .starts_with("Bot:\n")
     );
+    // The same verified bot can correct its own report; the resulting claim
+    // retains the private scope and its source speaker.
+    let corrected_key = "d".repeat(64);
+    let corrected_session = "bot:correction";
+    let corrected = "Mint.";
+    store
+        .bind_bot_turn(&corrected_key, &readers, BOT, &master)
+        .unwrap();
+    store
+        .record_turn_evidence(
+            EvidenceInput {
+                session_id: corrected_session.into(),
+                scope: bot_scope.clone(),
+                title: None,
+                content: format!("Bot:\n{corrected}"),
+                completed_at_ms: 2,
+                metadata_json: "{}".into(),
+            },
+            Some(&corrected_key),
+        )
+        .unwrap();
+    let updated = store
+        .distill_memory(DistillInput {
+            supersedes: Some(private.memories[0].document_id),
+            evidence_quote: corrected.into(),
+            content: corrected.into(),
+            ..proposal(&(bot_scope, corrected_session.into()), KEY)
+        })
+        .unwrap();
+    assert_eq!(
+        updated.superseded_document_id,
+        Some(private.memories[0].document_id)
+    );
+    assert!(recall(&mut store, &[FIRST, SECOND], 1).is_empty());
     assert!(store.health().unwrap().ok);
 }
