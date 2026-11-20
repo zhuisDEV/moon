@@ -1,6 +1,6 @@
 # Public and private memory
 
-Moon 2.8.1 provides personal profiles and bot capture with the schema 20 binary
+Moon 2.8.2 provides personal profiles and bot capture with the schema 20 binary
 and its matching adapter. See
 [migration and rollback](migration.md#schema-20-personal-profiles-and-bot-evidence).
 
@@ -106,7 +106,7 @@ uses public recall only and skips private learning.
 
 The signed v2.8.1 adapter requires a host audience grant for private DM recall.
 With `plugins.slots.memory` set to `none`, OpenClaw can omit this grant. The
-updated adapter can verify a one-to-one Discord DM independently. It matches the
+v2.8.2 adapter can verify a one-to-one Discord DM independently. It matches the
 author and exact text of the active user message in OpenClaw's default SQLite
 agent store to one original human post fetched from Discord. The author must be
 the DM's sole peer. Set `session.dmScope` to `per-account-channel-peer` and keep
@@ -225,7 +225,7 @@ cannot enter audience-based recall or learning. Other operator collections
 remain available through the local administrative CLI.
 
 All examples below assume that `moon_copy` points to the rehearsal directory and
-`candidate` to the 2.8.1 binary. The database path is explicit so an inherited
+`candidate` to the 2.8.2 binary. The database path is explicit so an inherited
 environment variable cannot select the live database.
 
 ```sh

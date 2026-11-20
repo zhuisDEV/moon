@@ -4,7 +4,7 @@ This document describes the release process for Moon.
 
 ## Scope
 
-Use this process for tagged public releases. Moon **2.8.1** uses schema **20**
+Use this process for tagged public releases. Moon **2.8.2** uses schema **20**
 with signed input compatibility **6–20**. User installation and upgrade
 instructions are in [Getting started](docs/getting-started.md) and
 [Updating](docs/updating.md).
@@ -70,7 +70,7 @@ and must advertise `6..=8`; advertising only `8..=8` would cause the existing
 schema-6 updater to reject the release before its transactional migration can
 run.
 
-Moon 2.8.1 produces schema 20. Switching back to Moon 2.8.0 requires its
+Moon 2.8.2 produces schema 20. Switching back to Moon 2.8.0 requires its
 matching schema-19 database backup. **Keep `--legacy-skill-only` in both CI and
 the release workflow for this bridge release**: the 2.6.6 reader rejects
 additional payload files. The six signed payloads include binary, adapter and

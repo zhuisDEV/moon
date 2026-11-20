@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.8.2 - 2026-11-20
+
+- Restore private recall in one-to-one Discord DMs when OpenClaw’s native memory
+  is disabled. Moon verifies the original post, its author and the sole
+  recipient in an isolated per-account, per-peer session. Shared rooms on this
+  path continue to receive public recall only.
+- When reply instructions obscure an otherwise unanswered DM search, retry the
+  leading question under the same verified permissions.
+
+Moon 2.8.2 keeps database schema 20 and the six-file signed bundle. Refresh
+separately installed copies of `SKILL.md` and use the guides from this tag.
+
 ## 2.8.1 - 2026-11-19
 
 Moon 2.8.1 accepts database schemas **6–20** and migrates to **20**. Back up

@@ -4809,7 +4809,7 @@ function createMoonContextEngine(
     info: {
       id: "moon",
       name: "Moon SQLite Context Engine",
-      version: "2.8.1",
+      version: "2.8.2",
       ownsCompaction: false,
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",

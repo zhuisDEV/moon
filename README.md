@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.8.1 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.8.2 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -68,7 +68,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.8.1 uses schema **20**. Signed updates accept schemas **6–20** and
+- Moon 2.8.2 uses schema **20**. Signed updates accept schemas **6–20** and
   migrate transactionally. Retain the old executable with its matching database
   backup.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
