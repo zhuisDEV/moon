@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.9.2 - 2026-11-22
+
+- Document the verified reader list required by `moon privacy history` and how
+  it works with the conversation key.
+- Clarify that the verified Discord DM grant covers saved facts and withholds
+  original messages and assistant replies.
+- Explain which diagnostics can migrate an older database and how to use the
+  installed binary for pre-upgrade health checks and backups.
+
+Moon 2.9.2 uses database schema **21** and accepts schemas **6–21**. Back up
+with the installed binary before upgrading. The signed release uses the six-file
+compatibility bundle, and the updater refreshes the managed OpenClaw skill.
+**Refresh separately installed copies of `SKILL.md`** and use the guides from
+this tag.
+
 ## 2.9.1 - 2026-11-21
 
 - Fix private DM recall when a question ends with reply-format instructions. The

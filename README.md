@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.9.1 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.9.2 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -78,10 +78,9 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.9.1 accepts schemas **6–21** and migrates transactionally to schema
-  **21**. A human citation can now link to the verified Discord reply it
-  accepts. Keep the schema-20 backup and matching executable for rollback to
-  2.9.0.
+- Moon 2.9.2 accepts schemas **6–21** and migrates transactionally to schema
+  **21**. A human citation can link to the verified Discord reply it accepts.
+  Keep the schema-20 backup and matching executable for rollback to 2.9.0.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
   files are owner-only.
 - `health` and source/topic inspection do not create or migrate storage. Normal

@@ -6,7 +6,7 @@ messages, ask for clarification or answer directly. Moon supplies the selected
 evidence within the current audience and packet budget, then records eligible
 completed turns for learning.
 
-This 2.9.1 adapter requires the matching schema-21 binary and 2.9.1 skill. See
+This 2.9.2 adapter requires the matching schema-21 binary and 2.9.2 skill. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an
 existing installation, use [updating](../../docs/updating.md); do not copy this
@@ -16,7 +16,7 @@ production.
 ## Installation and upgrade checks
 
 The signed updater treats the binary, adapter, skill and database as one
-compatibility set. Moon 2.9.1 retains the six-file bundle for older updaters.
+compatibility set. Moon 2.9.2 retains the six-file bundle for older updaters.
 Its companion documentation must be installed from the same reviewed release tag
 when an agent needs local references. Refresh separately installed skill copies
 as well. The upgrade guide explains which skill files are updated automatically
