@@ -1218,6 +1218,58 @@ fn prepare_reserves_room_for_original_context_and_reports_omissions() {
 }
 
 #[test]
+fn prepare_includes_a_paraphrased_claim_and_its_selected_original_citation() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    let original = "Please unpack this passage.";
+    let claim = "The reader prefers accessible prose.";
+    for n in 0..9 {
+        let session = format!("passage-{n}");
+        record(&mut store, &session, "global", original, 100 + n);
+        let mut memory = proposal("reader:style", &session, claim);
+        memory.evidence_quote = original.into();
+        store.distill_memory(memory).unwrap();
+    }
+    record(&mut store, "foreign", "private", original, 100);
+    let mut foreign = proposal("other:style", "foreign", claim);
+    foreign.scope = "private".into();
+    foreign.evidence_quote = original.into();
+    store.distill_memory(foreign).unwrap();
+    assert_eq!(
+        store.learning_related("global", original, 4, 4000).unwrap()["memories"],
+        json!([])
+    );
+    let lexical = store.learning_related("global", claim, 4, 4000).unwrap();
+    let recent = &lexical["memories"][0];
+    assert!(recent.get("citations_limited").is_none());
+    assert_eq!(recent["citations"].as_array().unwrap().len(), 8);
+    assert_eq!(recent["citations"][0]["session_id"], "passage-8");
+
+    let mut req = request("revisit-passage");
+    req.limit = 1;
+    let packet = store.learning_prepare(&req).unwrap();
+    let memories = packet["memories"].as_array().unwrap();
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0]["canonical_key"], "reader:style");
+    assert_eq!(memories[0]["citations_limited"], true);
+    let citations = memories[0]["citations"].as_array().unwrap();
+    assert_eq!(citations.len(), 8);
+    assert_eq!(
+        citations[0],
+        json!({"session_id":"passage-0","quote":original})
+    );
+    assert_eq!(citations[1]["session_id"], "passage-8");
+    assert_eq!(packet["evidence"][0]["selected"], true);
+    assert!(
+        packet["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["session_id"] != "foreign")
+    );
+}
+
+#[test]
 fn prepare_reports_known_omissions_and_unscanned_candidates_separately() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);
@@ -1272,6 +1324,31 @@ fn prepare_reports_known_omissions_and_unscanned_candidates_separately() {
     let packet = store.learning_prepare(&req).unwrap();
     assert!(packet["memories"].as_array().unwrap().is_empty());
     assert_eq!(packet["omitted_memory_count"], 0);
+    assert_eq!(packet["candidate_scan_limited"], true);
+    assert_eq!(packet["context_limited"], true);
+
+    // The old head cites the selected source; 513 newer lexical matches must
+    // not displace it at either the 512-candidate or the 128-memory limit.
+    let original = "Cedar reconciliation verifies checklist entries.";
+    record(&mut store, "oldest", "global", original, 50);
+    let mut direct = proposal(
+        "reader:format",
+        "oldest",
+        "The reader prefers a terse digest.",
+    );
+    direct.evidence_quote = original.into();
+    store.distill_memory(direct).unwrap();
+    req.after_ms = None;
+    req.before_ms = Some(50);
+    let packet = store.learning_prepare(&req).unwrap();
+    assert_eq!(packet["memories"].as_array().unwrap().len(), 128);
+    assert_eq!(packet["memories"][0]["canonical_key"], "reader:format");
+    assert_eq!(
+        packet["memories"][0]["citations"][0]["session_id"],
+        "oldest"
+    );
+    assert!(packet["memories"][0].get("citations_limited").is_none());
+    assert_eq!(packet["omitted_memory_count"], 384);
     assert_eq!(packet["candidate_scan_limited"], true);
     assert_eq!(packet["context_limited"], true);
 }

@@ -37,14 +37,36 @@ impl Store {
         request: &ContextRequest,
         assemble: impl FnOnce() -> Result<crate::ContextPacket>,
     ) -> Result<ContextObservation> {
+        let (request_id, packet) = self.observe_retrieval(request.mode, assemble, |packet| {
+            (
+                packet.memories.len(),
+                packet.references.len(),
+                if packet.is_empty() {
+                    0
+                } else {
+                    packet.used_chars
+                },
+                packet.truncated,
+            )
+        })?;
+        Ok(ContextObservation { request_id, packet })
+    }
+
+    pub(crate) fn observe_retrieval<T>(
+        &self,
+        mode: crate::SearchMode,
+        retrieve: impl FnOnce() -> Result<T>,
+        counts: impl FnOnce(&T) -> (usize, usize, usize, bool),
+    ) -> Result<(Option<String>, T)> {
         let request_id = format!("{:032x}", rand::random::<u128>());
         let occurred_at_ms = now_ms();
         let started = Instant::now();
-        let result = assemble();
+        let result = retrieve();
         let duration_us = elapsed_us(started);
 
         match result {
             Ok(packet) => {
+                let (memories, references, chars, truncated) = counts(&packet);
                 let recorded = self
                     .connection
                     .execute(
@@ -55,35 +77,23 @@ impl Store {
                         params![
                             request_id,
                             occurred_at_ms,
-                            request.mode.as_str(),
+                            mode.as_str(),
                             duration_us,
-                            packet.memories.len() as i64,
-                            packet.references.len() as i64,
-                            if packet.is_empty() {
-                                0
-                            } else {
-                                packet.used_chars as i64
-                            },
-                            packet.truncated,
+                            memories as i64,
+                            references as i64,
+                            chars as i64,
+                            truncated,
                         ],
                     )
                     .is_ok();
-                Ok(ContextObservation {
-                    request_id: recorded.then_some(request_id),
-                    packet,
-                })
+                Ok((recorded.then_some(request_id), packet))
             }
             Err(error) => {
                 let _ = self.connection.execute(
                     "INSERT INTO context_metrics(
                          request_id, occurred_at_ms, retrieval_mode, status, duration_us
                      ) VALUES(?1, ?2, ?3, 'error', ?4)",
-                    params![
-                        request_id,
-                        occurred_at_ms,
-                        request.mode.as_str(),
-                        duration_us,
-                    ],
+                    params![request_id, occurred_at_ms, mode.as_str(), duration_us,],
                 );
                 Err(error)
             }

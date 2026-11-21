@@ -162,6 +162,7 @@ fn each_message_keeps_its_own_frozen_access_across_replay() {
     assert_eq!(c.len(), 1);
     assert_eq!(c[0]["role"], "assistant");
     assert!(c[0].get("turn_sender").is_none());
+    assert!(c[0].get("source_document_id").is_none());
     assert!(c[0].get("completed_at_ms").is_none());
     assert_eq!(store.private_turn_history(&ask, 1).unwrap(), a);
     assert_eq!(store.private_turn_history(&send, 1).unwrap(), c);
@@ -199,5 +200,69 @@ fn historic_deliveries_without_permissions_never_acquire_a_new_reader() {
             .get::<_, String>(0))
             .unwrap(),
         text
+    );
+}
+
+#[test]
+fn history_requested_from_this_conversation_filters_each_role_before_the_limit() {
+    let dir = tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("history.sqlite"), 8).unwrap();
+    let owners = readers(&[A]);
+    let scope = store.register_private_audience(&owners).unwrap();
+    for (i, (key, session)) in [("a", Some("one")), ("b", Some("two")), ("c", None)]
+        .into_iter()
+        .enumerate()
+    {
+        let key = key.repeat(64);
+        store.bind_turn_owners(&key, &owners, A, &owners).unwrap();
+        store
+            .record_turn_evidence(
+                EvidenceInput {
+                    session_id: format!("turn-{i}"),
+                    scope: scope.clone(),
+                    title: None,
+                    content: format!("User:\nQuestion {i}"),
+                    completed_at_ms: 100 + i as i64,
+                    metadata_json: serde_json::json!({"session_key":session}).to_string(),
+                },
+                Some(&key),
+            )
+            .unwrap();
+        let reply = format!("Answer {i}");
+        let id = format!("99900000000000000{i}");
+        store.observe_private_reply(&key, &reply, None).unwrap();
+        store
+            .observe_private_reply(
+                &key,
+                &reply,
+                Some(ReplyDelivery {
+                    message_id: &id,
+                    readers: &owners,
+                    owners: &owners,
+                }),
+            )
+            .unwrap();
+    }
+    let own = store
+        .private_turn_history_for_session(&owners, 1, Some("one"))
+        .unwrap();
+    assert_eq!(
+        own.iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Question 0", "Answer 0"]
+    );
+    assert_eq!(store.private_turn_history(&owners, 4).unwrap().len(), 6);
+    assert!(
+        store
+            .private_turn_history_for_session(&readers(&[B]), 1, Some("one"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .private_turn_history_for_session(&owners, 1, Some("missing"))
+            .unwrap()
+            .is_empty()
     );
 }

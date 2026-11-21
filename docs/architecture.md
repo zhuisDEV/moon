@@ -1,7 +1,7 @@
 # Moon architecture
 
 User setup is in [Getting started](getting-started.md); existing installations
-should follow [Updating](updating.md). Moon 2.9.0 produces schema 20. This page
+should follow [Updating](updating.md). Moon 2.9.1 produces schema 21. This page
 describes the engineering contracts; historical benchmarks are documented
 separately in [Performance](performance.md).
 
@@ -41,38 +41,45 @@ but is excluded from normal retrieval.
 quote or conflicting head rolls back earlier creations, confirmations and
 supersessions, so a failed batch leaves no partial memory changes.
 
-Chat retrieval admits public memories and private records owned by all current
-destination readers. It selects eligible collections before ranking.
-Operator-scoped context can also include source claims and reviewed topics. See
+The OpenClaw main model selected for the turn decides whether saved facts or
+original messages can answer the request. It can ask for clarification or skip
+recall entirely. Moon intersects the requested sources with the verified
+audience before retrieval. Up to three grounded searches share one result limit
+and character budget. For a permitted historical question, a current claim can
+carry dated originals and up to two linked earlier revisions. The same model
+selects supporting record IDs. Moon validates those IDs and rechecks private
+access before handing the chosen evidence to the answer. See
 [the audience rules](memory-privacy.md).
 
-Scoped context assembly selects pinned summaries and relevant active memories,
-dedupes chunk hits by memory, attaches bounded citations, and fits the result to
-an explicit character budget. A bounded pinned-summary quota reserves capacity
-for query-relevant recall. Remaining capacity can contain deduplicated document
+Operator-scoped context can also include reviewed source claims and topics. Its
+assembly selects pinned summaries and relevant active memories, dedupes chunk
+hits by memory, attaches bounded citations, and fits the result to an explicit
+character budget. A bounded pinned-summary quota reserves capacity for
+query-relevant recall. Remaining capacity can contain deduplicated document
 excerpts with source and byte citations. These references remain separate from
 reviewed canonical memories. Memory, evidence, and references are rendered as
 untrusted data rather than agent instructions.
 
-The adapter delivers this packet through an explicitly permitted
+The adapter delivers the selected chat records through an explicitly permitted
 `before_prompt_build` hook on current OpenClaw hosts, so native-owned model
 routes can recall even when the host skips context-engine assembly. That mode
-makes `assemble` a pass-through to avoid duplicate injection. Hosts without hook
-support or permission retain the legacy assembly path; this fallback cannot
-restore recall for a host that never calls `assemble`.
+makes `assemble` a pass-through to avoid duplicate injection. Legacy assembly
+can supply explicitly published records when the host calls it with a resolved
+model route.
 
 For an eligible completed chat turn, the adapter records the accepted human
 message as immutable private evidence under its verified speaker and original
 owners. A confirmed Discord reply has a separate delivery-time ownership
-snapshot and can be recalled as assistant history. L1 and L2 learn from human
-input. L1 interprets a single turn. L2 can reconcile several original messages
-from one scope and group the claims affected by a correction. The models decide
-which facts follow from the evidence and when an ambiguous reference needs
-review. The adapter verifies exact quotes and proposal bounds. SQLite verifies
-scope, evidence, targets and freshness and commits the accepted changes in a
-transaction.
+snapshot and can be recalled as assistant history. L1 interprets the human input
+from a single turn. L2 can interpret a short human acceptance when Moon can link
+it to the exact preceding, independently verified delivered proposal. L2 can
+also reconcile several original messages from one scope and group the claims
+affected by a correction. The models decide which facts follow from the evidence
+and when an ambiguous reference needs review. The adapter verifies exact quotes
+and proposal bounds. SQLite verifies scope, evidence, targets and freshness and
+commits the accepted changes in a transaction.
 
-Each user-facing context assembly records an opaque local metric row with mode,
+A saved-fact retrieval records one local metric row for its searches, with mode,
 latency, result counts, packet size/truncation, and optional injection/review
 state. The schema intentionally has no query, prompt, response, recalled
 content, source, scope, channel, session, credential, or arbitrary-error field.

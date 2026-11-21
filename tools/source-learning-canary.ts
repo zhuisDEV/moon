@@ -2,6 +2,8 @@
 // deno-lint-ignore-file no-explicit-any
 import {
   adapterDiagnostic,
+  canaryChat,
+  canaryChatResponse,
   CanaryError,
   check,
   cleanEnvironment,
@@ -687,7 +689,10 @@ async function verify(state: any, moon: any, run: any, options: any) {
     config: hookHostConfig(settings),
     logger,
     resolvePath: (p: string) => p === "." ? state.home + "/workspace" : p,
-    runtime: { system: { runCommandWithTimeout: run } },
+    runtime: {
+      system: { runCommandWithTimeout: run },
+      agent: { runEmbeddedAgent: canaryChatResponse },
+    },
     on: (name: string, fn: any) => hooks.set(name, fn),
     registerService: (service: any) => services.push(service),
     registerTool() {},
@@ -702,6 +707,7 @@ async function verify(state: any, moon: any, run: any, options: any) {
         currentUserMessage: query,
         currentUserMessageId: crypto.randomUUID(),
       }, {
+        ...canaryChat,
         agentId: "main",
         senderIsOwner: true,
         sessionKey: "agent:main:direct:aster-canary",
@@ -723,29 +729,59 @@ async function verify(state: any, moon: any, run: any, options: any) {
     const publicQuery =
       "What is the public status label for the Aster restart rehearsal?";
     const result = await recall(publicQuery);
-    const expected = await moon([
-      ...contextArgs("hybrid", ["--audience-json", "[]"], publicQuery),
-      "--adapter",
-    ]);
-    await writeJson(state.home + "/hook-comparison.json", {
-      actual: typeof result?.prependContext === "string" &&
-          Array.from(result.prependContext).length <= MAX_CHARS
-        ? result.prependContext
-        : null,
-      expected: typeof expected.packet === "string" &&
-          Array.from(expected.packet).length <= MAX_CHARS
-        ? expected.packet
-        : null,
-    });
+    const actual = result?.prependContext;
     check(
-      result?.prependContext === expected.packet &&
-        result.prependContext.includes(publicFact) &&
-        excludesSources(result.prependContext) &&
-        Array.from(result.prependContext).length <= MAX_CHARS,
+      typeof actual === "string" && Array.from(actual).length <= MAX_CHARS &&
+        actual.includes(publicFact) && excludesSources(actual),
       "hook_packet_mismatch",
     );
+    const modelPlanned = typeof plugin.planTurnRecall === "function";
+    if (modelPlanned) {
+      const expected = await moon([
+        "recall-candidates",
+        "--audience-json",
+        "[]",
+        "--mode",
+        "hybrid",
+        "--provider",
+        "local",
+        "--limit",
+        "8",
+        "--max-chars",
+        String(MAX_CHARS),
+      ], [{ text: publicQuery, temporal: false }]);
+      const selected = actual.split("\n").filter((line: string) =>
+        line.startsWith("{")
+      )
+        .map((line: string) => JSON.parse(line));
+      check(
+        expected.public_only === true && selected.length > 0 &&
+          selected.length === expected.candidates.length &&
+          selected.every((record: { id: string; text: string }, i: number) =>
+            record.id === "m" + expected.candidates[i].document_id &&
+            record.text === expected.candidates[i].content
+          ),
+        "hook_candidate_mismatch",
+      );
+      await writeJson(state.home + "/hook-comparison.json", {
+        actual,
+        expected: expected.candidates,
+      });
+    } else {
+      const expected = await moon([
+        ...contextArgs("hybrid", ["--audience-json", "[]"], publicQuery),
+        "--adapter",
+      ]);
+      check(actual === expected.packet, "hook_packet_mismatch");
+      await writeJson(state.home + "/hook-comparison.json", {
+        actual,
+        expected: expected.packet,
+      });
+    }
     state.promptHook = {
-      exactIndependentPacketMatch: true,
+      exactIndependentPacketMatch: !modelPlanned,
+      exactIndependentRecordMatch: modelPlanned,
+      modelDecision: modelPlanned ? "scripted-canary" : "legacy-hook",
       publicFactRecalled: true,
       operatorSourcesExcluded: true,
       gatewayChatDeliveryVerified: false,

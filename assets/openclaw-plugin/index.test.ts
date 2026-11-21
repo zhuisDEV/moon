@@ -1,3 +1,9 @@
+import {
+  assembleModel,
+  hookModel,
+  modelRunner,
+  savedEnvelope,
+} from "./recall-fixture.ts";
 import moonPlugin, { __moonTest } from "./index.js";
 import { EventEmitter } from "node:events";
 import { mock } from "node:test";
@@ -66,14 +72,7 @@ function acceptedParams(
 }
 
 function metricsEnvelope(packet: string | null) {
-  return JSON.stringify({
-    request_id: METRIC_REQUEST_ID,
-    packet,
-    memory_count: packet ? 1 : 0,
-    reference_count: 0,
-    packet_chars: packet?.length ?? 0,
-    truncated: false,
-  });
+  return JSON.stringify(savedEnvelope(packet));
 }
 
 function learningConfig(l1 = {}, l2 = {}) {
@@ -160,7 +159,7 @@ function createApi(
         },
       },
       agent: {
-        runEmbeddedAgent: embeddedRunner,
+        runEmbeddedAgent: embeddedRunner ?? modelRunner(),
       },
     },
     logger: {
@@ -172,7 +171,7 @@ function createApi(
 Deno.test("adapter retrieves and injects context before the latest user message", async () => {
   const calls: Array<{ argv: string[]; timeoutMs: number; input?: string }> =
     [];
-  const packet = "# Moon Context\n\n## Retrieved references\n\nUseful context";
+  const packet = "Useful context";
   const api = createApi(
     { code: 0, stdout: metricsEnvelope(packet), stderr: "" },
     calls,
@@ -183,7 +182,11 @@ Deno.test("adapter retrieves and injects context before the latest user message"
     { role: "user", content: [{ type: "text", text: "Recall SQLite plan" }] },
   ];
 
-  const result = await engine.assemble({ messages });
+  const result = await engine.assemble({
+    messages,
+    runtimeSettings: assembleModel,
+    sessionKey: "agent:main:synthetic",
+  });
   assertEquals(calls.length, 2);
   assertEquals(
     calls[0].argv.slice(0, 9),
@@ -195,19 +198,22 @@ Deno.test("adapter retrieves and injects context before the latest user message"
       "/tmp/moon-home/state/moon.sqlite",
       "--dimensions",
       "384",
-      "context",
-      "--query-stdin",
+      "--json",
+      "recall-candidates",
     ],
   );
-  assertEquals(calls[0].input, "Recall SQLite plan");
+  assertEquals(JSON.parse(calls[0].input!), [{
+    text: "Recall SQLite plan",
+    temporal: false,
+  }]);
   assert(!calls[0].argv.includes("Recall SQLite plan"));
-  assert(calls[0].argv.includes("--adapter"));
+  assert(calls[0].argv.includes("--audience-json"));
   assert(calls[1].argv.includes("mark-injection"));
   assert(calls[1].argv.includes("--injected"));
   assert(calls[1].argv.includes(METRIC_REQUEST_ID));
   assertEquals(result.messages.length, 3);
   assertEquals(result.messages[1].role, "assistant");
-  assertEquals(result.messages[1].content[0].text, packet);
+  assert(result.messages[1].content[0].text.includes(packet));
   assertEquals(result.messages[2].role, "user");
   assert(engine.info.ownsCompaction === false);
 });
@@ -223,7 +229,11 @@ Deno.test("adapter fails open without changing messages", async () => {
   const messages = [
     { role: "user", content: [{ type: "text", text: "Recall history" }] },
   ];
-  const result = await engine.assemble({ messages });
+  const result = await engine.assemble({
+    messages,
+    runtimeSettings: assembleModel,
+    sessionKey: "agent:main:synthetic",
+  });
   assertEquals(result.messages, messages);
   assertEquals(calls.length, 1);
 });
@@ -243,6 +253,8 @@ Deno.test("adapter skips retrieval for greetings and empty packets", async () =>
     { role: "user", content: [{ type: "text", text: "Hi lilac" }] },
   ];
   const greeting = await greetingEngine.assemble({
+    runtimeSettings: assembleModel,
+    sessionKey: "agent:main:synthetic",
     messages: greetingMessages,
   });
   assertEquals(greeting.messages, greetingMessages);
@@ -262,8 +274,12 @@ Deno.test("adapter skips retrieval for greetings and empty packets", async () =>
       content: [{ type: "text", text: "Unrelated obscure subject" }],
     },
   ];
-  const empty = await emptyEngine.assemble({ messages: emptyMessages });
-  assertEquals(empty.messages, emptyMessages);
+  const empty = await emptyEngine.assemble({
+    runtimeSettings: assembleModel,
+    sessionKey: "agent:main:synthetic",
+    messages: emptyMessages,
+  });
+  assert(empty.messages[0].content[0].text.includes("no permitted evidence"));
   assertEquals(emptyCalls.length, 2);
   assert(emptyCalls[1].argv.includes("mark-injection"));
   assert(!emptyCalls[1].argv.includes("--injected"));
@@ -605,7 +621,7 @@ Deno.test("adapter omits remote-provider arguments in lexical mode", () => {
     { code: 0, stdout: "", stderr: "" },
     [],
   ));
-  const argv = __moonTest.contextArguments(settings);
+  const argv = __moonTest.candidateArguments(settings);
   assert(!argv.includes("--provider"));
   assert(!argv.includes("--api-key-env"));
 });
@@ -631,25 +647,6 @@ Deno.test("hybrid mode uses the private local stdio worker", () => {
       "local",
     ],
   );
-  const request = __moonTest.contextWorkerRequest(
-    settings,
-    "Recall my Moon plan",
-    false,
-  );
-  assertEquals(request.op, "audience_context");
-  assertEquals(request.audience, []);
-  assertEquals(request.mode, "hybrid");
-  assertEquals(request.structured, false);
-  assertEquals(request.observe, false);
-  assertEquals(
-    __moonTest.contextWorkerRequest(
-      settings,
-      "Recall my Moon plan",
-      false,
-      true,
-    ).observe,
-    true,
-  );
 });
 
 Deno.test("adapter commands pin every explicit home to its own database", () => {
@@ -665,7 +662,7 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   };
   for (
     const argv of [
-      __moonTest.contextArguments(settings),
+      __moonTest.candidateArguments(settings),
       __moonTest.stdioWorkerArguments(settings),
       __moonTest.recordArguments(settings, turn, "a".repeat(64)),
       __moonTest.distillBatchArguments(settings, turn.evidenceSessionId),
@@ -686,7 +683,7 @@ Deno.test("adapter commands pin every explicit home to its own database", () => 
   }
   const implicit = { ...settings, moonHome: null };
   assert(
-    !__moonTest.contextArguments(implicit).includes("--database"),
+    !__moonTest.candidateArguments(implicit).includes("--database"),
   );
   assert(!__moonTest.stdioWorkerArguments(implicit).includes("--database"));
 });
@@ -1996,6 +1993,7 @@ Deno.test({
         return value;
       },
       runtime: {
+        agent: { runEmbeddedAgent: modelRunner() },
         system: {
           async runCommandWithTimeout(
             argv: string[],
@@ -2025,6 +2023,8 @@ Deno.test({
     };
     const engine = __moonTest.createMoonContextEngine(api);
     const result = await engine.assemble({
+      runtimeSettings: assembleModel,
+      sessionKey: "agent:main:synthetic",
       prompt: query,
       messages: [{
         role: "user",
@@ -2038,7 +2038,7 @@ Deno.test({
     assertEquals(result.messages.length, 2);
     const packet = result.messages[0].content[0].text;
     assert(packet.startsWith("# Moon Context"));
-    assert(packet.includes("## Canonical memories"));
+    assert(packet.includes("Untrusted source records"));
     assert(!packet.includes("legacy://"));
     if (expected) {
       for (const phrase of expected.split("|")) {
@@ -2049,6 +2049,113 @@ Deno.test({
       }
     }
   },
+});
+
+Deno.test("contextual assent links only adjacent verified Discord transcript anchors", async () => {
+  const sender = "111111111111111111";
+  const room = "222222222222222222";
+  const a = "1444444444444444444";
+  const b = "1555555555555555555";
+  const account = "server2";
+  async function turn(
+    message: string,
+    text: string,
+    pos: number,
+    parent: string | null,
+    channel = room,
+  ) {
+    const key = `agent:main:discord:${account}:channel:${channel}`;
+    const material = JSON.stringify([
+      "discord",
+      account,
+      `channel:${channel}`,
+      message,
+    ]);
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(material),
+    );
+    const id = "channel-user:v1:" +
+      Array.from(
+        new Uint8Array(digest),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+    const admitted = acceptedParams([{
+      role: "user",
+      content: text,
+      timestamp: 1_790_000_000_000,
+      __openclaw: {
+        senderId: sender,
+        senderIdentity: {
+          type: "observation",
+          senderKind: "human",
+          pluginId: "discord",
+          id: sender,
+          accountId: account,
+        },
+        transport: { channel: "discord", messageId: message },
+        requesterOrigin: {
+          messageProvider: "discord",
+          chatType: "channel",
+          sessionKey: key,
+          accountId: account,
+          senderId: sender,
+          conversationId: channel,
+        },
+      },
+    }, {
+      role: "assistant",
+      content: "Understood.",
+      timestamp: 1_790_000_000_001,
+    }], key);
+    return {
+      ...admitted,
+      admission: {
+        ...admitted.admission,
+        entryId: message,
+        idempotencyKey: id,
+        activeMessagePosition: pos,
+        effectiveParentId: parent,
+      },
+      terminal: {
+        ...admitted.terminal,
+        entryId: `end-${message}`,
+        activeMessagePosition: pos + 1,
+      },
+    };
+  }
+  const first = await turn(a, "What are my options?", 1, null);
+  const next = await turn(b, "Okay.", 3, `end-${a}`);
+  const position = (p: typeof next): {
+    needs_context: boolean;
+    before?: string | null;
+    terminal?: string;
+    received_at_ms?: number;
+  } => __moonTest.acceptedTurnFromParams(p)!.metadata.accepted_position;
+  assertEquals(position(next).before, position(first).terminal);
+  assert(position(next).needs_context);
+  assertEquals(
+    position(next).received_at_ms,
+    Number((BigInt(b) >> 22n) + 1420070400000n),
+  );
+  for (
+    const p of [
+      await turn(b, "Okay.", 4, `end-${a}`),
+      await turn(b, "Okay.", 3, "different-parent"),
+      await turn(b, "Okay.", 3, `end-${a}`, "333333333333333333"),
+    ]
+  ) assert(position(p).before !== position(first).terminal);
+  const falseHost = {
+    ...next,
+    admission: { ...next.admission, idempotencyKey: "a-gateway-invented-id" },
+  };
+  const mixed = {
+    ...next,
+    messages: [next.messages[0], next.messages[0], next.messages[1]],
+  };
+  for (const p of [falseHost, mixed]) {
+    assertEquals(position(p), { needs_context: true });
+  }
 });
 
 Deno.test("durable commits declare host fencing and use the accepted range only", () => {
@@ -2438,6 +2545,39 @@ Deno.test("L1 asks the model to distinguish qualifiers and defer ambiguous corre
   }
 });
 
+Deno.test("both learning stages ask the model to ground the scope of a preference", () => {
+  const { prepared } = synthesisFixture();
+  const settings = __moonTest.resolveSettings(
+    createApi({ code: 0, stdout: "", stderr: "" }, []),
+  );
+  const l1 = __moonTest.learningPrompt(
+    {
+      transcript: "User:\nCan you give this answer as a list?",
+      completedAtMs: 1000,
+    },
+    [],
+    settings,
+  );
+  const l2 = __moonTest.synthesisPrompt(prepared, settings, 7);
+  for (
+    const instruction of [
+      "this particular answer alone establishes no lasting preference",
+      "One statement can establish a recurring preference",
+      "Preserve any limits on the topic, task or circumstances",
+    ]
+  ) {
+    assert(l1.includes(instruction), instruction);
+    assert(l2.includes(instruction), instruction);
+  }
+  assert(l2.includes("flag the target for review"));
+  assert(l2.includes("citations_limited is true"));
+  assert(
+    l2.includes(
+      "neither confirms nor contradicts an independently supported preference",
+    ),
+  );
+});
+
 Deno.test("short and multilingual turns reach L1 and corrections need a known head", () => {
   const settings = __moonTest.resolveSettings(
     createApi({ code: 0, stdout: "", stderr: "" }, []),
@@ -2581,7 +2721,7 @@ Deno.test("temporary observations expire from evidence time while durable prefer
   assertEquals(legacy?.validUntilMs, 43_201_000);
 });
 
-Deno.test("elliptical retrieval follows the preceding user topic without recycling assistant recall", () => {
+Deno.test("current turn extraction leaves unverified prior topics out of the request", () => {
   const messages = [
     {
       role: "user",
@@ -2594,7 +2734,7 @@ Deno.test("elliptical retrieval follows the preceding user topic without recycli
     { role: "user", content: "How about Leo?" },
   ];
   const query = __moonTest.queryFromParams({ messages });
-  assert(query.includes("second-house cusp"));
+  assert(!query.includes("second-house cusp"));
   assert(query.includes("Leo"));
   assert(!query.includes("Diana"));
   assertEquals(
@@ -2686,6 +2826,60 @@ function synthesisBatchFixture() {
     ),
   };
 }
+
+Deno.test("L2 pairs a complete acknowledgement with the complete delivered proposal", () => {
+  const { prepared, action } = synthesisFixture();
+  const { settings } = synthesisBatchFixture();
+  const reply = {
+    message_id: "1444444444444444444",
+    quote: "Shall I use tables for all 3 Atlas digests next month?",
+  };
+  const original = {
+    ...prepared.evidence[0],
+    needs_context: true,
+    content: "User:\nOkay.",
+    prior_reply: reply,
+  };
+  const packet = { ...prepared, evidence: [original] };
+  const citation = {
+    session_id: original.session_id,
+    quote: "Okay.",
+    prior_reply: reply,
+  };
+  const proposal = {
+    ...action,
+    content: "Use tables for the 3 Atlas digests next month.",
+    evidence: [citation],
+  };
+  const normalised = __moonTest.normalizeSynthesisResult(
+    { actions: [proposal] },
+    packet,
+    settings,
+    5,
+  );
+  assertEquals(normalised.actions[0].evidence, [citation]);
+  for (
+    const bad of [
+      { session_id: original.session_id, quote: "Okay." },
+      { ...citation, quote: "Okay" },
+      { ...citation, prior_reply: { ...reply, message_id: "wrong" } },
+      { ...citation, prior_reply: { ...reply, quote: "Shall I use tables" } },
+    ]
+  ) {
+    let failed = false;
+    try {
+      __moonTest.normalizeSynthesisResult(
+        { actions: [{ ...proposal, evidence: [bad] }] },
+        packet,
+        settings,
+        5,
+      );
+    } catch {
+      failed = true;
+    }
+    assert(failed);
+  }
+});
 
 Deno.test("short citations must be a complete speaker utterance with a letter or number", () => {
   const { prepared, action } = synthesisFixture();
@@ -3898,6 +4092,9 @@ Deno.test({
       moonHome: home,
       dimensions: 64,
     }, (params) => {
+      if (String(params.prompt).startsWith("As the OpenClaw main model")) {
+        return modelRunner()(params);
+      }
       if (String(params.prompt).includes("L2 memory curator")) {
         l2Runs += 1;
         assertEquals(params.model, "gpt-6-astra");
@@ -3999,6 +4196,7 @@ Deno.test({
       params.admission.idempotencyKey = `synthetic-turn-${index}`;
       const speaker = index === 2 ? group[1] : group[0];
       const ctx = {
+        ...hookModel,
         agentId: params.admission.agentId,
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,

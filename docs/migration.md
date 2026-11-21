@@ -2,16 +2,15 @@
 
 For normal Moon v2 updates, use the signed transaction in
 [updating](updating.md). You do not need to export and reimport your knowledge
-or convert Markdown files to use Moon 2.9.0. New users should follow
+or convert Markdown files to use Moon 2.9.1. New users should follow
 [getting started](getting-started.md). The
 [v1 migration](#legacy-v1-to-v2-migration) below applies only to the retired
 QMD/watcher runtime.
 
-Moon 2.9.0 uses database **schema 20** and accepts supported databases from
-schema 6 through 20. The runtime remains `~/.moon`, the database remains
-`~/.moon/state/moon.sqlite`, and the OpenClaw plugin ID remains `moon`. Runtime
-settings in `moon.toml` survive updates; migration does not enable L2, call a
-model or create a new login.
+Moon 2.9.1 uses database **schema 21** and accepts schemas 6 through 21. The
+runtime remains `~/.moon`, the database remains `~/.moon/state/moon.sqlite`, and
+the OpenClaw plugin ID remains `moon`. Runtime settings in `moon.toml` survive
+updates; migration does not enable L2, call a model or create a new login.
 
 Moon 2.7.0 updated bundled SQLite from 3.51.3 to patched 3.54.1. The engine
 upgrade does not add a Moon schema migration or change the vector model. Keep
@@ -98,13 +97,20 @@ Rehearse with a consistent copy using an explicit temporary `--home` and
 backup, the matching adapter and skill, and a compatible `moon.toml` from before
 the `[master]` setting. Retain those together before applying a migration.
 
+## Schema 21 delivered reply citations
+
+Moon 2.9.1 adds an optional link from a human citation to the preceding
+assistant proposal. When a learned claim depends on that reply, Moon rechecks
+the delivery receipt, transcript adjacency and ownership before chat recall.
+Existing citations retain their original meaning. For rollback to 2.9.0, keep
+the pre-upgrade schema-20 database backup with its matching runtime.
+
 ## SQLite migrations
 
-Moon applies numbered migrations transactionally. Moon 2.9.0 uses schema 20.
-Opening a normal write command migrates older supported Moon v2 databases
-forward; `health` and source inspection (`get`, `list`, `history`, `cite`,
-`state`, deletion preview, learning status/preview, and claim inspection) never
-create or migrate storage.
+Moon applies numbered migrations transactionally. Opening a normal write command
+migrates older supported Moon v2 databases forward; `health` and source
+inspection (`get`, `list`, `history`, `cite`, `state`, deletion preview,
+learning status/preview, and claim inspection) never create or migrate storage.
 
 Schema v5 adds canonical-head, immutable-revision, citation, and embedding-lease
 invariants. Schema v6 adds priority, retry scheduling, and dead-letter state for
@@ -148,12 +154,12 @@ old errors remain readable. Configuration failures stop until explicit retry,
 while timeouts use the existing retry budget. Both alterations and the migration
 ledger commit are one transaction. No model is called during migration.
 
-Before deploying schema v19, rehearse migration, integrity checks and backup
+Before deploying schema 21, rehearse migration, integrity checks and backup
 restoration with a temporary `--home`. Obtain a consistent online SQLite backup
 and configuration backup before the authorised live migration. Preserve the
-previous binary with its matching database backup: an older binary must not open
-schema v19 as a rollback attempt. Building the checkout does not authorise
-replacing the installed binary, plugin or live database.
+previous binary with its matching database backup for rollback. Building the
+checkout does not authorise replacing the installed binary, plugin or live
+database.
 
 ## Embedding model changes
 

@@ -23,21 +23,23 @@ Start with [Getting started](docs/getting-started.md), the
 4. Moon's fixed error code and redacted diagnostic output.
 5. Minimal reproducible steps.
 
-For learning or automatic recall problems, also include the OpenClaw version,
-selected context-engine slot, Moon hook permission flags, exact L1/L2 model and
-reasoning settings, and content-free `moon metrics summary --since 7d` output.
-Use Moon's fixed failure phase/code instead of arbitrary provider response
-bodies. A working chat does not establish that a new learning helper can
-authenticate, and an old injection metric does not prove current native recall.
-Do not post credentials, private memory, evidence transcripts, or unredacted
-configuration. See the
+For automatic recall problems, also include the OpenClaw version, the main model
+selected for that turn, the context-engine and native-memory slots, the Moon
+hook permissions, and content-free `moon metrics summary --since 7d` output. For
+learning problems, include the L1/L2 model and reasoning settings. Use Moon's
+fixed failure phase/code instead of arbitrary provider response bodies. A
+working chat does not establish that a new learning helper can authenticate, and
+an old injection metric does not prove current native recall. Do not post
+credentials, private memory, evidence transcripts, or unredacted configuration.
+See the
 [native recall canary](docs/openclaw-canary.md#native-recall-compatibility).
 
-For 2.8.0 upgrades, include schema version, the installed skill's `moon-version`
-marker and whether the signed bridge update completed. Source/topic issues need
-job state and fixed failure code, not the source body or raw model response.
-Unknown observed reasoning effort is a host metadata limitation, not proof of
-the wrong model. Preserve failed update journals and rollback bundles privately.
+For signed upgrades, include schema version, the installed skill's
+`moon-version` marker and whether the signed bridge update completed.
+Source/topic issues need job state and fixed failure code, not the source body
+or raw model response. Unknown observed reasoning effort is a host metadata
+limitation, not proof of the wrong model. Preserve failed update journals and
+rollback bundles privately.
 
 ## Response expectations
 

@@ -1,10 +1,12 @@
 # Moon OpenClaw adapter
 
-This adapter registers the `moon` context engine, supplies one bounded SQLite
-context packet for the current user message, and records completed turns for
-selective durable-memory learning.
+This adapter registers the `moon` context engine. The OpenClaw main model
+selected for each turn decides whether to recall saved facts, request original
+messages, ask for clarification or answer directly. Moon supplies the selected
+evidence within the current audience and packet budget, then records eligible
+completed turns for learning.
 
-This 2.9.0 adapter requires the matching schema-20 binary and 2.9.0 skill. See
+This 2.9.1 adapter requires the matching schema-21 binary and 2.9.1 skill. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an
 existing installation, use [updating](../../docs/updating.md); do not copy this
@@ -14,7 +16,7 @@ production.
 ## Installation and upgrade checks
 
 The signed updater treats the binary, adapter, skill and database as one
-compatibility set. Moon 2.9.0 retains the six-file bundle for older updaters.
+compatibility set. Moon 2.9.1 retains the six-file bundle for older updaters.
 Its companion documentation must be installed from the same reviewed release tag
 when an agent needs local references. Refresh separately installed skill copies
 as well. The upgrade guide explains which skill files are updated automatically
@@ -43,15 +45,25 @@ and prompt injection allowed, recall uses `before_prompt_build` for both native
 and stock runtimes. The hook returns a defensive `prependContext` packet;
 `assemble` then passes messages through to prevent duplicate injection. This
 fixes OpenClaw 2026.9.7 native-owned routes, which omit context-engine assembly.
-Without the hook API or permission, stock assembly can retrieve public memories
-only. Native routes that skip assembly require the authorised prompt hook. See
+Stock assembly on hosts without the hook or its permission is limited to
+explicitly published records and needs a host-resolved model route. Native
+routes that skip assembly require the authorised prompt hook. See
 [native recall compatibility](../../docs/openclaw-canary.md#native-recall-compatibility)
 for the concrete deployment settings and synthetic acceptance check.
 
-The adapter keeps strict ownership boundaries:
+The main model plans from the current request and up to two already-visible,
+verified excerpts from the same conversation. Planning uses one detached,
+tool-free call. A second call selects supporting IDs when Moon finds eligible
+candidates. An opt-out causes zero stored-memory reads. The original-message
+source defaults to the current conversation. Retrieving other conversations
+requires an explicit request and the appropriate reader grant.
 
-- Chat recall retrieves eligible public and private memories with
-  audience-checked evidence.
+The adapter enforces the following boundaries.
+
+- SQLite retrieves eligible public and private records for up to three searches
+  under one audience, count and character budget. Moon rechecks private access
+  before sending candidates to the model and before contributing selected
+  evidence to the answer.
 - The selected agent harness continues to own automatic transcript compaction.
   Moon delegates explicit compaction only for an identified stock OpenClaw
   harness and safely refuses the lossy generic fallback for Codex or an unknown
@@ -62,13 +74,15 @@ The adapter keeps strict ownership boundaries:
   boundaries, preserves recent turns, writes checkpoints, and owns rollback.
 - Retrieval failures fail open by default and preserve the original messages.
 - The durable `commitTurn` hook stores the accepted human message for its
-  recorded owners with a verified speaker identity. It excludes assistant
-  answers and tool traffic from learning. Confirmed Discord replies can be
-  recalled as role-labelled history by their verified delivery owners. OpenClaw
-  supplies the closed transcript range; Moon never rereads the growing
+  recorded owners with a verified speaker identity. Confirmed Discord replies
+  can be recalled as role-labelled history by their verified delivery owners.
+  When a human accepts a standing proposal, L2 can use the preceding verified
+  delivered reply alongside the complete human response. Both citations keep
+  their respective authors. Tool traffic stays outside learning evidence.
+  OpenClaw supplies the closed transcript range; Moon never rereads the growing
   transcript. Its advancement identity and evidence commit in one SQLite
   transaction, so retries cannot duplicate evidence or learning.
-- With schema 20 and a
+- With a
   [personal profile](../../docs/memory-privacy.md#personal-openclaw-profile),
   authenticated Discord, Control UI, TUI and enrolled direct chat messages can
   share the same private owner. Private recall uses verified Discord delivery.
@@ -95,7 +109,8 @@ The adapter keeps strict ownership boundaries:
   attempts require related new evidence, changed grounding rules, or an explicit
   session review. Fixed failure phases and codes never include generated claims
   or provider error bodies.
-- Greetings and irrelevant queries inject no context packet.
+- An empty evidence selection gives the replying model an unavailable notice.
+  Ambiguous references can produce a clarification request.
 - The optional `moon_source_learn` tool explicitly processes one queued eligible
   source and submits verbatim proposals for separate operator review. It does
   not approve claims or run from the scheduler.
@@ -105,12 +120,13 @@ The adapter keeps strict ownership boundaries:
 - Completed-turn learning and native compaction emit content-free operational
   events; Moon's embedding worker records its own batch counts.
 
-Lexical and hybrid retrieval both require no credentials and do not transmit
-memory content. Hybrid mode uses Moon's local multilingual model through one
-private stdio child owned by the adapter. The child has no network port and is
-stopped when the adapter is disposed. Raw evidence is not embedded; active
-memories are queued ahead of reference documents. Hash vectors exist only for
-offline plumbing tests.
+Moon ranks lexical and hybrid search results locally. OpenClaw sends the
+permitted candidates to the selected chat model for the evidence decision.
+Hybrid mode uses Moon's local multilingual embedding model through one private
+stdio child owned by the adapter. The child has no network port and is stopped
+when the adapter is disposed. Raw evidence is not embedded; active memories are
+queued ahead of reference documents. Hash vectors exist only for offline
+plumbing tests.
 
 All model work stays inside OpenClaw's provider runtime. The runtime's
 `moon.toml` supplies independent L1 and L2 models, reasoning, fallbacks,

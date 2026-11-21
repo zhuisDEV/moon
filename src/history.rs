@@ -105,7 +105,22 @@ impl Store {
     /// Recent turns readable by every current destination reader. Empty or
     /// unknown audiences have no access. Bound each entry before returning it.
     pub fn private_turn_history(&self, readers: &[String], limit: usize) -> Result<Vec<Value>> {
+        self.private_turn_history_for_session(readers, limit, None)
+    }
+
+    pub fn private_turn_history_for_session(
+        &self,
+        readers: &[String],
+        limit: usize,
+        session_key: Option<&str>,
+    ) -> Result<Vec<Value>> {
         ensure!((1..=20).contains(&limit), "invalid history limit");
+        if let Some(key) = session_key {
+            ensure!(
+                !key.trim().is_empty() && key.len() <= 2048,
+                "invalid conversation key"
+            );
+        }
         let audience = canonical_readers(readers)?;
         if readers.is_empty() || readers.iter().any(|id| id.starts_with("bot:")) {
             return Ok(Vec::new());
@@ -117,13 +132,16 @@ impl Store {
                 SELECT e.id,e.completed_at_ms AS event_ms,0 AS role,NULL AS reply_hash
                 FROM evidence_admissions x JOIN privacy_admissions a USING(admission_key)
                 JOIN evidence_sessions e ON e.id=x.evidence_id JOIN documents d ON d.id=e.document_id
-                WHERE d.active=1 AND a.owners_json IS NOT NULL AND NOT EXISTS
+                WHERE d.active=1 AND a.owners_json IS NOT NULL
+                  AND (?3 IS NULL OR json_extract(e.metadata_json,'$.session_key')=?3)
+                  AND NOT EXISTS
                   (SELECT value FROM json_each(?1) EXCEPT SELECT value FROM json_each(a.owners_json))
                 UNION ALL
                 SELECT e.id,h.reply_delivered_at_ms,1,h.reply_hash
                 FROM private_turn_history h JOIN evidence_admissions x USING(admission_key)
                 JOIN evidence_sessions e ON e.id=x.evidence_id JOIN documents d ON d.id=e.document_id
                 WHERE d.active=1 AND h.reply IS NOT NULL AND h.reply_owners_json IS NOT NULL
+                  AND (?3 IS NULL OR json_extract(e.metadata_json,'$.session_key')=?3)
                   AND h.reply_delivered_at_ms IS NOT NULL AND NOT EXISTS
                   (SELECT value FROM json_each(?1) EXCEPT SELECT value FROM json_each(h.reply_owners_json))
              ), recent AS (
@@ -132,7 +150,8 @@ impl Store {
              SELECT v.event_ms,v.role,
                     CASE v.role WHEN 0 THEN a.sender END,
                     CASE v.role WHEN 0 THEN substr(d.body,1,2054) ELSE substr(h.reply,1,2048) END,
-                    a.sender_kind
+                    a.sender_kind,CASE v.role WHEN 0 THEN e.document_id END,h.discord_message_id,
+                    CASE v.role WHEN 0 THEN length(d.body)>2054 ELSE length(h.reply)>2048 END
              FROM recent r JOIN visible v USING(id) JOIN evidence_sessions e ON e.id=r.id
              JOIN evidence_admissions x ON x.evidence_id=e.id JOIN privacy_admissions a USING(admission_key)
              JOIN documents d ON d.id=e.document_id
@@ -140,21 +159,32 @@ impl Store {
              ORDER BY v.event_ms,v.id,v.role"
         )?;
         Ok(query
-            .query_map(params![audience, limit as i64], |r| {
+            .query_map(params![audience, limit as i64, session_key], |r| {
                 let at: i64 = r.get(0)?;
                 let text: String = r.get(3)?;
+                let truncated: bool = r.get(7)?;
                 if r.get::<_, i64>(1)? == 1 {
-                    return Ok(json!({"role":"assistant", "text":text, "delivered_at_ms":at}));
+                    return Ok(json!({
+                        "role": "assistant",
+                        "text": text,
+                        "delivered_at_ms": at,
+                        "discord_message_id": r.get::<_, String>(6)?,
+                        "truncated": truncated,
+                    }));
                 }
                 let (role, prefix) = if r.get::<_, String>(4)? == "bot" {
                     ("bot", "Bot:\n")
                 } else {
                     ("user", "User:\n")
                 };
-                Ok(
-                    json!({"role":role, "text":text.strip_prefix(prefix).unwrap_or(&text),
-                "turn_sender":r.get::<_,String>(2)?, "completed_at_ms":at}),
-                )
+                Ok(json!({
+                    "role": role,
+                    "text": text.strip_prefix(prefix).unwrap_or(&text),
+                    "turn_sender": r.get::<_, String>(2)?,
+                    "completed_at_ms": at,
+                    "source_document_id": r.get::<_, i64>(5)?,
+                    "truncated": truncated,
+                }))
             })?
             .collect::<rusqlite::Result<_>>()?)
     }

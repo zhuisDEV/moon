@@ -23,6 +23,8 @@ enum Operation {
     /// Chat-facing operation. Older workers reject this opcode instead of
     /// ignoring an unknown audience field and returning operator-wide context.
     AudienceContext(ContextParams),
+    /// Only an explicit, authenticated audience may request model-ranked candidates.
+    RecallCandidates(crate::recall::RecallRequest),
     ContextInjection {
         request_id: String,
         injected: bool,
@@ -156,6 +158,9 @@ fn handle_request(
             "provider": provider.name(),
             "model": provider.model(),
         })),
+        Operation::RecallCandidates(request) => Ok(serde_json::to_value(
+            store.recall_candidates(&request, Some(provider))?,
+        )?),
         Operation::AudienceContext(params) if params.audience.is_none() => {
             anyhow::bail!("audience_context requires an explicit reader list")
         }

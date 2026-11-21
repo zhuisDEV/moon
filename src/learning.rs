@@ -5,7 +5,7 @@ use crate::memory::{
     distill_in_transaction, fuzzy_context_score, insert_citation, load_evidence, reference_terms,
     sync_memory_indexes,
 };
-use crate::model::DistillInput;
+use crate::model::{DeliveredReply, DistillInput};
 use crate::redaction::redact_text;
 use crate::store::{Store, now_ms, random_nonce};
 use anyhow::{Context, Result};
@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 const RELATED_CANDIDATE_LIMIT: usize = 512;
+const RELATED_CITATION_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct PrepareRequest {
@@ -35,6 +36,10 @@ pub struct PrepareRequest {
 pub struct LearningEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_reply: Option<DeliveredReply>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_context: bool,
     pub session_id: String,
     pub document_id: i64,
     pub completed_at_ms: i64,
@@ -48,6 +53,8 @@ pub struct LearningEvidence {
 pub struct EvidenceQuote {
     pub session_id: String,
     pub quote: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_reply: Option<DeliveredReply>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +71,8 @@ pub struct LearningMemory {
     pub valid_until_ms: Option<i64>,
     pub review_required: bool,
     pub citations: Vec<EvidenceQuote>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub citations_limited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +156,9 @@ struct Snapshot {
     // Only consume a wake-up that was actually present in the model packet.
     #[serde(default)]
     retry_support: BTreeMap<String, i64>,
+    // Bind exactly the assistant messages actually presented before inference.
+    #[serde(default)]
+    delivered_replies: BTreeMap<String, String>,
     scope_hash: String,
     selected_sessions: Vec<String>,
     evidence_sessions: Vec<String>,
@@ -348,7 +360,15 @@ impl Store {
             if let Some(support) = missing_support {
                 evidence.push(read_learning_evidence(&transaction, &support.session)?);
             }
-            let used = input_chars(&evidence, &memories)?;
+            let mut used = input_chars(&evidence, &memories)?;
+            if previous_len == 0 && used > budget {
+                // Optional context cannot prevent the original being processed.
+                // A reply omitted here can never validate against this snapshot.
+                for item in &mut evidence {
+                    item.prior_reply = None;
+                }
+                used = input_chars(&evidence, &memories)?;
+            }
             // Reserve half for prior claims and their evidence except for the
             // first complete selection (including any required supporting turn).
             if used > budget || (previous_len > 0 && used > budget / 2) {
@@ -369,10 +389,18 @@ impl Store {
         }
         let query = evidence
             .iter()
-            .map(|e| e.content.as_str())
+            .flat_map(|e| {
+                std::iter::once(e.content.as_str())
+                    .chain(e.prior_reply.iter().map(|reply| reply.quote.as_str()))
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        let related = related_memories(&transaction, &scope, &query, 128)?;
+        let selected_documents: Vec<i64> = evidence
+            .iter()
+            .filter(|e| e.selected)
+            .map(|e| e.document_id)
+            .collect();
+        let related = related_memories(&transaction, &scope, &query, 128, &selected_documents)?;
         let mut omitted_memory_count = related.omitted_matches;
         for memory in related.memories {
             let previous_len = evidence.len();
@@ -406,6 +434,14 @@ impl Store {
             |row| row.get(0),
         )?;
         let snapshot = Snapshot {
+            delivered_replies: evidence
+                .iter()
+                .filter_map(|e| {
+                    e.prior_reply
+                        .as_ref()
+                        .map(|reply| (e.session_id.clone(), reply.message_id.clone()))
+                })
+                .collect(),
             evidence_high_water: Some(evidence_high_water),
             occurrence: occurrence.to_owned(),
             rule_version: request.rule_version.clone(),
@@ -458,7 +494,7 @@ impl Store {
             anyhow::bail!("invalid related-memory scope, query or limits");
         }
         let mut memories = Vec::new();
-        for memory in related_memories(&self.connection, scope, query, limit)?.memories {
+        for memory in related_memories(&self.connection, scope, query, limit, &[])?.memories {
             memories.push(memory);
             if serde_json::to_string(&memories)?.chars().count() > max_chars.saturating_sub(64) {
                 memories.pop();
@@ -795,11 +831,48 @@ fn input_chars(evidence: &[LearningEvidence], memories: &[LearningMemory]) -> Re
 }
 
 fn read_learning_evidence(connection: &Connection, session: &str) -> Result<LearningEvidence> {
-    Ok(connection.query_row(
-        "SELECT e.session_id,e.document_id,e.completed_at_ms,d.body,t.sender FROM evidence_sessions e JOIN documents d ON d.id=e.document_id
+    let mut item = connection.query_row(
+        "SELECT e.session_id,e.document_id,e.completed_at_ms,d.body,t.sender,
+                coalesce(t.sender_kind='human' AND json_extract(e.metadata_json,'$.accepted_position.needs_context'),0)
+         FROM evidence_sessions e JOIN documents d ON d.id=e.document_id
          LEFT JOIN evidence_admissions b ON b.evidence_id=e.id LEFT JOIN privacy_admissions t ON t.admission_key=b.admission_key WHERE e.session_id=?1",
-        [session], |row| Ok(LearningEvidence {verified_sender:row.get(4)?,session_id:row.get(0)?, document_id:row.get(1)?, completed_at_ms:row.get(2)?, content:row.get(3)?,selected:false}),
-    )?)
+        [session], |row| Ok(LearningEvidence {
+            session_id: row.get(0)?,
+            document_id: row.get(1)?,
+            completed_at_ms: row.get(2)?,
+            content: row.get(3)?,
+            verified_sender: row.get(4)?,
+            needs_context: row.get(5)?,
+            prior_reply: None,
+            selected: false,
+        }),
+    )?;
+    if item.verified_sender.is_some() && item.content.len() <= 512 {
+        item.prior_reply = preceding_delivered_reply(connection, session)?;
+    }
+    Ok(item)
+}
+
+/// A direct transcript parent and adjacent active message positions, sealed
+/// inside one host/Discord route. Discord's creation times exclude queued
+/// messages written before delivery and acknowledgements left across days.
+fn preceding_delivered_reply(
+    connection: &Connection,
+    session: &str,
+) -> Result<Option<DeliveredReply>> {
+    Ok(connection
+        .query_row(
+            "SELECT discord_message_id,reply FROM learning_reply_pairs
+         WHERE evidence_id=(SELECT id FROM evidence_sessions WHERE session_id=?1)",
+            [session],
+            |row| {
+                Ok(DeliveredReply {
+                    message_id: row.get(0)?,
+                    quote: row.get(1)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 fn related_memories(
@@ -807,16 +880,26 @@ fn related_memories(
     scope: &str,
     query: &str,
     limit: usize,
+    selected_documents: &[i64],
 ) -> Result<RelatedMemories> {
+    let selected = (!selected_documents.is_empty())
+        .then(|| serde_json::to_string(selected_documents))
+        .transpose()?;
     // Reconciliation can revise an expired head. Keep the publication and
     // citation checks from audience recall, independent of the expiry clock.
     let mut statement = connection.prepare(
         "SELECT m.document_id,m.canonical_key,m.memory_kind,d.title,d.body,m.importance,m.confidence,m.observed_at_ms,m.last_confirmed_at_ms,m.valid_until_ms,
-                EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key))
+                EXISTS(SELECT 1 FROM learning_reviews r WHERE r.document_id=d.id OR (r.document_id IS NULL AND r.scope=d.scope AND r.canonical_key=m.canonical_key)),
+                CASE WHEN ?3 IS NULL THEN 0 ELSE EXISTS(
+                    SELECT 1 FROM memory_citations c JOIN evidence_sessions e ON e.id=c.evidence_session_id
+                    WHERE c.memory_document_id=d.id AND c.evidence_document_id=e.document_id
+                      AND c.evidence_document_id IN (SELECT value FROM json_each(?3))
+                ) END AS cites_selected
          FROM memory_items m JOIN documents d ON d.id=m.document_id
          LEFT JOIN memory_audiences a ON a.scope=d.scope
          WHERE d.scope=?1 AND d.active=1
            AND NOT EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=d.id)
+           AND NOT EXISTS(SELECT 1 FROM memory_ineligible_reply_dependencies r WHERE r.memory_document_id=d.id)
            AND (a.kind IS NULL
                 OR (a.kind='public' AND EXISTS(SELECT 1 FROM memory_publications p WHERE p.document_id=d.id))
                 OR (a.kind='private'
@@ -828,31 +911,41 @@ fn related_memories(
                             OR ed.scope IS NOT d.scope OR ed.source_kind IS NOT 'evidence'
                             OR EXISTS(SELECT 1 FROM privacy_legacy_documents l WHERE l.document_id=ed.id)))))
            AND m.superseded_by IS NULL AND m.canonical_key IS NOT NULL AND length(d.body)<=32000
-         ORDER BY m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT ?2",
+         ORDER BY cites_selected DESC,m.last_confirmed_at_ms DESC,m.document_id DESC LIMIT ?2",
     )?;
     let mut candidates = statement
-        .query_map(params![scope, RELATED_CANDIDATE_LIMIT as i64 + 1], |row| {
-            Ok(LearningMemory {
-                document_id: row.get(0)?,
-                canonical_key: row.get(1)?,
-                kind: row.get(2)?,
-                title: row.get(3)?,
-                content: row.get(4)?,
-                importance: row.get(5)?,
-                confidence: row.get(6)?,
-                observed_at_ms: row.get(7)?,
-                last_confirmed_at_ms: row.get(8)?,
-                valid_until_ms: row.get(9)?,
-                review_required: row.get(10)?,
-                citations: Vec::new(),
-            })
-        })?
+        .query_map(
+            params![scope, RELATED_CANDIDATE_LIMIT as i64 + 1, selected],
+            |row| {
+                let memory = LearningMemory {
+                    document_id: row.get(0)?,
+                    canonical_key: row.get(1)?,
+                    kind: row.get(2)?,
+                    title: row.get(3)?,
+                    content: row.get(4)?,
+                    importance: row.get(5)?,
+                    confidence: row.get(6)?,
+                    observed_at_ms: row.get(7)?,
+                    last_confirmed_at_ms: row.get(8)?,
+                    valid_until_ms: row.get(9)?,
+                    review_required: row.get(10)?,
+                    citations: Vec::new(),
+                    citations_limited: false,
+                };
+                Ok((row.get::<_, bool>(11)?, memory))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let candidate_scan_limited = candidates.len() > RELATED_CANDIDATE_LIMIT;
     candidates.truncate(RELATED_CANDIDATE_LIMIT);
     let mut rows = candidates
         .into_iter()
-        .filter_map(|memory| {
+        .filter_map(|(cites_selected, memory)| {
+            // A citation identifies the claim even when its paraphrase has no
+            // lexical overlap. Rank it above every finite fuzzy score.
+            if cites_selected {
+                return Some((f64::INFINITY, memory));
+            }
             // A memory's short terms are the query here: a long batch should not
             // dilute an entity match merely because it covers several topics.
             let score = fuzzy_context_score(
@@ -869,21 +962,40 @@ fn related_memories(
     });
     let omitted_matches = rows.len().saturating_sub(limit);
     let mut memories = Vec::new();
+    // Only L2 needs to know whether it has the full citation history. Keep
+    // the learning related response and its character budget unchanged.
+    let citation_fetch_limit = RELATED_CITATION_LIMIT + usize::from(selected.is_some());
     for (_, mut memory) in rows.into_iter().take(limit) {
         let mut citations = connection.prepare(
-            "SELECT e.session_id,c.quote FROM memory_citations c JOIN evidence_sessions e ON e.id=c.evidence_session_id
+            "SELECT e.session_id,c.quote,json_extract(c.prior_reply,'$.message_id'),json_extract(c.prior_reply,'$.quote')
+             FROM memory_citations c JOIN evidence_sessions e ON e.id=c.evidence_session_id
              JOIN documents evidence ON evidence.id=e.document_id
              WHERE c.memory_document_id=?1 AND evidence.scope=?2 AND c.evidence_document_id=e.document_id
-             ORDER BY e.completed_at_ms DESC,c.id DESC LIMIT 8",
+             ORDER BY c.evidence_document_id IN (SELECT value FROM json_each(?3)) DESC,
+                      e.completed_at_ms DESC,c.id DESC LIMIT ?4",
         )?;
         memory.citations = citations
-            .query_map(params![memory.document_id, scope], |row| {
-                Ok(EvidenceQuote {
-                    session_id: row.get(0)?,
-                    quote: row.get(1)?,
-                })
-            })?
+            .query_map(
+                params![
+                    memory.document_id,
+                    scope,
+                    selected,
+                    citation_fetch_limit as i64
+                ],
+                |row| {
+                    Ok(EvidenceQuote {
+                        prior_reply: row
+                            .get::<_, Option<String>>(2)?
+                            .zip(row.get(3)?)
+                            .map(|(message_id, quote)| DeliveredReply { message_id, quote }),
+                        session_id: row.get(0)?,
+                        quote: row.get(1)?,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        memory.citations_limited = memory.citations.len() > RELATED_CITATION_LIMIT;
+        memory.citations.truncate(RELATED_CITATION_LIMIT);
         memories.push(memory);
     }
     Ok(RelatedMemories {
@@ -963,6 +1075,25 @@ fn validate_action<'a>(
             anyhow::bail!("learning evidence must remain within its scope");
         }
         evidence.locate_quote(&citation.quote)?;
+        if let Some(reply) = &citation.prior_reply {
+            anyhow::ensure!(
+                snapshot.delivered_replies.get(&citation.session_id) == Some(&reply.message_id)
+                    && evidence.body.strip_prefix("User:\n") == Some(citation.quote.as_str())
+                    && preceding_delivered_reply(transaction, &citation.session_id)?.as_ref()
+                        == Some(reply),
+                "assistant reply citation must match the prepared delivery and the complete responding speaker"
+            );
+        } else if action.action != "review" {
+            let needs_context: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence_sessions e JOIN evidence_admissions b ON b.evidence_id=e.id
+                 JOIN privacy_admissions t ON t.admission_key=b.admission_key AND t.sender_kind='human'
+                 WHERE e.session_id=?1 AND json_extract(e.metadata_json,'$.accepted_position.needs_context')=1)",
+                [&citation.session_id], |row| row.get(0))?;
+            anyhow::ensure!(
+                !needs_context,
+                "context-dependent evidence requires its verified delivered reply"
+            );
+        }
         // A later assistant reply cannot make an older human correction current.
         // The writer checks this primary source against the target's confirmation time.
         if (action.action != "supersede" || evidence.speaker_quoted(&citation.quote))
@@ -982,7 +1113,14 @@ fn validate_action<'a>(
             let evidence_numbers = action
                 .evidence
                 .iter()
-                .flat_map(|citation| numeric_literals(&citation.quote))
+                .flat_map(|citation| {
+                    numeric_literals(&citation.quote).into_iter().chain(
+                        citation
+                            .prior_reply
+                            .iter()
+                            .flat_map(|reply| numeric_literals(&reply.quote)),
+                    )
+                })
                 .collect::<BTreeSet<_>>();
             anyhow::ensure!(
                 numbers.is_subset(&evidence_numbers),
@@ -1086,6 +1224,14 @@ fn apply_action(
             &location,
             &quote.quote,
         )?;
+        if let Some(reply) = &quote.prior_reply {
+            let written = transaction.execute(
+                "UPDATE memory_citations SET prior_reply=?4 WHERE memory_document_id=?1 AND evidence_session_id=?2
+                 AND quote=?3 AND (prior_reply IS NULL OR prior_reply=?4)",
+                params![outcome.document_id,evidence.id,quote.quote,serde_json::to_string(reply)?],
+            )?;
+            anyhow::ensure!(written == 1, "conflicting delivered reply citation");
+        }
     }
     if action.action == "merge" {
         if action.merge_document_ids.is_empty() {
@@ -1148,7 +1294,12 @@ fn merge_identical(
                 AND retained_review.reason_hash=r.reason_hash AND retained_review.evidence_ids_json=r.evidence_ids_json)",
         params![previous,retained,run_id,now_ms(),old_key],
     )?;
-    transaction.execute("INSERT OR IGNORE INTO memory_citations(memory_document_id,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms) SELECT ?2,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms FROM memory_citations WHERE memory_document_id=?1",params![previous,retained])?;
+    transaction.execute(
+        "INSERT INTO memory_citations(memory_document_id,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms,prior_reply)
+         SELECT ?2,evidence_session_id,evidence_document_id,start_byte,end_byte,start_line,end_line,quote,created_at_ms,prior_reply FROM memory_citations WHERE memory_document_id=?1
+         ON CONFLICT(memory_document_id,evidence_session_id,start_byte,end_byte) DO UPDATE SET prior_reply=coalesce(memory_citations.prior_reply,excluded.prior_reply)",
+        params![previous,retained],
+    )?;
     transaction.execute("DELETE FROM memory_heads WHERE document_id=?1", [previous])?;
     transaction.execute(
         "UPDATE memory_items SET superseded_by=?2,valid_until_ms=CASE

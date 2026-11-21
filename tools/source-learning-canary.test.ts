@@ -3,6 +3,8 @@ import {
   adapterDiagnostic,
   assertExecution,
   assertModelRequest,
+  canaryChat,
+  canaryChatResponse,
   CanaryError,
   checkAuthoredProvider,
   cleanEnvironment,
@@ -541,7 +543,7 @@ Deno.test("actual adapter classifies original host failure without exposing its 
 });
 
 Deno.test("canary hook config selects Moon so the actual registered hook delivers its packet", async () => {
-  const packet = "# Moon Context\n\nSynthetic Aster evidence packet";
+  const packet = "Synthetic Aster evidence packet";
   const hooks = new Map<
     string,
     (...args: unknown[]) => Promise<{ prependContext?: string }>
@@ -564,9 +566,10 @@ Deno.test("canary hook config selects Moon so the actual registered hook deliver
     resolvePath: (p: string) => p,
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     runtime: {
+      agent: { runEmbeddedAgent: canaryChatResponse },
       system: {
         runCommandWithTimeout(argv: string[]) {
-          const context = argv.includes("context");
+          const context = argv.includes("recall-candidates");
           if (context) contextRequests++;
           return {
             code: 0,
@@ -575,9 +578,19 @@ Deno.test("canary hook config selects Moon so the actual registered hook deliver
               context
                 ? {
                   request_id: "0123456789abcdef0123456789abcdef",
-                  packet,
-                  memory_count: 0,
-                  reference_count: 1,
+                  candidates: [{
+                    document_id: 5,
+                    content: packet,
+                    matched_queries: [0],
+                    temporal: false,
+                    previous: [],
+                    citations: [],
+                    observed_at_ms: null,
+                    verified_sender: null,
+                  }],
+                  public_only: true,
+                  memory_count: 1,
+                  reference_count: 0,
                   packet_chars: packet.length,
                   truncated: false,
                 }
@@ -601,10 +614,11 @@ Deno.test("canary hook config selects Moon so the actual registered hook deliver
     currentUserMessageId: "synthetic-turn",
   }, {
     agentId: "main",
+    ...canaryChat,
     sessionKey: "agent:main:direct:canary",
     runId: "canary-read",
     hookInvocation: { assertActive() {} },
   });
   equal(contextRequests, 1);
-  equal(result.prependContext, packet);
+  equal(result.prependContext?.includes(packet), true);
 });

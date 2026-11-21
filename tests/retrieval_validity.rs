@@ -497,7 +497,7 @@ fn schema_eleven_migration_preserves_source_topic_and_packet_then_reopens() {
     let path = temp.path().join("state/moon.sqlite");
     let (claim, claim_before, topic_before, packet_before) = schema_eleven_fixture(&path);
     let store = Store::open(&path, 64).unwrap();
-    assert_eq!(store.health().unwrap().schema_version, 20);
+    assert_eq!(store.health().unwrap().schema_version, 21);
     assert!(store.health().unwrap().ok);
     assert_eq!(store.source_claim_get(SCOPE, &claim).unwrap(), claim_before);
     assert_eq!(store.topic_get(SCOPE, "retention").unwrap(), topic_before);

@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.9.1 - 2026-11-21
+
+- Fix private DM recall when a question ends with reply-format instructions. The
+  OpenClaw main model selected for the turn identifies the requested fact. An
+  opt-out skips stored-memory reads.
+  [Issue #18](https://github.com/zhuisDEV/moon/issues/18)
+- The main model can resolve follow-ups, ask for clarification and split a
+  question into up to three searches. Moon checks the audience and available
+  sources for every search. The model selects supporting IDs and Moon supplies
+  the original record wording to the answer. Earlier revisions and dated
+  originals are available when the question and the reader grant permit them.
+- Scope preference learning to the circumstances the speaker described. L2 can
+  flag an existing preference for review when its original evidence supports
+  only a narrower request. L2 can link a short acceptance to a specific,
+  verified delivered proposal. Moon checks both sources and records them
+  together. An ambiguous response can stay unresolved.
+
+Moon 2.9.1 accepts database schemas **6–21** and migrates to **21**. Back up
+with the installed pre-upgrade binary and keep the schema-20 backup for rollback
+to 2.9.0. The signed release uses the six-file compatibility bundle. **Refresh
+separately installed copies of `SKILL.md`** and use the guides from this tag.
+
 ## 2.9.0 - 2026-11-20
 
 - L1 can recognise a short correction without a cue word. When the current turn
