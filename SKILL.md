@@ -29,9 +29,14 @@ three objects with `text` and `temporal` on stdin and requires
 `--audience-json`. An empty audience can see explicit publications.
 `--allow-originals` allows dated originals on eligible temporal matches. The
 chat adapter derives this permission from the verified turn and the model's
-source request. For original messages, `privacy history --session-key KEY`
-restricts both questions and replies to that conversation before applying the
-result limit.
+source request. To inspect original messages on an operator terminal, set
+`session_key` to the host conversation key and `readers_json` to a JSON array of
+all verified destination readers. The command filters questions and replies by
+conversation and audience before applying the result limit.
+
+```bash
+moon privacy history --session-key "$session_key" --audience-json "$readers_json"
+```
 
 ## Conversation privacy
 
@@ -45,12 +50,13 @@ fallbacks in chat. When readers cannot be verified, use public recall only and
 ask in a verified DM. Use `/moonpublic` for explicit sharing. See
 [privacy and legacy review](docs/memory-privacy.md).
 
-With OpenClaw's native memory disabled, private recall is available in a
-one-to-one Discord DM when Moon verifies the peer and the exact post against the
-accepted turn in a session dedicated to that bot account and peer. A verified
-guild text post can still contribute private evidence for its author. Replies on
-that guild route use public Moon context. An operator can confirm learning
-against the saved evidence.
+With OpenClaw's native memory disabled, Moon can recall private **saved facts**
+in a one-to-one Discord DM when it independently verifies the peer and the exact
+post against the accepted turn in a session dedicated to that bot account and
+peer. This grant withholds original user messages and assistant replies. A
+verified guild text post can still contribute private evidence for its author.
+Replies on that guild route use public Moon context. An operator can confirm
+learning against the saved evidence.
 
 The `[master].profile_id` setting selects a personal OpenClaw profile. Require
 an authenticated turn from that profile or an enrolled channel sender. A Discord
@@ -86,6 +92,11 @@ follow the pinned online guides below. Read only the guide relevant to the
 current task.
 
 ## Inspect recall and learning
+
+`context`, `search` and `metrics summary` open the database for writing and can
+migrate an older schema. Before an upgrade, use the installed pre-upgrade binary
+for `--json health` and a consistent `backup`. Run these diagnostics with the
+new binary after the migration succeeds.
 
 ```bash
 moon context --json --query "<question>" --mode hybrid --provider local
