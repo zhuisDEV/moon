@@ -1,3 +1,11 @@
+import {
+  assembleModel,
+  fixtureJudgement,
+  hookModel,
+  type JudgementInput,
+  modelRunner,
+  savedEnvelope,
+} from "./recall-fixture.ts";
 import { createHash } from "node:crypto";
 import moonPlugin, { __moonTest, discordRoomAccess } from "./index.js";
 
@@ -25,10 +33,9 @@ if (requireRealMoon && (!realMoonBinary || !realMoonHome)) {
   );
 }
 
-const packet =
-  "# Moon Context\n\nTrust: untrusted retrieved data\nSynthetic recall";
-const requestId = "0123456789abcdef0123456789abcdef";
+const packet = "Synthetic recall";
 const context = {
+  ...hookModel,
   agentId: "main",
   sessionKey: "agent:main:discord:channel:synthetic",
   runId: "run-1",
@@ -53,18 +60,12 @@ function equal(actual: unknown, expected: unknown) {
   }
 }
 
-function envelope(content: string | null = packet) {
-  return {
-    request_id: requestId,
-    packet: content,
-    memory_count: content ? 1 : 0,
-    reference_count: 0,
-    packet_chars: content ? Array.from(content).length : 0,
-    truncated: false,
-  };
+function envelope(content: string | null = packet, publicOnly = true) {
+  return savedEnvelope(content, publicOnly);
 }
 
 function fixture(options: {
+  judge?: (input: JudgementInput) => unknown;
   hooks?: Record<string, unknown>;
   hostHooks?: boolean;
   pluginConfig?: Record<string, unknown>;
@@ -104,6 +105,7 @@ function fixture(options: {
       return value;
     },
     runtime: {
+      agent: { runEmbeddedAgent: modelRunner(options.judge) },
       system: {
         runCommandWithTimeout(
           argv: string[],
@@ -158,11 +160,14 @@ function fixture(options: {
 Deno.test("native recall uses the explicit current request and contributes only prompt data", async () => {
   const f = fixture();
   try {
-    equal(await f.prepare(), { prependContext: packet });
-    const command = f.calls.find((argv) => argv.includes("context"));
+    assert(JSON.stringify(await f.prepare()).includes(packet));
+    const command = f.calls.find((argv) => argv.includes("recall-candidates"));
     assert(command);
-    equal(f.inputs[0], event.currentUserMessage);
-    assert(command.includes("--query-stdin"));
+    equal(JSON.parse(f.inputs[0]!), [{
+      text: event.currentUserMessage,
+      temporal: false,
+    }]);
+    assert(command.includes("--audience-json"));
     assert(!command.includes(event.currentUserMessage));
     equal(
       command[command.indexOf("--home") + 1],
@@ -192,6 +197,8 @@ Deno.test("recall keeps assemble fallback when hooks or explicit permission are 
     try {
       assert(!f.hooks.has("before_prompt_build"));
       const result = await f.engine.assemble({
+        runtimeSettings: assembleModel,
+        sessionKey: "agent:main:synthetic",
         messages: [{ role: "user", content: "Recall the SQLite plan" }],
       });
       equal(result.messages.length, 2);
@@ -241,16 +248,15 @@ Deno.test("legacy prompt hooks retain query extraction when explicit request is 
   const f = fixture();
   try {
     const hook = f.hooks.get("before_prompt_build")!;
-    equal(
-      await hook({ prompt: "Recall the Rust plan", messages: [] }, context),
-      {
-        prependContext: packet,
-      },
+    assert(
+      JSON.stringify(
+        await hook({ prompt: "Recall the Rust plan", messages: [] }, context),
+      ).includes(packet),
     );
-    equal(
-      f.inputs[0],
-      "Recall the Rust plan",
-    );
+    equal(JSON.parse(f.inputs[0]!), [{
+      text: "Recall the Rust plan",
+      temporal: false,
+    }]);
   } finally {
     await f.service.stop();
   }
@@ -278,12 +284,14 @@ Deno.test("prompt recall requires an explicitly selected Moon context engine", a
 Deno.test("native admission rebuilds reuse retrieval but equal text without an ID does not", async () => {
   const f = fixture();
   try {
-    equal(await f.prepare(), { prependContext: packet });
-    equal(
-      await f.prepare({ ...event, prompt: "Different reconstructed history" }),
-      {
-        prependContext: packet,
-      },
+    assert(JSON.stringify(await f.prepare()).includes(packet));
+    assert(
+      JSON.stringify(
+        await f.prepare({
+          ...event,
+          prompt: "Different reconstructed history",
+        }),
+      ).includes(packet),
     );
     equal(f.calls.length, 2);
     await f.prepare({ ...event, currentUserMessageId: "admission-2" });
@@ -308,7 +316,10 @@ Deno.test("identical admission IDs in separate chats do not share retrieval", as
       ...context,
       sessionKey: "agent:main:discord:other",
     });
-    equal(f.calls.filter((argv) => argv.includes("context")).length, 2);
+    equal(
+      f.calls.filter((argv) => argv.includes("recall-candidates")).length,
+      2,
+    );
   } finally {
     await f.service.stop();
   }
@@ -323,7 +334,7 @@ Deno.test("empty recall packets record a non-injection", async () => {
     }),
   });
   try {
-    equal(await f.prepare(), undefined);
+    assert(JSON.stringify(await f.prepare()).includes("no permitted evidence"));
     equal(f.calls.length, 2);
     assert(f.calls[1].includes("mark-injection"));
     assert(!f.calls[1].includes("--injected"));
@@ -403,9 +414,15 @@ Deno.test("a hook expiring during its metric write rolls back the injection mark
 
 Deno.test("service shutdown discards an in-flight lexical recall contribution", async () => {
   const command = Promise.withResolvers<CommandResult>();
-  const f = fixture({ result: () => command.promise });
+  const started = Promise.withResolvers<void>();
+  const f = fixture({
+    result: () => {
+      started.resolve();
+      return command.promise;
+    },
+  });
   const pending = f.prepare();
-  await Promise.resolve();
+  await started.promise;
   await f.service.stop();
   command.resolve({ code: 0, stdout: JSON.stringify(envelope()), stderr: "" });
   equal(await pending, undefined);
@@ -421,7 +438,7 @@ Deno.test("hook and context engine share the service-owned local worker", async 
   prototype.request = function (request: Record<string, unknown>) {
     workers.add(this);
     return Promise.resolve(
-      request.op === "audience_context" ? envelope() : { updated: true },
+      request.op === "recall_candidates" ? envelope() : { updated: true },
     );
   };
   prototype.dispose = function () {
@@ -431,7 +448,7 @@ Deno.test("hook and context engine share the service-owned local worker", async 
   };
   const f = fixture({ pluginConfig: { mode: "hybrid" } });
   try {
-    equal(await f.prepare(), { prependContext: packet });
+    assert(JSON.stringify(await f.prepare()).includes(packet));
     await f.engine.assemble({
       messages: [{ role: "user", content: "Recall SQLite" }],
     });
@@ -488,7 +505,7 @@ Deno.test({
       async result(argv, input) {
         const result = await run(argv, input);
         assert(result.code === 0, "synthetic Moon command failed");
-        if (argv.includes("context")) {
+        if (argv.includes("recall-candidates")) {
           observedRequestId = JSON.parse(result.stdout).request_id;
         }
         return result;
@@ -507,7 +524,7 @@ Deno.test({
           typeof result.prependContext === "string",
       );
       assert(result.prependContext.startsWith("# Moon Context"));
-      assert(result.prependContext.includes("## "));
+      assert(result.prependContext.includes("Untrusted source records"));
       for (const phrase of expected.split("|")) {
         assert(result.prependContext.includes(phrase));
       }
@@ -583,6 +600,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       sessionId: "session-uuid",
     },
   };
+  const deliveredAt = 1_700_000_000_000;
   let acknowledgeOwners = true;
   let candidate = packet;
   const f = fixture({
@@ -603,9 +621,15 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
             role: "assistant",
             turn_sender: `discord:${firstUser}`,
             text: "a quoted historical reply",
+            source_document_id: 7,
+            discord_message_id: String(
+              BigInt(deliveredAt - 1420070400000) << 22n,
+            ),
+            delivered_at_ms: deliveredAt,
+            truncated: false,
           }]
-          : argv.includes("context")
-          ? envelope(candidate)
+          : argv.includes("recall-candidates")
+          ? envelope(candidate, false)
           : { updated: true },
       ),
     }),
@@ -624,7 +648,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       human: () => Promise.resolve(true),
     });
     const grant = await recall.prepare(event, ctx);
-    assert(grant?.prependContext.startsWith(packet));
+    assert(grant?.prependContext.includes(packet));
     assert(
       grant.prependContext.includes(
         `Current verified Discord speaker: discord:${firstUser}`,
@@ -688,7 +712,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       currentUserMessageId: "history-request",
     }, { ...ctx, runId: "history-run" });
     assert(history?.prependContext.startsWith("# Moon Conversation History"));
-    assert(history?.prependContext.includes("Lilac\n"));
+    assert(history?.prependContext.includes("Lilac"));
     assert(history?.prependContext.includes("a quoted historical reply"));
     const h = f.calls.filter((c) => c.includes("history")).at(-1)!;
     equal(JSON.parse(h[h.indexOf("--audience-json") + 1]), privateReaders);
@@ -789,7 +813,8 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       currentUserMessageId: "other",
     }, { ...ctx, inputProvenance: { kind: "inter_session" } });
     assert(deny?.prependContext.includes("clarification"));
-    const finalQuery = f.calls.filter((c) => c.includes("context")).at(-1)!;
+    const finalQuery = f.calls.filter((c) => c.includes("recall-candidates"))
+      .at(-1)!;
     equal(
       JSON.parse(finalQuery[finalQuery.indexOf("--audience-json") + 1]),
       [],
@@ -799,7 +824,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       ...event,
       currentUserMessageId: "dm-channel",
     }, { ...ctx, runId: "dm-channel-run" });
-    assert(channelDm?.prependContext.startsWith(packet));
+    assert(channelDm?.prependContext.includes(packet));
     equal(
       await recall.guardDelivery({ kind: "final", to: `user:${firstUser}` }, {
         ...outbound,
@@ -812,8 +837,10 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       { ...event, currentUserMessageId: "dm-1" },
       { ...ctx, chatId: firstUser, runId: "dm-peer-run" },
     );
-    assert(dm?.prependContext.startsWith(packet));
-    const dmQuery = f.calls.filter((c) => c.includes("context")).at(-1)!;
+    assert(dm?.prependContext.includes(packet));
+    const dmQuery = f.calls.filter((c) => c.includes("recall-candidates")).at(
+      -1,
+    )!;
     equal(JSON.parse(dmQuery[dmQuery.indexOf("--audience-json") + 1]), [
       `discord:${firstUser}`,
     ]);
@@ -829,15 +856,16 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
     assert(exact && Array.from(exact.prependContext).length === 512);
     assert(f.logs.at(-1)?.includes("contribution_chars=512"));
     candidate += "!";
-    equal(
-      await recall.prepare({ ...event, currentUserMessageId: "too-long" }, {
-        ...ctx,
-        runId: "too-long",
-      }),
-      undefined,
-    );
+    const oversized = await recall.prepare({
+      ...event,
+      currentUserMessageId: "too-long",
+    }, {
+      ...ctx,
+      runId: "too-long",
+    });
+    assert(oversized?.prependContext.includes("no permitted evidence"));
+    assert(!oversized.prependContext.includes(packet));
     assert(f.logs.at(-1)?.includes("injected=false"));
-    assert(f.logs.at(-1)?.includes("contribution_chars=0"));
 
     acknowledgeOwners = false;
     const from = f.calls.length;
@@ -847,7 +875,9 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
     }, { ...ctx, runId: "older-runtime-run" });
     assert(legacy?.prependContext.includes("clarification"));
     assert(!legacy?.prependContext.includes(packet));
-    assert(!f.calls.slice(from).some((args) => args.includes("context")));
+    assert(
+      !f.calls.slice(from).some((args) => args.includes("recall-candidates")),
+    );
   } finally {
     await f.service.stop();
   }
@@ -858,7 +888,7 @@ Deno.test("Discord DM recall with native memory disabled follows the admitted hu
   const post = "333333333333333333", other = "444444444444444444";
   const owner = `discord:${peer}`, account = "second";
   const sessionKey = `agent:main:discord:${account}:direct:${peer}`;
-  const question = "From our chat history, what marks the fixture index page?";
+  const question = "Which saved label marks the fixture index page?";
   const hash = (text: string) =>
     createHash("sha256").update(text).digest("hex");
   const admissionId = "channel-user:v1:" +
@@ -900,16 +930,33 @@ Deno.test("Discord DM recall with native memory disabled follows the admitted hu
   let row: typeof original | null = original;
   let recipient = peer;
   let matchingQuery = question;
+  let planned: string[] = [];
+  let intent: "facts" | "history" | "none" | "clarify" = "facts";
   let afterQuery = () => {};
   const f = fixture({
+    judge: (input) =>
+      input.candidates ? fixtureJudgement(input) : {
+        intent,
+        queries: intent === "facts"
+          ? [{
+            spans: planned.length ? planned : [input.currentText],
+            includeTimeline: false,
+          }]
+          : [],
+      },
     result: (argv, input) => {
-      const privateQuery = argv.includes("context") &&
+      const privateQuery = argv.includes("recall-candidates") &&
         argv.includes(JSON.stringify([owner]));
       if (privateQuery) afterQuery();
       const data = argv.includes("bind-room")
         ? { bound: true, owners: [owner] }
-        : argv.includes("context")
-        ? envelope(privateQuery && input === matchingQuery ? packet : null)
+        : argv.includes("recall-candidates")
+        ? envelope(
+          privateQuery && JSON.parse(input!)[0].text === matchingQuery
+            ? packet
+            : null,
+          !privateQuery,
+        )
         : { updated: true };
       return { code: 0, stdout: JSON.stringify(data), stderr: "" };
     },
@@ -963,7 +1010,8 @@ Deno.test("Discord DM recall with native memory disabled follows the admitted hu
   });
   const privateCalls = () =>
     f.calls.filter((argv) =>
-      argv.includes("context") && argv.includes(JSON.stringify([owner]))
+      argv.includes("recall-candidates") &&
+      argv.includes(JSON.stringify([owner]))
     ).length;
   try {
     for (
@@ -1080,58 +1128,60 @@ Deno.test("Discord DM recall with native memory disabled follows the admitted hu
       row = invalid;
       await denied();
     }
-    const withInstructions = question +
-      " Please answer only from the supplied Moon context.";
-    const substantive = question + " I mean the second edition.";
-    const multiple = question + " Please reply briefly. Which edition was it?";
+    const notebook = "What is the cover label for my stargazing notebook?";
+    const chinese = "笔记本的封面标签是什么？";
     for (
-      const test of [
-        {
-          text: withInstructions,
-          match: question,
-          expected: [withInstructions, question],
-        },
-        {
-          text: withInstructions,
-          match: withInstructions,
-          expected: [withInstructions],
-        },
-        { text: substantive, match: question, expected: [substantive] },
-        { text: multiple, match: question, expected: [multiple] },
-        {
-          text: withInstructions,
-          match: question,
-          expected: [withInstructions],
-          publicOnly: true,
-        },
-      ]
+      const [text, spans] of [
+        [notebook + " Give just the label using Moon.", [notebook]],
+        [notebook + " I mean the second edition.", [
+          notebook,
+          "second edition",
+        ]],
+        [chinese + "请只回答标签。", [chinese]],
+      ] as [string, string[]][]
     ) {
-      request.currentUserMessage = test.text;
-      row = { ...original, sourceTextHash: hash(test.text) };
-      matchingQuery = test.match;
-      recipient = test.publicOnly ? other : peer;
+      request.currentUserMessage = text;
+      row = { ...original, sourceTextHash: hash(text) };
+      planned = spans;
+      matchingQuery = spans.join(" ");
+      const before = privateCalls();
+      const result = await recall.prepare(request, {
+        ...ctx,
+        runId: "wording-" + before,
+      });
+      assert(result?.prependContext.includes(packet));
+      equal(privateCalls(), before + 1);
+    }
+    for (
+      const [source, text] of [
+        ["none", notebook.padEnd(1200) + " Please do not use memory."],
+        ["history", "Show the original message verbatim."],
+        ["clarify", "And the other one?"],
+      ] as const
+    ) {
+      intent = source;
+      request.currentUserMessage = text;
+      row = { ...original, sourceTextHash: hash(text) };
       const start = f.calls.length;
       const result = await recall.prepare(request, {
         ...ctx,
-        runId: "lookup-" + start,
+        runId: "no-read-" + source,
       });
-      const queries = f.calls.slice(start).flatMap((argv, i) =>
-        argv.includes("context")
-          ? [[
-            f.inputs[start + i],
-            JSON.parse(argv[argv.indexOf("--audience-json") + 1]),
-          ]]
-          : []
+      assert(!result?.prependContext.includes(packet));
+      assert(
+        !f.calls.slice(start).some((argv) =>
+          argv.includes("recall-candidates") || argv.includes("history")
+        ),
       );
-      equal(
-        queries,
-        test.expected.map((input) => [input, test.publicOnly ? [] : [owner]]),
-      );
-      equal(
-        Boolean(result?.prependContext?.includes(packet)),
-        !test.publicOnly && test.expected.includes(test.match),
-      );
+      if (source === "history") {
+        assert(result?.prependContext.includes("unavailable"));
+      }
+      if (source === "clarify") {
+        assert(result?.prependContext.includes("clarify"));
+      }
     }
+    planned = [];
+    intent = "facts";
     request.currentUserMessage = matchingQuery = question;
     recipient = peer;
     row = original;
@@ -1164,7 +1214,7 @@ Deno.test("a human learns in a mixed Discord room while private history and priv
       stdout: JSON.stringify(
         argv.includes("bind-room")
           ? { bound: true, owners: [owner] }
-          : argv.includes("context")
+          : argv.includes("recall-candidates")
           ? { ...envelope(packet), public_only: false }
           : { updated: true },
       ),
@@ -1206,7 +1256,13 @@ Deno.test("a human learns in a mixed Discord room while private history and priv
       [...readers].sort(),
     );
     assert(!f.calls.some((argv) => argv.includes("history")));
-    const query = f.calls.find((argv) => argv.includes("context"));
+    assert(!f.calls.some((argv) => argv.includes("recall-candidates")));
+    const facts = await recall.prepare({
+      ...event,
+      currentUserMessageId: "new-facts",
+    }, { ...ctx, runId: "facts" });
+    assert(!facts?.prependContext.includes(packet));
+    const query = f.calls.find((argv) => argv.includes("recall-candidates"));
     assert(query);
     equal(JSON.parse(query[query.indexOf("--audience-json") + 1]), []);
   } finally {
@@ -1356,9 +1412,9 @@ Deno.test("delivered replies freeze their own route permissions and protect earl
             bound: true,
             owners: JSON.parse(argv[argv.indexOf("--owners-json") + 1]),
           }
-          : argv.includes("context")
+          : argv.includes("recall-candidates")
           ? (privatePacket
-            ? envelope(packet)
+            ? envelope(packet, false)
             : { ...envelope(packet), public_only: true })
           : { updated: true },
       ),
@@ -1498,7 +1554,7 @@ Deno.test("the Master profile binds web evidence and requests only public contex
     result: (argv) => {
       const data = argv.includes("bind-room")
         ? { bound: true, owners: [principal] }
-        : argv.includes("context")
+        : argv.includes("recall-candidates")
         ? { ...envelope(), public_only: false }
         : { updated: true };
       return { code: 0, stdout: JSON.stringify(data), stderr: "" };
@@ -1553,7 +1609,9 @@ Deno.test("the Master profile binds web evidence and requests only public contex
       ),
     );
     assert(
-      f.calls.some((argv) => argv.includes("context") && argv.includes("[]")),
+      f.calls.some((argv) =>
+        argv.includes("recall-candidates") && argv.includes("[]")
+      ),
     );
     const history = await recall.prepare({
       ...event,
@@ -1590,7 +1648,7 @@ Deno.test("unlinking, disabling or rotating the Master keeps cross-channel recal
           bound: true,
           owners: JSON.parse(argv[argv.indexOf("--owners-json") + 1]),
         }
-        : argv.includes("context")
+        : argv.includes("recall-candidates")
         ? { ...envelope(), public_only: false }
         : { updated: true };
       return { code: 0, stderr: "", stdout: JSON.stringify(data) };
@@ -1660,13 +1718,162 @@ Deno.test("unlinking, disabling or rotating the Master keeps cross-channel recal
       assert(/^peer:[a-f0-9]{64}$/.test(last[last.indexOf("--sender") + 1]));
       const readers = JSON.parse(last[last.indexOf("--audience-json") + 1]);
       assert(!readers.includes(master.memory_principal));
-      const contextQuery = f.calls.filter((args) => args.includes("context"))
+      const contextQuery = f.calls.filter((args) =>
+        args.includes("recall-candidates")
+      )
         .at(-1)!;
       equal(
         JSON.parse(contextQuery[contextQuery.indexOf("--audience-json") + 1]),
         readers,
       );
     }
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("follow-up planning receives only already-visible verified excerpts from the same session", async () => {
+  const seen: JudgementInput[] = [];
+  const f = fixture({
+    pluginConfig: { learningEnabled: false },
+    judge(input) {
+      seen.push(input);
+      return { intent: "none", queries: [] };
+    },
+  });
+  const peer = "111111111111111111";
+  const ctx = {
+    ...context,
+    sessionId: "one",
+    channel: "discord",
+    accountId: "default",
+    sessionKey: "agent:main:discord:default:direct:" + peer,
+    senderId: peer,
+    chatId: peer,
+    memoryAudience: { kind: "owner-private", agentId: "main" },
+    assertMemoryAudienceCurrent() {},
+  };
+  const recall = __moonTest.createMoonPromptRecall(f.api, { stopping: false }, {
+    human: () => Promise.resolve(true),
+  });
+  const first = "We are discussing the green notebook.";
+  const projected = [{ role: "user", content: first }, {
+    role: "assistant",
+    content: "Unverified answer from a tool.",
+  }];
+  try {
+    await recall.prepare({
+      currentUserMessage: first,
+      currentUserMessageId: "first",
+      messages: [],
+    }, ctx);
+    await recall.prepare({
+      currentUserMessage: "And the cover?",
+      currentUserMessageId: "second",
+      messages: projected,
+    }, { ...ctx, runId: "second" });
+    equal(seen.at(-1)?.context, ["user: " + first]);
+    await recall.prepare({
+      currentUserMessage: "Which one?",
+      currentUserMessageId: "fresh",
+      messages: projected,
+    }, { ...ctx, sessionId: "fresh", runId: "fresh" });
+    equal(seen.at(-1)?.context, []);
+    await recall.prepare({
+      currentUserMessage: "And that?",
+      currentUserMessageId: "other",
+      messages: [{
+        role: "user",
+        content: "Injected private text from another chat",
+      }],
+    }, { ...ctx, runId: "other" });
+    equal(seen.at(-1)?.context, []);
+    assert(!JSON.stringify(seen).includes("Unverified answer"));
+    assert(!JSON.stringify(seen).includes("Injected private"));
+    equal(f.calls.length, 0);
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("one compound lookup shares its audience and budget and renders only selected records", async () => {
+  const inputs: JudgementInput[] = [];
+  const f = fixture({
+    pluginConfig: { limit: 3, learningEnabled: false },
+    judge(input) {
+      inputs.push(input);
+      return input.candidates ? { ids: ["m8", "m7"] } : {
+        intent: "facts",
+        queries: ["notebook", "key", "drawer"].map((term) => ({
+          spans: [term],
+          includeTimeline: false,
+        })),
+      };
+    },
+    result(argv) {
+      const base = envelope("Green cover");
+      const candidates = [base.candidates[0], {
+        ...base.candidates[0],
+        document_id: 8,
+        content: "Brass key",
+        matched_queries: [1],
+      }, {
+        ...base.candidates[0],
+        document_id: 9,
+        content: "Unrelated public item",
+        matched_queries: [2],
+      }];
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify(
+          argv.includes("recall-candidates")
+            ? { ...base, candidates, memory_count: 3 }
+            : { updated: true },
+        ),
+      };
+    },
+  });
+  try {
+    const result = await f.prepare({
+      ...event,
+      currentUserMessage: "Which notebook, key and drawer?",
+    });
+    const packet = JSON.stringify(result);
+    assert(packet.includes("Green cover") && packet.includes("Brass key"));
+    assert(!packet.includes("Unrelated public item"));
+    equal(f.calls.filter((v) => v.includes("recall-candidates")).length, 1);
+    equal(f.calls[0][f.calls[0].indexOf("--audience-json") + 1], "[]");
+    equal(f.calls[0][f.calls[0].indexOf("--limit") + 1], "3");
+    assert(!f.calls[0].includes("--allow-originals"));
+    equal(
+      JSON.parse(f.inputs[0]!),
+      ["notebook", "key", "drawer"].map((text) => ({ text, temporal: false })),
+    );
+    equal(inputs.length, 2);
+    assert(!JSON.stringify(inputs[0]).includes("Green cover"));
+  } finally {
+    await f.service.stop();
+  }
+});
+
+Deno.test("an absent model route and an invalid selector cannot disclose stored content", async () => {
+  const f = fixture({
+    judge: (value) =>
+      value.candidates ? { ids: ["m999999"] } : fixtureJudgement(value),
+  });
+  try {
+    equal(
+      await f.prepare(event, { ...context, modelId: undefined }),
+      undefined,
+    );
+    const legacy = [{ role: "user", content: event.currentUserMessage }];
+    const engine = __moonTest.createMoonContextEngine(f.api);
+    assert((await engine.assemble({ messages: legacy })).messages === legacy);
+    equal(f.calls.length, 0);
+    equal(await f.prepare(), undefined);
+    assert(!f.calls.some((args) => args.includes("--injected")));
+    assert(!f.errors.join(" ").includes(packet));
   } finally {
     await f.service.stop();
   }

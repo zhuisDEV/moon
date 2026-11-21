@@ -146,6 +146,45 @@ export function executionOwnerInput(
   };
 }
 
+// The source-learning canary reserves three real calls for source and topic
+// learning. Its chat check exercises SQLite and the registered hook with a
+// local scripted model, including what the selector could see before delivery.
+export const canaryChat = {
+  modelProviderId: "canary",
+  modelId: "scripted-chat",
+};
+export function canaryChatResponse(params: Record<string, unknown>) {
+  check(
+    params.provider === canaryChat.modelProviderId &&
+      params.model === canaryChat.modelId &&
+      params.disableTools === true,
+    "unexpected_canary_chat_route",
+  );
+  const input = JSON.parse(String(params.prompt).split("\n\n").at(-1)!);
+  const candidates = input.candidates;
+  if (candidates) {
+    const offered = JSON.stringify(candidates);
+    check(
+      !offered.includes(TOPIC.key) &&
+        SOURCES.every((source) =>
+          !offered.includes(source.key) &&
+          source.content.split("\n").every((line) => !offered.includes(line))
+        ),
+      "operator_source_offered_to_chat",
+    );
+  }
+  const decision = candidates
+    ? { ids: candidates.map((row: { id: string }) => row.id) }
+    : {
+      intent: "facts",
+      queries: [{ spans: [input.currentText], includeTimeline: false }],
+    };
+  return {
+    meta: { agentMeta: { provider: params.provider, model: params.model } },
+    payloads: [{ text: JSON.stringify(decision) }],
+  };
+}
+
 export function hookHostConfig(settings: Record<string, unknown>) {
   return {
     plugins: {

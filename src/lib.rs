@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod model;
 pub mod privacy;
 pub mod publication;
+pub mod recall;
 pub mod redaction;
 pub mod release;
 pub mod server;

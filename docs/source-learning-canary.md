@@ -1,10 +1,10 @@
 # Isolated source-learning model canary
 
 For installation and ordinary upgrades, start with
-[Getting started](getting-started.md) or [Updating](updating.md). This advanced
-operator check ships in the tagged source, not the six-file 2.9.0 binary bundle.
-Install the updated [skill and guides](updating.md#refresh-the-agent-skill) with
-the release.
+[Getting started](getting-started.md) or [Updating](updating.md). The tagged
+2.9.1 source includes this operator check. The signed release uses the six-file
+binary bundle. Install the updated
+[skill and guides](updating.md#refresh-the-agent-skill) with the release.
 
 `tools/source-learning-canary.ts` is a versioned operator tool for validating a
 candidate binary and OpenClaw adapter before deployment. Its default stage is
@@ -71,7 +71,10 @@ using the scoped allowlist and existing host account.
    embedding hybrid recall, both independent source premises, exact original
    citation ranges, and withdrawal invalidation. The registered prompt hook must
    recall an explicitly published synthetic fact while excluding the operator
-   sources and topic from chat.
+   sources and topic from chat. On model-planned adapters this stage uses a
+   scripted chat model, checks which candidates reach it, and compares the
+   selected IDs and wording with a separate SQLite lookup. The three live
+   learning calls retain their original budget.
 
 Each model dispatch reserves its budget durably before execution. A home has at
 most three reservations, including failures and uncertain interrupted calls;

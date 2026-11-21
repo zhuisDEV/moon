@@ -182,7 +182,7 @@ fn master_principal_probe_does_not_initialise_or_migrate_and_fails_on_incomplete
             .prepare("SELECT 1 FROM master_discord_principals")
             .is_err()
     );
-    connection.pragma_update(None, "user_version", 21).unwrap();
+    connection.pragma_update(None, "user_version", 22).unwrap();
     privacy(&home, "master-discord-principals")
         .assert()
         .failure();

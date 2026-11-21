@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.9.0 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.9.1 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -23,15 +23,24 @@ Copy the guides from the same release using the
 
 ## What runs automatically
 
-Moon retrieves public and audience-permitted private memories before a turn.
-Each newly recorded private chat turn keeps the verified sender ID, question
-owners and potential readers. Confirmed replies have separate delivery owners.
-L1 interprets the current turn and proposes memories worth keeping. Optional
-daily L2 can reconcile a correction across several original messages. The models
-judge meaning. Moon checks exact citations, privacy scope and current targets,
-saves linked changes together, and drains local embedding work. L1 and L2 have
-independent model and reasoning settings in `~/.moon/moon.toml`. L2 is
-**disabled by default**. OpenClaw owns authentication and model execution.
+The OpenClaw main model selected for each chat turn decides whether to use saved
+facts, request original messages, ask for clarification or answer directly. It
+can split a question across up to three subjects. Moon checks the available
+sources and readers before retrieval. Planning takes one tool-free call to the
+chat model. When Moon finds eligible candidates, a second call selects
+supporting record IDs. Moon supplies those exact records to the answer. An
+opt-out makes no stored memory or history reads. Each newly recorded private
+chat turn keeps the verified sender ID, question owners and potential readers.
+Confirmed replies have separate delivery owners. L1 interprets the current turn
+and proposes memories worth keeping. A lasting preference keeps the topic or
+circumstances supported by the speaker's words. Optional daily L2 can reconcile
+a correction across several original messages. L2 can also interpret a short
+human acceptance of a standing proposal when Moon can verify the immediately
+preceding delivered reply and both sources' owners. The models judge meaning.
+Moon checks exact citations, privacy scope and current targets, saves linked
+changes together, and drains local embedding work. L1 and L2 have independent
+model and reasoning settings in `~/.moon/moon.toml`. L2 is **disabled by
+default**. OpenClaw owns authentication and model execution.
 
 With OpenClaw's native memory disabled, Moon can recall a user's private
 memories in a verified one-to-one Discord DM. The session must be isolated to
@@ -69,9 +78,10 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.9.0 uses schema **20**. Signed updates accept schemas **6–20** and
-  migrate transactionally. Retain the old executable with its matching database
-  backup.
+- Moon 2.9.1 accepts schemas **6–21** and migrates transactionally to schema
+  **21**. A human citation can now link to the verified Discord reply it
+  accepts. Keep the schema-20 backup and matching executable for rollback to
+  2.9.0.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data
   files are owner-only.
 - `health` and source/topic inspection do not create or migrate storage. Normal

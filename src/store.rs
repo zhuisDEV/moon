@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 const DEFAULT_CHUNK_CHARS: usize = 1_400;
 const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 180;
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -387,6 +387,16 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0020_bot_evidence.sql"))?;
             transaction.execute(
                 "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(20, ?1)",
+                [now_ms()],
+            )?;
+        }
+
+        if existing_version < 21 {
+            transaction.execute_batch(include_str!(
+                "../migrations/0021_learning_reply_citations.sql"
+            ))?;
+            transaction.execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES(21, ?1)",
                 [now_ms()],
             )?;
         }

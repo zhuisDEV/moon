@@ -63,6 +63,8 @@ enum Command {
     Topic(TopicArgs),
     /// Assemble a bounded, cited memory packet for an agent turn.
     Context(ContextArgs),
+    /// Retrieve audience-bound candidates for up to three queries supplied as a JSON array on stdin.
+    RecallCandidates(RecallArgs),
     /// Incrementally index a file or directory.
     Ingest(IngestArgs),
     /// Embed queued chunks inside SQLite.
@@ -496,6 +498,9 @@ enum PrivacyCommand {
         audience_json: String,
         #[arg(long, default_value_t = 4)]
         limit: usize,
+        /// Restrict both original messages and replies to this host conversation.
+        #[arg(long)]
+        session_key: Option<String>,
     },
     /// Trusted host observation of an accepted final or a confirmed Discord delivery.
     #[command(hide = true)]
@@ -810,6 +815,23 @@ struct ContextArgs {
     /// Emit the private adapter envelope; requires --json.
     #[arg(long, hide = true)]
     adapter: bool,
+    #[command(flatten)]
+    provider: ProviderArgs,
+}
+
+#[derive(Debug, Args)]
+struct RecallArgs {
+    #[arg(long)]
+    audience_json: String,
+    #[arg(long, default_value = "hybrid")]
+    mode: SearchMode,
+    #[arg(long, default_value_t = 8)]
+    limit: usize,
+    #[arg(long, default_value_t = 3_500)]
+    max_chars: usize,
+    /// The authenticated host grants access to original messages for temporal queries.
+    #[arg(long)]
+    allow_originals: bool,
     #[command(flatten)]
     provider: ProviderArgs,
 }
@@ -1276,9 +1298,12 @@ fn run(cli: Cli) -> Result<()> {
                 PrivacyCommand::History {
                     audience_json,
                     limit,
-                } => serde_json::to_value(
-                    store.private_turn_history(&parse_audience(&audience_json)?, limit)?,
-                )?,
+                    session_key,
+                } => serde_json::to_value(store.private_turn_history_for_session(
+                    &parse_audience(&audience_json)?,
+                    limit,
+                    session_key.as_deref(),
+                )?)?,
                 PrivacyCommand::ReplyHistory {
                     admission_key,
                     discord_message_id,
@@ -1539,6 +1564,27 @@ fn run(cli: Cli) -> Result<()> {
                 LearningCommand::Status => store.learning_status()?,
             };
             emit(&outcome, cli.json)
+        }
+        Command::RecallCandidates(args) => {
+            let request = moon::recall::RecallRequest {
+                queries: serde_json::from_str(&read_bounded_stdin("recall queries")?)
+                    .context("expected a JSON array of recall queries")?,
+                audience: parse_audience(&args.audience_json)?,
+                mode: args.mode,
+                limit: args.limit,
+                max_chars: args.max_chars,
+                allow_originals: args.allow_originals,
+                observe: true,
+            };
+            let provider = if args.mode == SearchMode::Lexical {
+                None
+            } else {
+                Some(build_provider(&args.provider, cli.dimensions, &home)?)
+            };
+            emit(
+                &store.recall_candidates(&request, provider.as_deref())?,
+                cli.json,
+            )
         }
         Command::Context(args) => {
             let provider = if args.mode == SearchMode::Lexical {

@@ -1,8 +1,8 @@
 # Public and private memory
 
-Moon 2.9.0 provides personal profiles and bot capture with the schema 20 binary
-and its matching adapter. See
-[migration and rollback](migration.md#schema-20-personal-profiles-and-bot-evidence).
+Moon 2.9.1 uses schema 21. It checks ownership independently for saved facts,
+original messages and delivered replies used as evidence. See the
+[migration and rollback guide](migration.md#schema-21-delivered-reply-citations).
 
 ## Personal OpenClaw profile
 
@@ -105,15 +105,16 @@ authenticated lookups. An embedded host path without a trusted message identity
 uses public recall only and skips private learning.
 
 The signed v2.8.1 adapter requires a host audience grant for private DM recall.
-With `plugins.slots.memory` set to `none`, OpenClaw can omit this grant. The
-v2.9.0 adapter can verify a one-to-one Discord DM independently. It matches the
-author and exact text of the active user message in OpenClaw's default SQLite
-agent store to one original human post fetched from Discord. The author must be
-the DM's sole peer. Set `session.dmScope` to `per-account-channel-peer` and keep
-that peer's Discord session separate from other users in `identityLinks`. A
-verified DM can recall private memories owned by that peer, including facts
-learned from their guild posts. If any check fails, Moon withholds private
-context. Reading or recording private reply history still requires a host grant.
+With `plugins.slots.memory` set to `none`, OpenClaw can omit this grant. Since
+v2.8.2 the adapter can verify a one-to-one Discord DM independently. It matches
+the author and exact text of the active user message in OpenClaw's default
+SQLite agent store to one original human post fetched from Discord. The author
+must be the DM's sole peer. Set `session.dmScope` to `per-account-channel-peer`
+and keep that peer's Discord session separate from other users in
+`identityLinks`. A verified DM can recall private memories owned by that peer,
+including facts learned from their guild posts. If any check fails, Moon
+withholds private context. Reading or recording private reply history still
+requires a host grant.
 
 For an ordinary Discord guild text room, Moon can still learn from a completed
 human turn by verifying the active admission in OpenClaw's default SQLite agent
@@ -176,10 +177,16 @@ establish who authored a particular turn.
 
 ## Recalling private replies
 
-A request such as “show our chat history” asks for recent role-labelled
-messages. `privacy history` applies the destination audience to each question
-and each reply independently, before returning any text. An eligible answer can
-stand alone without revealing the private question or its author.
+The OpenClaw main model decides from the current request whether the user wants
+saved facts, recent role-labelled messages or neither. Defining “chat history”
+and asking to quote a previous reply are different tasks. A history request on a
+saved-facts-only route produces an unavailable notice and performs no
+stored-content lookup. Original-message searches default to the current
+conversation. A request explicitly covering other conversations can search
+messages that every reader owns. Moon filters by conversation before selecting
+recent records. `privacy history` applies the destination audience to each
+question and each reply independently, before returning any text. An eligible
+answer can stand alone without revealing the private question or its author.
 
 Moon retains an assistant reply for recall when its accepted final text matches
 a successful Discord delivery for the same turn and destination with verified
@@ -225,7 +232,7 @@ cannot enter audience-based recall or learning. Other operator collections
 remain available through the local administrative CLI.
 
 All examples below assume that `moon_copy` points to the rehearsal directory and
-`candidate` to the 2.9.0 binary. The database path is explicit so an inherited
+`candidate` to the 2.9.1 binary. The database path is explicit so an inherited
 environment variable cannot select the live database.
 
 ```sh

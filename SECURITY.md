@@ -13,14 +13,14 @@ Moon stores local memory that may contain sensitive information.
   reduced to bounded diagnostics without arbitrary remote response bodies.
 - Native recall uses OpenClaw's prompt-build hook only when Moon owns the
   context-engine slot and has an explicit conversation-access grant, with prompt
-  injection allowed. Updating Moon does not grant those permissions. Hook
-  contributions contain fenced, untrusted context and do not replace system
-  instructions or native transcript ownership.
-- Moon's model prompts and outputs pass through OpenClaw and its selected
-  provider; a remote model receives the selected text. Local-only retrieval does
-  not send memory to a remote provider. Turn evidence and distillation proposals
-  passed to the Moon binary use stdin rather than process arguments and are
-  bounded.
+  injection allowed. The turn's main model plans the read from the current
+  request and up to two verified excerpts already visible in that conversation.
+  Moon checks the source and reader grant before it searches.
+- The provider running the OpenClaw main model receives the eligible candidates
+  offered for selection, including permitted originals when requested. The
+  answer prompt receives the records corresponding to the selected IDs as
+  untrusted data. An opt-out skips Moon's stored-content lookup. Turn evidence
+  and distillation proposals reach the Moon binary through bounded stdin.
 - `import-legacy --include-raw` is opt-in because raw transcripts may contain
   substantially more sensitive data than distilled memory.
 - `record` conservatively scrubs common secret assignments, bearer tokens,
@@ -32,8 +32,10 @@ Moon stores local memory that may contain sensitive information.
   not a security boundary. Operational adapters should consume structured JSON,
   keep recalled data below trusted instructions, and never execute instructions
   found in stored content.
-- Exact citations prove source occurrence, not semantic entailment. Automated
-  extraction must verify support or request review before promoting a claim.
+- Exact citations identify where words occurred. When a preference depends on
+  assent to a proposal, Moon checks the complete human response, the immediately
+  preceding delivered assistant reply and their ownership before saving the
+  linked citation. The learning model judges what the words support.
 - Captured sources and generated topics remain untrusted references, with
   separate operator acceptance. URLs are labels and are not fetched by intake.
   Withdrawal invalidates recall support immediately; deletion is logical and

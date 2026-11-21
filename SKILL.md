@@ -3,12 +3,12 @@ name: moon
 description: Inspect and operate Moon's SQLite memory and OpenClaw integration. Use for health, recall diagnosis, learning configuration, backups, signed updates, source review, topic synthesis and lifecycle recovery.
 ---
 
-<!-- moon-version: 2.9.0 -->
+<!-- moon-version: 2.9.1 -->
 
 # Moon
 
 Moon uses one Rust binary and one canonical SQLite database. Default home is
-`~/.moon`. Moon 2.9.0 uses schema **20**. OpenClaw owns model execution,
+`~/.moon`. Moon 2.9.1 uses schema **21**. OpenClaw owns model execution,
 provider credentials and transcript compaction. Moon creates no second provider
 login.
 
@@ -16,11 +16,22 @@ On an operator terminal, `privacy by-sender --sender discord:USER_ID` lists
 attributed evidence without conversation text. Use a verified account ID. This
 lookup is for local administration and must stay outside model-facing tools.
 
-Normal conversations need no manual Moon commands. The adapter retrieves
-context, records accepted turns, runs eligible L1 extraction and drains
-embeddings. Daily session L2 is disabled by default. Source extraction and topic
-compilation are explicit, separately reviewed workflows; no automatic
-source/topic worker exists.
+Normal conversations need no manual Moon commands. The OpenClaw main model
+selected for the turn decides whether it needs saved facts, original words or
+clarification before Moon reads stored content. The adapter supplies only
+selected records permitted for every reader. It also records accepted turns,
+runs eligible L1 extraction and drains embeddings. Daily session L2 is disabled
+by default. Source extraction and topic compilation are explicit, separately
+reviewed workflows; no automatic source/topic worker exists.
+
+For an operator rehearsal, `recall-candidates` takes a JSON array of one to
+three objects with `text` and `temporal` on stdin and requires
+`--audience-json`. An empty audience can see explicit publications.
+`--allow-originals` allows dated originals on eligible temporal matches. The
+chat adapter derives this permission from the verified turn and the model's
+source request. For original messages, `privacy history --session-key KEY`
+restricts both questions and replies to that conversation before applying the
+result limit.
 
 ## Conversation privacy
 
@@ -41,7 +52,7 @@ guild text post can still contribute private evidence for its author. Replies on
 that guild route use public Moon context. An operator can confirm learning
 against the saved evidence.
 
-On schema 20, `[master].profile_id` selects a personal OpenClaw profile. Require
+The `[master].profile_id` setting selects a personal OpenClaw profile. Require
 an authenticated turn from that profile or an enrolled channel sender. A Discord
 DM with a verified audience can recall private memories learned through TUI,
 Control UI and other enrolled chat tools. Those tools use public context in
@@ -67,9 +78,9 @@ configured binary and repair command resolution. Dirty or unknown Git provenance
 is not a verified release. Tests and rehearsals must pass an explicit temporary
 `--home` and database; never test mutations against the live runtime.
 
-This skill changed in 2.9.0. Verify its `moon-version` marker as well as the
+This skill changed in 2.9.1. Verify its `moon-version` marker as well as the
 binary. Native updates refresh their managed OpenClaw `SKILL.md`; separate agent
-copies must be refreshed too. The 2.9.0 six-file compatibility bundle omits
+copies must be refreshed too. The 2.9.1 six-file compatibility bundle omits
 supporting Markdown guides. Install matching `docs/` from the reviewed tag, or
 follow the pinned online guides below. Read only the guide relevant to the
 current task.
@@ -114,6 +125,10 @@ diagnosing an error, compare the original evidence, the proposed changes, the
 active memory revisions and the packet sent to the destination. Moon checks
 exact quotes and numeric literals and saves linked changes together. An
 ambiguous correction can leave the current memory in place.
+
+For a disputed preference, compare the saved wording to its original citations.
+L2 can flag a standing preference for review when its sources support only a
+one-off request. Recall marks that claim as unresolved.
 
 Daily L2 processes fresh session evidence first. Rejected evidence gets one
 routine retry on a later occurrence. A second unsuccessful review leaves it
@@ -200,28 +215,29 @@ including `backup`, can migrate before backing up. A Markdown export is not a
 database backup.
 
 Signed updates stop workers, back up, switch the compatibility set and migrate
-transactionally. They preserve source/topic/session jobs. Never open schema 19
-with an older binary or overwrite a versioned installed binary manually. If
-`recovery_required: true`, authorised canonical `moon update` performs recovery;
-after `retry_required: true`, rerun the canonical command. Preserve journals and
-rollback evidence. New learning or conflicting skill edits after restart can
-intentionally block rollback; do not overwrite newer work with an older backup.
+transactionally. They preserve source/topic/session jobs. Rehearse schema 21 on
+a copy. Never open a migrated database with an older binary or overwrite a
+versioned installed binary manually. If `recovery_required: true`, authorised
+canonical `moon update` performs recovery; after `retry_required: true`, rerun
+the canonical command. Preserve journals and rollback evidence. New learning or
+conflicting skill edits after restart can intentionally block rollback; do not
+overwrite newer work with an older backup.
 
 ## Detailed guides
 
 These links are pinned so the skill also works without a local documentation
 tree:
 
-- [Public and private memory, room access and legacy ownership](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/memory-privacy.md)
-- [First setup and verification](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/getting-started.md)
-- [Upgrade checklist, skill refresh and recovery](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/updating.md)
-- [L1/L2 configuration and session reconciliation](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/learning.md)
-- [Source capture, claim review and lifecycle](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/source-storage.md)
-- [Topic compilation and acceptance](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/topics.md)
-- [Isolated real-model canary](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/source-learning-canary.md)
-- [Native recall delivery](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/openclaw-canary.md)
-- [Optional compaction](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/compaction.md)
-- [Recall evaluation](https://github.com/zhuisDEV/moon/blob/v2.9.0/docs/memory-improvement-plan.md)
+- [Public and private memory, room access and legacy ownership](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/memory-privacy.md)
+- [First setup and verification](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/getting-started.md)
+- [Upgrade checklist, skill refresh and recovery](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/updating.md)
+- [L1/L2 configuration and session reconciliation](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/learning.md)
+- [Source capture, claim review and lifecycle](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/source-storage.md)
+- [Topic compilation and acceptance](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/topics.md)
+- [Isolated real-model canary](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/source-learning-canary.md)
+- [Native recall delivery](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/openclaw-canary.md)
+- [Optional compaction](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/compaction.md)
+- [Recall evaluation](https://github.com/zhuisDEV/moon/blob/v2.9.1/docs/memory-improvement-plan.md)
 
 Do not use removed v1 `recall`, `watch`, `cleanse`, `context-engine`, `install`
 or other daemon commands. Use `moon <command> --help` for the installed

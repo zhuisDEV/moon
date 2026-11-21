@@ -1,4 +1,19 @@
 -- Test-only reconstruction of the schema-18 ACL views and guards.
+DROP VIEW chat_recallable_memories;
+DROP VIEW memory_ineligible_reply_dependencies;
+DROP VIEW learning_reply_pairs;
+DROP INDEX memory_citations_reply_dependencies;
+DROP INDEX evidence_reply_terminal;
+ALTER TABLE memory_citations DROP COLUMN prior_reply;
+DELETE FROM schema_migrations WHERE version=21;
+CREATE VIEW chat_recallable_memories AS
+SELECT document_id,scope FROM audience_recallable_memories
+UNION ALL
+SELECT o.document_id,o.scope FROM owned_legacy_memories o
+JOIN documents d ON d.id=o.document_id
+JOIN memory_items m ON m.document_id=o.document_id
+WHERE d.active=1 AND m.superseded_by IS NULL
+  AND (m.valid_until_ms IS NULL OR m.valid_until_ms>CAST(unixepoch('subsec')*1000 AS INTEGER));
 DROP TABLE master_discord_principals;
 DROP TRIGGER bot_evidence_requires_role;
 DROP TRIGGER speaker_scope_requires_admission;

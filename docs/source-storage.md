@@ -2,7 +2,7 @@
 
 Moon retains selected text and provenance in SQLite, then supports reviewed
 extraction of verbatim source claims. Source storage and learning were added by
-schemas 9 and 10. Moon 2.9.0 uses schema 20. For first installation, start with
+schemas 9 and 10. Moon 2.9.1 uses schema 21. For first installation, start with
 [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md) before using these commands. Editing or building a
 checkout does not update an installed runtime.

@@ -30,13 +30,13 @@ controlled [signed bootstrap](updating.md#v210-bootstrap-boundary).
 Clone the release into a new directory and build:
 
 ```bash
-git clone --branch v2.9.0 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.9.0
-cd moon-2.9.0
+git clone --branch v2.9.1 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.9.1
+cd moon-2.9.1
 cargo build --locked --release
 target/release/moon --json --version
 ```
 
-Check version `2.9.0`, the expected target/commit and `git_dirty: false`. This
+Check version `2.9.1`, the expected target/commit and `git_dirty: false`. This
 block refuses an existing runtime and installs a versioned layout:
 
 ```bash
@@ -46,7 +46,7 @@ if [ -e "$HOME/.moon" ] || [ -L "$HOME/.moon" ]; then
   echo 'Moon already exists; use the upgrade guide instead.' >&2
   exit 1
 fi
-moon_release="$HOME/.moon/releases/2.9.0"
+moon_release="$HOME/.moon/releases/2.9.1"
 install -d -m 700 "$HOME/.moon" "$HOME/.moon/releases" "$moon_release" \
   "$moon_release/bin" "$moon_release/openclaw-plugin" "$moon_release/skill" \
   "$moon_release/skill/docs" "$HOME/.moon/bin"
@@ -56,7 +56,7 @@ install -m 644 assets/openclaw-plugin/index.js assets/openclaw-plugin/package.js
   "$moon_release/openclaw-plugin/"
 install -m 644 SKILL.md "$moon_release/skill/SKILL.md"
 install -m 644 docs/*.md "$moon_release/skill/docs/"
-ln -s releases/2.9.0 "$HOME/.moon/current"
+ln -s releases/2.9.1 "$HOME/.moon/current"
 ln -s ../current/bin/moon "$HOME/.moon/bin/moon"
 ln -s current/openclaw-plugin "$HOME/.moon/openclaw-plugin"
 SH
@@ -73,7 +73,7 @@ moon --home "$HOME/.moon" --database "$HOME/.moon/state/moon.sqlite" init
 moon --json health
 ```
 
-Expect schema `19`, integrity `ok` and no logical violations. If a different
+Expect schema `21`, integrity `ok` and no logical violations. If a different
 `moon` is found, repair `PATH` first. Never follow an old binary's migration
 prompt against a newer database.
 
@@ -143,15 +143,15 @@ extraction and synthesis in a temporary home. It defaults to **no inference**;
 explicit model and review stages consume provider usage. Its private host bridge
 stops on unreviewed OpenClaw versions.
 
-| Symptom                                | Next check                                                    |
-| -------------------------------------- | ------------------------------------------------------------- |
-| Wrong version or schema                | Compare executable paths; do not run `init` as a repair       |
-| Healthy plugin, no native recall       | Context-engine slot, hook permissions and a fresh turn        |
-| Recall works, no new memories          | L1 enabled state and fixed model failure codes                |
-| No daily reconciliation                | L2 defaults to disabled; inspect schedule and timezone        |
-| Source/topic missing                   | Acceptance, current revision, withdrawal, expiry and scope    |
-| Setup, authentication or route failure | Fix the host, then explicitly retry the job                   |
-| Interrupted update                     | Preserve the journal and follow [recovery](updating.md#apply) |
+| Symptom                                | Next check                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| Wrong version or schema                | Compare executable paths; do not run `init` as a repair                   |
+| Healthy plugin, no native recall       | Context-engine slot, hook permissions and the model route on a fresh turn |
+| Recall works, no new memories          | L1 enabled state and fixed model failure codes                            |
+| No daily reconciliation                | L2 defaults to disabled; inspect schedule and timezone                    |
+| Source/topic missing                   | Acceptance, current revision, withdrawal, expiry and scope                |
+| Setup, authentication or route failure | Fix the host, then explicitly retry the job                               |
+| Interrupted update                     | Preserve the journal and follow [recovery](updating.md#apply)             |
 
 Share only redacted, content-free diagnostics when asking for
 [support](../SUPPORT.md).

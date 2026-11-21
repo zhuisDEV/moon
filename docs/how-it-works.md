@@ -5,8 +5,8 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-This guide describes Moon 2.9.0 (database schema 20). For installation, start
-with [getting started](getting-started.md); for an existing runtime, follow
+Moon 2.9.1 uses database schema 21. For installation, start with
+[getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
 Normal chat learning is automatic. Captured sources and reviewed topics are
@@ -37,12 +37,14 @@ After OpenClaw completes an eligible turn with a verified audience, the adapter
 records the accepted human message as private evidence. The final assistant
 answer marks completion. A matching successful Discord delivery can retain the
 answer as role-labelled private history. L1 and L2 learn from accepted human
-words; tool traffic stays outside the turn history. OpenClaw's `commitTurn`
-callback supplies only the closed, accepted transcript range. A SHA-256 identity
-derived from its advancement key is committed with the evidence in one SQLite
-transaction. This makes retries and concurrent acknowledgements idempotent. The
-parent session and channel identity stay in sanitized metadata. Moon does not
-read the growing transcript during assembly or commit.
+words. L2 can also use a delivered proposal when the responding human message,
+transcript adjacency and owners can all be verified. Tool traffic stays outside
+the turn history. OpenClaw's `commitTurn` callback supplies only the closed,
+accepted transcript range. A SHA-256 identity derived from its advancement key
+is committed with the evidence in one SQLite transaction. This makes retries and
+concurrent acknowledgements idempotent. The parent session and channel identity
+stay in sanitized metadata. Moon does not read the growing transcript during
+assembly or commit.
 
 When OpenClaw's native memory slot is disabled, the prompt hook can match an
 active user message in the default host SQLite store to one original Discord
@@ -51,7 +53,14 @@ recipient before releasing eligible private context. In an ordinary guild text
 room, Moon verifies room access and uses public context. The author owns the
 question, and the same durable commit path records the evidence after the reply.
 
-Moon 2.9.0 can verify the accepted sender against a
+The selected OpenClaw main model reads the full current request before any
+stored-memory lookup. For a follow-up, the adapter can include up to two short
+text excerpts already present in the same session's prompt history. Their text
+must match recent verified message receipts for the same speaker, audience and
+owners. The adapter retains only digests for this check. A fresh session or a
+restart begins without prior receipts.
+
+Moon can verify the accepted sender against a
 [personal OpenClaw profile](memory-privacy.md#personal-openclaw-profile). In
 configured Discord text rooms, a fresh bot post can also become private L2
 evidence for the linked human owner. Its citation preserves the bot as author.
@@ -322,10 +331,24 @@ path remains. OpenClaw 2026.9.7 native-owned routes skip assembly, so they
 require the hook; see the
 [canary settings](openclaw-canary.md#native-recall-compatibility).
 
-In chat, Moon searches public memory and the private records whose owners
-include every verified destination reader, before ranking and rendering the
-packet. The operator CLI below demonstrates a separate scoped lookup that can
-also include reviewed sources and topics.
+The model can request up to three grounded searches, request recent original
+messages, decline recall or ask for clarification. Original-message requests
+default to the current conversation. Each search uses the same reader grant,
+count and character limits. On historical questions with permission for
+originals, a matching current record can carry dated sources and up to two
+directly linked earlier revisions. Their timestamps describe when something was
+recorded. The model judges what the sources establish about the date in the
+question.
+
+After retrieval the same chat model selects supported IDs. Moon renders the
+corresponding records, preserves source speakers and rechecks access before
+returning a private contribution. Empty selections produce a short unavailable
+notice. An opt-out makes zero stored-content reads. If OpenClaw cannot identify
+or run the turn's model, the adapter contributes no stored evidence. Legacy
+assembly needs a host-resolved model and has access to explicit publications.
+
+The operator CLI below demonstrates a separate scoped lookup that can also
+include reviewed sources and topics.
 
 ```bash
 moon --home "$moon_example_home" --database "$moon_example_home/state/moon.sqlite" context \

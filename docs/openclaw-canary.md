@@ -8,38 +8,32 @@ canary always uses an explicit temporary runtime and OpenClaw state directory.
 
 ## Turn workflow
 
-For each agent turn:
-
-1. The adapter takes the explicit prompt or latest user message as the query.
-2. It invokes lexical context directly or sends hybrid context over Moon's
-   private stdio child with an explicit runtime, character budget, mode, and
-   embedding-space dimensions.
-3. Moon selects published public memory and private records owned by every
-   verified destination reader. An unverified destination receives public memory
-   only.
-4. Eligible claims include their provenance and bounded citations. Operator
-   source and topic collections stay outside the chat packet.
-5. With conversation-hook access granted, the adapter returns the defensive
-   packet through `before_prompt_build` as `prependContext`, and returns
-   messages unchanged from context-engine assembly. Otherwise it uses the legacy
-   assembly injection immediately before the current user message.
-6. If retrieval fails, the adapter preserves the original message list by
-   default.
-7. OpenClaw owns the compaction lifecycle. If `moon-local` is selected, Moon
-   supplies only the summary text through OpenClaw's compaction-provider seam.
-8. After an eligible turn, Moon records the accepted human message as private
-   learning evidence under the verified speaker. A confirmed Discord reply can
-   enter private chat history with its own delivery-time owners.
-9. Greetings stop there. Eligible turns use the L1 model, then its enabled
-   provider-neutral fallback if needed, to propose a bounded number of memories,
-   three by default.
-10. The model interprets the evidence. Moon verifies the score bounds, exact
-    quotes, numeric literals and freshness of the correction target.
-11. Moon writes the turn's valid proposals in one transaction. If a proposal
-    fails validation, its siblings cannot change a memory on their own.
-
-12. Moon drains a bounded local-embedding batch. Active memories are processed
-    before references; raw evidence is excluded.
+1. OpenClaw identifies the current turn, its model and its audience. The main
+   model uses the current request and up to two already-visible verified
+   excerpts to decide whether to recall saved facts, request original messages,
+   ask for clarification or answer directly.
+2. Moon checks the requested sources against the audience grant. An opt-out
+   causes zero stored-memory reads. A verified DM with a saved-facts-only grant
+   can retrieve eligible facts. On that route, an original-message request
+   produces an unavailable notice.
+3. Moon runs up to three saved-fact searches under one budget. It calls the CLI
+   for lexical retrieval and its private stdio worker for hybrid retrieval.
+   Original-message searches default to the current conversation.
+4. When there are eligible candidates, the main model selects supporting IDs.
+   Moon rechecks private access, then sends the exact selected records through
+   `before_prompt_build`. An empty selection produces an unavailable notice. The
+   context engine passes messages through when that hook is active. Stock legacy
+   assembly requires a host-resolved model and only supplies explicitly
+   published records.
+5. OpenClaw owns transcript compaction. With `moon-local` selected, Moon
+   supplies the requested summary through the host's compaction-provider hook.
+6. After an eligible turn, Moon records the accepted human message as private
+   evidence under the verified speaker. A confirmed Discord reply retains its
+   own delivery-time owners.
+7. L1 proposes up to three memories by default from an independently supported
+   human turn. Moon verifies evidence, numeric literals, target freshness and
+   score bounds. SQLite commits the valid batch atomically and Moon drains a
+   bounded local embedding batch.
 
 When explicitly enabled, L2 also runs in the plugin service at its daily IANA
 time. It prepares a leased snapshot of pending evidence and related claims with
@@ -72,6 +66,13 @@ permissions. On the development checkout, use the binary built from that same
 checkout. The tests exercise real Moon SQLite storage with synthetic Gateway
 records and model responses. They also advance a simulated Sydney clock across
 03:00 and restart the service to check that L2 commits the due batch once.
+
+The 2.9.1 release rehearsal used real OpenClaw model calls and temporary SQLite
+databases with simulated Discord admissions and delivery receipts. Sol recalled
+the notebook label in the owner DM case and answered “unknown” for the shared
+room. A memory opt-out made zero saved-fact or history reads. Terra learned two
+confirmed standing defaults. Ambiguous and undelivered proposals produced no
+standing default.
 
 For a configured Discord guild text room, run the following with the path to the
 installed OpenClaw package. The probe checks the current permissions using
@@ -218,8 +219,9 @@ For the isolated profile above, merge these keys into the existing config:
 OpenClaw treats these as plugin permissions, outside Moon's `config` object.
 Deploying this grant to a live profile requires operator approval; Moon does not
 write it automatically. Without permission or hook support, the adapter warns
-and retains legacy assembly recall only where the host invokes it. A loaded
-plugin is not proof of working native recall.
+and can provide published records through legacy assembly when the host supplies
+the resolved model identity. Both recall paths need the active agent and model
+route. Test a fresh native turn to confirm prompt delivery.
 
 Use an explicitly published synthetic fact for a public route. Exercise private
 evidence with a verified Discord audience, then confirm that adding a non-owner
@@ -357,10 +359,10 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.9.0, back up with the installed pre-upgrade binary,
-retain configuration and rehearse schema 20 on a copy. Preserve the prior binary
-with its matching database backup. The signed release schema range is 6–20;
-schema 8 was the earlier 2.6.x target. Follow the
+Before deploying Moon 2.9.1, back up with the installed pre-upgrade binary,
+retain configuration and rehearse schema 21 on a copy. Preserve the prior binary
+with its matching database backup. The signed release accepts schemas 6–21.
+Rollback to 2.9.0 requires its schema-20 backup. Follow the
 [upgrade checklist](updating.md#upgrade-checklist) and refresh the changed
 skill. Do not change live configuration, install the adapter, restart the
 gateway, or enable daily L2 merely because source tests pass. Those are

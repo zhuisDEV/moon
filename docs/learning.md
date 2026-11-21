@@ -146,6 +146,23 @@ Conversation text, retrieved memories, and quoted instructions remain untrusted
 evidence. Exact quotes and deterministic checks reduce some errors; they do not
 prove semantic truth or resolve every ambiguous contradiction.
 
+### Learning from a short acceptance
+
+L1 can save an independently stated fact or preference. L2 can interpret a short
+answer such as “Okay” when the prior assistant message contains a specific
+standing proposal. Moon checks that both messages belong to the same verified
+speaker and owners, that they are adjacent in the same host transcript, and that
+Discord delivered the proposal before the human responded. A queued response,
+missing receipt, older capture without adjacency metadata, or changed owner set
+supplies no such evidence. L2 can defer an ambiguous acceptance even when all
+the receipts match.
+
+The L2 action cites the complete responding human text and the delivered
+proposal using `prior_reply: {message_id, quote}`. Moon validates and saves the
+pair together. The assistant remains the author of the proposal. Current bounds
+are 512 UTF-8 bytes for the responding original including its role prefix, 2,048
+bytes for the proposal and a maximum 24-hour interval.
+
 Moon delegates model calls to OpenClaw. In the verified native Codex setup,
 OpenClaw's Codex plugin owns the `openai` provider and uses the app's Codex
 binary with `homeScope: "user"` and the existing user `CODEX_HOME`
@@ -192,6 +209,14 @@ retries storage failures. L1 model failures do not erase evidence; an enabled L2
 can later revisit it. The default L1 limit is three proposals per eligible turn,
 adjustable through the existing `learningMaxMemories` plugin setting.
 
+L1 and L2 use the speaker's words to decide when a preference applies. “Could
+you put this answer in a table?” stays in the original turn. “I find tables
+helpful for comparing travel options” supports a preference for that task.
+“Tables are my preferred format for comparisons in general” supports a broader
+claim from a single message. When L2 revisits a preference whose cited originals
+only support a narrower request, it can flag the claim for review. Recall then
+marks the claim as unresolved.
+
 With L1 enabled, short messages now reach the model without a correction
 keyword. Greeting-only turns are skipped. This can increase model calls on busy
 accounts. L1 judges a correction using the current human turn and related active
@@ -229,16 +254,21 @@ evidence can still confirm or correct an expired head under its original key.
 The learner checks its original citations before reconciling it. This does not
 retroactively classify every old memory as temporary.
 
-L2 scores up to 512 recent candidate memories and selects up to 128 matches. A
-prepared packet sets `context_limited` when any of those bounds or the character
-budget reduces coverage. `omitted_memory_count` counts scored matches left out
-of the packet. `candidate_scan_limited` means more candidates remained unscored.
-The model is told when comparison is incomplete. If the oldest pending evidence
-is too large, or no related claim and its original evidence can fit, preparation
-fails and preserves the backlog. Inspect the packet before increasing its
-budget; do not treat a partial packet as proof that no conflict exists.
-`learning status` exposes review reasons and evidence session IDs for human
-inspection; it is not an automatic review-resolution command.
+L2 gives first priority to memories that cite a selected original, even when the
+memory paraphrases or translates the speaker's words. Other candidates are
+chosen by recency and scored for a wording match. L2 considers up to 512
+candidates and selects up to 128 matches. Each memory can bring up to eight
+citations, with selected originals first. A memory with `citations_limited` has
+additional citations beyond the packet. A prepared packet sets `context_limited`
+when the candidate limit, the match limit or the character budget reduces
+coverage. `omitted_memory_count` counts scored matches left out of the packet.
+`candidate_scan_limited` means more candidates remained unscored. The model is
+told when comparison is incomplete. If the oldest pending evidence is too large,
+or no related claim and its original evidence can fit, preparation fails and
+preserves the backlog. Inspect the packet before increasing its budget; do not
+treat a partial packet as proof that no conflict exists. `learning status`
+exposes review reasons and evidence session IDs for human inspection; it is not
+an automatic review-resolution command.
 
 ## Daily schedule and recovery
 
@@ -512,20 +542,22 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.9.0 accepts supported databases from schema 6 through 20 and migrates
-them to schema 20. L1/L2 introduced schema 8; source storage, reviewed learning
-and topics add schemas 9–11, retrieval-validity optimisation adds schema 12, and
-job diagnostics adds schema 13. Moon 2.8.0 adds the session retry ledger in
-schema 14, audience-bound learning in schema 15, and verified per-turn sender
-records in schema 16. Schemas 17–19 preserve original ownership, record
-reply-time room access and separate private learning by verified speaker. Schema
-20 adds bot provenance and tracks linked Discord memory owners. Existing global
-evidence stays in the operator review collection. Back up with the currently
-installed pre-upgrade executable, export memories, and preserve the existing
-OpenClaw configuration and any `moon.toml` before an authorised deployment. The
-export is a generated view, not a replacement for the complete SQLite backup.
-Keep the previous binary and its matching database backup: an older binary must
-not open the newer schema.
+Moon 2.9.1 accepts schemas 6 through 21 and migrates to schema 21. The migration
+links a human citation to a verified delivered proposal when both exist. Keep
+the pre-upgrade schema-20 backup for rollback to 2.9.0. L1/L2 introduced schema
+8; source storage, reviewed learning and topics add schemas 9–11,
+retrieval-validity optimisation adds schema 12, and job diagnostics adds
+schema 13. Moon 2.8.0 adds the session retry ledger in schema 14, audience-bound
+learning in schema 15, and verified per-turn sender records in schema 16.
+Schemas 17–19 preserve original ownership, record reply-time room access and
+separate private learning by verified speaker. Schema 20 adds bot provenance and
+tracks linked Discord memory owners. Existing global evidence stays in the
+operator review collection. Back up with the currently installed pre-upgrade
+executable, export memories, and preserve the existing OpenClaw configuration
+and any `moon.toml` before an authorised deployment. The export is a generated
+view, not a replacement for the complete SQLite backup. Keep the previous binary
+and its matching database backup: an older binary must not open the newer
+schema.
 
 Validate a copy with the new binary, inspect the L2 preview and proposed
 actions, and verify the selected model route before enabling L2 in the live

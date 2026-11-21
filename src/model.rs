@@ -85,7 +85,8 @@ pub struct IngestOutcome {
     pub changed: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     Lexical,
     Semantic,
@@ -196,8 +197,17 @@ pub struct ContextRequest {
     pub evidence_per_memory: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveredReply {
+    pub message_id: String,
+    pub quote: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextCitation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior_reply: Option<DeliveredReply>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_sender: Option<String>,
     pub session_id: String,
@@ -537,6 +547,13 @@ fn render_context_memory(memory: &ContextMemory) -> String {
                 citation.end_byte,
                 untrusted_fence(&citation.quote),
             ));
+            if let Some(reply) = &citation.prior_reply {
+                output.push_str(&format!(
+                    "\nPreceding delivered assistant reply (Discord message {})\n\n{}",
+                    inline_json(&reply.message_id),
+                    untrusted_fence(&reply.quote)
+                ));
+            }
         }
     }
     output.push('\n');

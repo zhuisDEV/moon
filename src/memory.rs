@@ -142,7 +142,9 @@ impl Store {
                 || scope != input.scope
                 || existing_title != sanitized_title
                 || completed_at_ms != input.completed_at_ms
-                || metadata_json != redacted_metadata.value
+                || (metadata_json != redacted_metadata.value
+                    && !(admission.is_some()
+                        && legacy_accepted_metadata(&metadata_json, &redacted_metadata.value)))
                 || previous_admission.as_deref() != admission
             {
                 anyhow::bail!(
@@ -414,9 +416,9 @@ impl Store {
             }
             packet.truncated = true;
             memory.citations.truncate(1);
-            if let Some(citation) = memory.citations.first_mut() {
-                truncate_citation_quote(citation, 240);
-            }
+            memory
+                .citations
+                .retain_mut(|citation| truncate_citation_quote(citation, 240));
             if push_if_fits(&mut packet, memory.clone()) {
                 continue;
             }
@@ -426,9 +428,9 @@ impl Store {
             // Keep recency metadata and a useful claim even in a small packet.
             // Shorten its exact quote before dropping the whole memory.
             for quote_chars in [240, 120, 64] {
-                if let Some(citation) = memory.citations.first_mut() {
-                    truncate_citation_quote(citation, quote_chars);
-                }
+                memory
+                    .citations
+                    .retain_mut(|citation| truncate_citation_quote(citation, quote_chars));
                 let mut shell = memory.clone();
                 shell.content.clear();
                 packet.memories.push(shell);
@@ -901,7 +903,8 @@ impl Store {
         }
         let mut statement = self.connection.prepare(
             "SELECT e.session_id, d.source_uri, c.start_byte, c.end_byte,
-                    c.start_line, c.end_line, c.quote, t.sender
+                    c.start_line, c.end_line, c.quote, t.sender,
+                    json_extract(c.prior_reply,'$.message_id'),json_extract(c.prior_reply,'$.quote')
              FROM memory_citations c
              JOIN evidence_sessions e ON e.id = c.evidence_session_id
              JOIN documents d ON d.id = c.evidence_document_id
@@ -915,7 +918,18 @@ impl Store {
         )?;
         Ok(statement
             .query_map(params![document_id, limit as i64], |row| {
+                let prior_reply = row
+                    .get::<_, Option<String>>(8)?
+                    .zip(row.get(9)?)
+                    .map(|(message_id, quote)| crate::model::DeliveredReply { message_id, quote });
+                let quote = row.get::<_, String>(6)?;
                 Ok(ContextCitation {
+                    quote: if prior_reply.is_some() {
+                        quote
+                    } else {
+                        truncate_chars(&quote, MAX_CITATION_QUOTE_CHARS)
+                    },
+                    prior_reply,
                     verified_sender: row.get(7)?,
                     session_id: row.get(0)?,
                     source_uri: row.get(1)?,
@@ -923,11 +937,25 @@ impl Store {
                     end_byte: row.get::<_, i64>(3)? as usize,
                     start_line: row.get::<_, i64>(4)? as usize,
                     end_line: row.get::<_, i64>(5)? as usize,
-                    quote: truncate_chars(&row.get::<_, String>(6)?, MAX_CITATION_QUOTE_CHARS),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+// The host can replay a still-pending pre-schema-21 advancement after an
+// upgrade. Compare all its original metadata without backfilling a new link.
+fn legacy_accepted_metadata(stored: &str, incoming: &str) -> bool {
+    let (Ok(serde_json::Value::Object(stored)), Ok(serde_json::Value::Object(mut incoming))) =
+        (serde_json::from_str(stored), serde_json::from_str(incoming))
+    else {
+        return false;
+    };
+    !stored.contains_key("accepted_position")
+        && stored.get("source").and_then(|v| v.as_str()) == Some("openclaw")
+        && stored.contains_key("advancement_hash")
+        && incoming.remove("accepted_position").is_some()
+        && stored == incoming
 }
 
 pub(crate) fn distill_in_transaction(
@@ -1739,7 +1767,7 @@ pub(crate) struct EvidenceRecord {
 impl EvidenceRecord {
     /// The source speaker and, for older transcripts, other recorded text.
     /// Framing labels are outside both roles. Plain operator evidence has no envelope.
-    fn message_parts(&self) -> (Option<&str>, Option<&str>) {
+    pub(crate) fn message_parts(&self) -> (Option<&str>, Option<&str>) {
         if let Some(bot) = self.body.strip_prefix("Bot:\n") {
             return if self.sender_kind.as_deref() == Some("bot") {
                 (Some(bot), None)
@@ -1982,10 +2010,18 @@ fn align_source_citation(
     Ok(())
 }
 
-fn truncate_citation_quote(citation: &mut ContextCitation, max_chars: usize) {
+fn truncate_citation_quote(citation: &mut ContextCitation, max_chars: usize) -> bool {
+    if let Some(reply) = &citation.prior_reply
+        && (reply.quote.chars().count() > max_chars || citation.quote.chars().count() > max_chars)
+    {
+        // If a complete pair cannot fit, dropping it preserves both roles.
+        // Showing a bare "Okay" as the proof would lose what was accepted.
+        return false;
+    }
     truncate_exact_prefix(&mut citation.quote, max_chars);
     citation.end_byte = citation.start_byte + citation.quote.len();
     citation.end_line = citation.start_line + citation.quote.matches('\n').count();
+    true
 }
 
 fn truncate_source_citation_quote(citation: &mut SourceClaimCitation, max_chars: usize) {
@@ -2143,6 +2179,7 @@ mod tests {
     #[test]
     fn truncated_citation_keeps_exact_bytes_and_lines() {
         let mut citation = ContextCitation {
+            prior_reply: None,
             verified_sender: None,
             session_id: "session".to_string(),
             source_uri: "evidence://session".to_string(),

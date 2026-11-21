@@ -1,3 +1,4 @@
+import { hookModel, modelRunner } from "./recall-fixture.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -119,6 +120,7 @@ Deno.test({
       const identityRuntime = {
         config: { current: () => current },
         agent: {
+          runEmbeddedAgent: modelRunner(),
           resolveAgentDir: (cfg: StorageConfig, id: string) =>
             cfg.agents?.entries[id]?.agentDir ??
               join(host, "agents", id, "agent"),
@@ -210,6 +212,7 @@ Deno.test({
           sessionKey = "agent:main:" + sessionId;
         const id = "user-entry-" + index;
         const ctx = {
+          ...hookModel,
           agentId: "main",
           sessionId,
           sessionKey,
@@ -347,6 +350,7 @@ Deno.test({
             currentUserMessageId: id,
             currentUserMessage: text,
           }, {
+            ...hookModel,
             channel: "discord",
             accountId: "default",
             trigger: "user",
@@ -387,7 +391,8 @@ Deno.test({
             owner: String(row.sender),
           };
         };
-        const history = "Show our chat history",
+        const history =
+            "Show the original messages across all my authorised chats",
           ordinaryText = "The other Discord user's synthetic label is apricot.";
         assert.equal(
           database.prepare(
@@ -490,6 +495,7 @@ Deno.test({
           Buffer.byteLength(native),
         );
         const ctx = {
+          ...hookModel,
           agentId: "main",
           sessionId,
           sessionKey,
