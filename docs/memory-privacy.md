@@ -1,6 +1,6 @@
 # Public and private memory
 
-Moon 2.9.1 uses schema 21. It checks ownership independently for saved facts,
+Moon 2.9.2 uses schema 21. It checks ownership independently for saved facts,
 original messages and delivered replies used as evidence. See the
 [migration and rollback guide](migration.md#schema-21-delivered-reply-citations).
 
@@ -232,7 +232,7 @@ cannot enter audience-based recall or learning. Other operator collections
 remain available through the local administrative CLI.
 
 All examples below assume that `moon_copy` points to the rehearsal directory and
-`candidate` to the 2.9.1 binary. The database path is explicit so an inherited
+`candidate` to the 2.9.2 binary. The database path is explicit so an inherited
 environment variable cannot select the live database.
 
 ```sh

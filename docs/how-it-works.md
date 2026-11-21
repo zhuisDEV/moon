@@ -5,7 +5,7 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-Moon 2.9.1 uses database schema 21. For installation, start with
+Moon 2.9.2 uses database schema 21. For installation, start with
 [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
