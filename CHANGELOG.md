@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.9.3 - 2026-11-22
+
+- Give a slow OpenClaw Gateway one more native readiness check within the
+  two-minute startup limit. Moon verifies that the same service process passes
+  the check. A startup failure still rolls back the update.
+- Cover both recognised slow-start responses, a genuine startup failure, and a
+  failed recheck in regression tests.
+
+Moon 2.9.3 uses database schema **21** and accepts upgrades from schemas
+**6–21**. Back up with the installed binary before updating. The installed
+updater controls Gateway startup during the upgrade. The signed six-file bundle
+refreshes the managed OpenClaw skill. **Refresh separately installed copies of
+`SKILL.md`** and use the guides from this tag.
+
 ## 2.9.2 - 2026-11-22
 
 - Document the verified reader list required by `moon privacy history` and how

@@ -542,7 +542,7 @@ does not compile topics.
 
 ## Before deploying to an existing runtime
 
-Moon 2.9.2 accepts schemas 6 through 21 and migrates to schema 21. The migration
+Moon 2.9.3 accepts schemas 6 through 21 and migrates to schema 21. The migration
 links a human citation to a verified delivered proposal when both exist. Keep
 the pre-upgrade schema-20 backup for rollback to 2.9.0. L1/L2 introduced schema
 8; source storage, reviewed learning and topics add schemas 9–11,

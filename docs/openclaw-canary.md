@@ -359,7 +359,7 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.9.2, back up with the installed pre-upgrade binary,
+Before deploying Moon 2.9.3, back up with the installed pre-upgrade binary,
 retain configuration and rehearse schema 21 on a copy. Preserve the prior binary
 with its matching database backup. The signed release accepts schemas 6–21.
 Rollback to 2.9.0 requires its schema-20 backup. Follow the
