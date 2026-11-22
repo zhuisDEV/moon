@@ -16,7 +16,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tar::Archive;
 use url::Url;
 use wait_timeout::ChildExt;
@@ -830,6 +830,40 @@ pub struct SystemOpenClaw {
     executable: PathBuf,
 }
 
+// OpenClaw can report partial readiness either as a result code or as a
+// health-check timeout accompanied by separate HTTP liveness and readiness.
+fn starting_gateway_pid(stdout: &[u8]) -> Option<u32> {
+    let report: Value = serde_json::from_slice(stdout).ok()?;
+    if report["action"] != "start" || report["ok"] != false {
+        return None;
+    }
+    let warnings = report["warnings"].as_array()?;
+    if report["result"] != "still-starting" {
+        let timeout_seconds = report["error"]
+            .as_str()?
+            .strip_prefix("Gateway start timed out after ")?
+            .strip_suffix("s waiting for health checks.")?;
+        if !report["result"].is_null()
+            || timeout_seconds.parse::<u32>().is_err()
+            || !warnings
+                .iter()
+                .any(|w| w == "Gateway HTTP readiness: /healthz=200; /readyz=503.")
+        {
+            return None;
+        }
+    }
+    let runtime = warnings.iter().find_map(|w| {
+        w.as_str()?
+            .strip_prefix("Service runtime: status=running, ")
+    })?;
+    runtime
+        .split(", ")
+        .find_map(|field| field.strip_prefix("pid="))?
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0)
+}
+
 impl SystemOpenClaw {
     pub fn discover() -> Result<Self> {
         let executable = resolve_path_executable("openclaw").ok_or_else(|| UpdateFailure {
@@ -840,14 +874,26 @@ impl SystemOpenClaw {
     }
 
     fn run(&self, args: &[&str]) -> Result<Output> {
-        // OpenClaw waits for gateway readiness during start (up to 45 seconds
-        // on macOS), and a full plugin doctor can also exceed 30 seconds.
-        // Keep these checks bounded without killing a healthy update/rollback.
-        let timeout = match args {
-            ["gateway", "start", "--json"] | ["plugins", "doctor"] => Duration::from_secs(120),
-            _ => Duration::from_secs(30),
+        let timeout = if args == ["plugins", "doctor"] {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(30)
         };
-        let output = run_output_bounded(&self.executable, args, 512 * 1024, timeout)?;
+        let output = self.output_before(args, Instant::now() + timeout)?;
+        Self::check_output(args, output)
+    }
+
+    fn output_before(&self, args: &[&str], deadline: Instant) -> Result<Output> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(
+            !remaining.is_zero(),
+            "OpenClaw command deadline expired: {}",
+            args.join(" ")
+        );
+        run_output_bounded(&self.executable, args, 512 * 1024, remaining)
+    }
+
+    fn check_output(args: &[&str], output: Output) -> Result<Output> {
         if !output.status.success() {
             let message = bounded_command_error(&output);
             return fail(
@@ -856,6 +902,17 @@ impl SystemOpenClaw {
             );
         }
         Ok(output)
+    }
+
+    fn gateway_is_running(&self, pid: u32, deadline: Instant) -> Result<bool> {
+        let args = &["gateway", "status", "--no-probe", "--json"];
+        let output = Self::check_output(args, self.output_before(args, deadline)?)?;
+        let report: Value = serde_json::from_slice(&output.stdout)
+            .context("OpenClaw gateway status returned invalid JSON")?;
+        let service = &report["service"];
+        Ok(service["loaded"] == true
+            && service["runtime"]["status"] == "running"
+            && service["runtime"]["pid"].as_u64() == Some(u64::from(pid)))
     }
 
     fn stop_with_worker_check(&self, worker_is_running: impl Fn() -> Result<bool>) -> Result<()> {
@@ -892,7 +949,36 @@ impl OpenClawControl for SystemOpenClaw {
     }
 
     fn start(&self) -> Result<()> {
-        self.run(&["gateway", "start", "--json"])?;
+        let start = &["gateway", "start", "--json"];
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let first = self.output_before(start, deadline)?;
+        if first.status.success() {
+            return Ok(());
+        }
+        let Some(pid) = starting_gateway_pid(&first.stdout) else {
+            return Self::check_output(start, first).map(|_| ());
+        };
+        if !self.gateway_is_running(pid, deadline)? {
+            return fail(
+                "gateway_unreachable",
+                "OpenClaw gateway process changed or stopped during startup",
+            );
+        }
+        // On an already-running service, OpenClaw repeats its native startup
+        // checks, including HTTP readiness. An RPC health probe alone is weaker.
+        let retry = Self::check_output(start, self.output_before(start, deadline)?)?;
+        let report: Value = serde_json::from_slice(&retry.stdout)
+            .context("OpenClaw gateway start recheck returned invalid JSON")?;
+        if report["action"] != "start"
+            || report["ok"] != true
+            || report["result"] != "already-running"
+            || !self.gateway_is_running(pid, deadline)?
+        {
+            return fail(
+                "gateway_unreachable",
+                "OpenClaw could not confirm readiness of the same gateway process",
+            );
+        }
         Ok(())
     }
 
@@ -3951,6 +4037,7 @@ printf '%s\n' '{"action":"stop","ok":true}'
     #[derive(Default)]
     struct MockOpenClaw {
         events: Mutex<Vec<String>>,
+        gateway_start: Option<SystemOpenClaw>,
         stop_failure_call: Option<usize>,
         validation_failures: Mutex<usize>,
         ready_failures: Mutex<usize>,
@@ -4006,6 +4093,9 @@ printf '%s\n' '{"action":"stop","ok":true}'
                     .path();
                 let journal: UpdateJournal = serde_json::from_slice(&fs::read(path)?)?;
                 assert!(journal.changed && journal.gateway_stopped && !journal.current_switched);
+            }
+            if let Some(gateway) = &self.gateway_start {
+                gateway.start()?;
             }
             Ok(())
         }
@@ -4456,6 +4546,139 @@ done
             openclaw.events.lock().unwrap().as_slice(),
             ["stop", "start", "ready", "validate:2.2.0"]
         );
+    }
+
+    #[cfg(unix)]
+    mod gateway_start {
+        use super::*;
+
+        const START: &str = "gateway start --json";
+        const STATUS: &str = "gateway status --no-probe --json";
+        const STARTING: &str = r#"{"action":"start","ok":false,"result":"still-starting","warnings":["Service runtime: status=running, state=running, pid=42"]}"#;
+        const TIMED_OUT: &str = r#"{"action":"start","ok":false,"error":"Gateway start timed out after 45s waiting for health checks.","warnings":["Service runtime: status=running, pid=42, lastExit=0","Gateway HTTP readiness: /healthz=200; /readyz=503."]}"#;
+        const RUNNING: &str =
+            r#"{"service":{"loaded":true,"runtime":{"status":"running","pid":42}}}"#;
+        const READY: &str = r#"{"action":"start","ok":true,"result":"already-running"}"#;
+
+        fn scripted_gateway(dir: &Path, replies: &[(&str, i32, &str)]) -> SystemOpenClaw {
+            let mut script = String::from(
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n\
+             call=$(awk 'END {print NR}' \"$0.calls\")\ncase \"$call:$*\" in\n",
+            );
+            for (index, (command, exit_code, json)) in replies.iter().enumerate() {
+                script.push_str(&format!(
+                    "\"{}:{command}\")\ncat <<'JSON'\n{json}\nJSON\nexit {exit_code} ;;\n",
+                    index + 1
+                ));
+            }
+            script.push_str("*) echo 'unexpected gateway command' >&2; exit 99 ;;\nesac\n");
+            let executable = dir.join("openclaw");
+            write_new_file(&executable, script.as_bytes(), 0o700).unwrap();
+            SystemOpenClaw { executable }
+        }
+
+        #[test]
+        fn slow_gateway_start_commits_after_the_same_service_is_ready() {
+            for (exit_code, pending) in [(2, STARTING), (1, TIMED_OUT)] {
+                let fixture = transaction_fixture();
+                let gateway = scripted_gateway(
+                    &fixture.context.home,
+                    &[
+                        (START, exit_code, pending),
+                        (STATUS, 0, RUNNING),
+                        (START, 0, READY),
+                        (STATUS, 0, RUNNING),
+                    ],
+                );
+                let openclaw = MockOpenClaw {
+                    gateway_start: Some(gateway),
+                    ..Default::default()
+                };
+                let result = apply_update(
+                    &fixture.context,
+                    &fixture.release,
+                    &fixture.archive,
+                    &openclaw,
+                )
+                .unwrap();
+                assert!(result.changed && result.gateway_reachable);
+                assert_eq!(result.to_version, "2.2.0");
+                assert_eq!(
+                    *openclaw.events.lock().unwrap(),
+                    ["stop", "start", "ready", "validate:2.2.0"]
+                );
+            }
+        }
+
+        #[test]
+        fn genuine_gateway_start_failure_rolls_back_without_retrying_candidate() {
+            let fixture = transaction_fixture();
+            let failure = r#"{"action":"start","ok":false,"error":"Gateway start failed: activated plugins reported load errors.","warnings":["Service runtime: status=running, pid=42","Gateway HTTP readiness: /healthz=200; /readyz=503."]}"#;
+            let gateway = scripted_gateway(
+                &fixture.context.home,
+                &[
+                    (START, 1, failure),
+                    (
+                        START,
+                        0,
+                        r#"{"action":"start","ok":true,"result":"started"}"#,
+                    ),
+                ],
+            );
+            let openclaw = MockOpenClaw {
+                gateway_start: Some(gateway),
+                ..Default::default()
+            };
+            let error = apply_update(
+                &fixture.context,
+                &fixture.release,
+                &fixture.archive,
+                &openclaw,
+            )
+            .unwrap_err();
+            assert_eq!(error_code(&error), Some("rollback_completed"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("activated plugins reported load errors")
+            );
+            assert_eq!(
+                fs::canonicalize(fixture.context.home.join("current")).unwrap(),
+                fs::canonicalize(fixture.context.home.join("releases/2.1.0")).unwrap()
+            );
+            assert_eq!(
+                *openclaw.events.lock().unwrap(),
+                ["stop", "start", "stop", "start", "ready", "validate:2.1.0"]
+            );
+        }
+
+        #[test]
+        fn gateway_start_recheck_requires_readiness_from_the_original_process() {
+            let replacement =
+                r#"{"service":{"loaded":true,"runtime":{"status":"running","pid":99}}}"#;
+            for replies in [
+                vec![(START, 2, STARTING), (STATUS, 0, replacement)],
+                vec![
+                    (START, 2, STARTING),
+                    (STATUS, 0, RUNNING),
+                    (START, 1, TIMED_OUT),
+                ],
+                vec![
+                    (START, 2, STARTING),
+                    (STATUS, 0, RUNNING),
+                    (START, 0, READY),
+                    (STATUS, 0, replacement),
+                ],
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let gateway = scripted_gateway(temp.path(), &replies);
+                gateway
+                    .start()
+                    .expect_err("readiness was never confirmed for the original process");
+                let calls = fs::read_to_string(temp.path().join("openclaw.calls")).unwrap();
+                assert!(calls.lines().eq(replies.iter().map(|(args, _, _)| *args)));
+            }
+        }
     }
 
     #[test]
