@@ -21,6 +21,9 @@ OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
 [skill update instructions](docs/updating.md#refresh-the-agent-skill).
 
+During a signed update, let Moon finish its Gateway readiness checks and any
+rollback before starting another update.
+
 ## What runs automatically
 
 The OpenClaw main model selected for each chat turn decides whether to use saved

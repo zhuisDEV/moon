@@ -226,7 +226,8 @@ including `backup`, can migrate before backing up. A Markdown export is not a
 database backup.
 
 Signed updates stop workers, back up, switch the compatibility set and migrate
-transactionally. They preserve source/topic/session jobs. Rehearse schema 21 on
+transactionally. They preserve source/topic/session jobs. Let the updater finish
+Gateway readiness checks and any rollback before retrying. Rehearse schema 21 on
 a copy. Never open a migrated database with an older binary or overwrite a
 versioned installed binary manually. If `recovery_required: true`, authorised
 canonical `moon update` performs recovery; after `retry_required: true`, rerun

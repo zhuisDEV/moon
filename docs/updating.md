@@ -215,10 +215,13 @@ checks free space, database health and leases, minimum OS/OpenClaw versions, the
 Moon-owned OpenClaw configuration fields, and prints the mutation plan. It does
 not stage files or stop the gateway.
 
-Starting with Moon 2.6.6, gateway startup and the full OpenClaw plugin doctor
-each have a two-minute execution limit. These commands can exceed 30 seconds on
-OpenClaw 2026.9.7 even when healthy. Other command limits, independent readiness
-checks, plugin validation, and rollback safeguards remain in place.
+Gateway startup and the full OpenClaw plugin doctor each have a two-minute
+execution limit. The development updater gives a slow Gateway a second readiness
+check within the original startup deadline. If OpenClaw reports that the Gateway
+is still starting, Moon confirms the service PID and repeats OpenClaw's native
+startup check once. The same running process must pass. An explicit startup
+failure or a failed recheck triggers rollback. The installed binary controls
+this behaviour for both update and recovery.
 
 ## HTTPS proxies and CA trust
 
