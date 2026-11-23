@@ -8,6 +8,7 @@
 - Cover the FO packing list question with both an empty lookup and a rejected
   candidate. Both paths preserve the question and available skill context.
   Existing audience checks and original-message restrictions continue to apply.
+- Update the locked Rust `url` dependency to 2.5.9 for RUSTSEC-2026-0592.
 
 Moon 2.9.4 uses schema **21** and accepts signed updates from schemas **6–21**.
 The six-file compatibility bundle refreshes the managed OpenClaw skill.
