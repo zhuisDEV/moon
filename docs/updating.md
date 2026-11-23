@@ -6,7 +6,7 @@ is for an existing Moon runtime. For the data changes, see
 
 ## Upgrade checklist
 
-Moon **2.9.3** accepts **schemas 6–21** and migrates to **schema 21**. To roll
+Moon **2.9.4** accepts **schemas 6–21** and migrates to **schema 21**. To roll
 back to 2.9.0, restore its matching schema-20 backup. On the first audience
 migration, old global memories enter operator review and the public collection
 starts empty. The operator may explicitly assign the frozen legacy collection to
@@ -36,8 +36,8 @@ shared agents as part of the cutover. Existing model settings are preserved.
    new private paths:
 
    ```bash
-   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.9.3.sqlite
-   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.9.3.md
+   ~/.moon/bin/moon backup --destination /private/backup/moon-before-2.9.4.sqlite
+   ~/.moon/bin/moon export --destination /private/backup/MEMORY-before-2.9.4.md
    ```
 
    Create the destination directory with mode `0700`. Copy `~/.moon/moon.toml`
@@ -48,9 +48,9 @@ shared agents as part of the cutover. Existing model settings are preserved.
 3. Review the signed plan, then apply when ready for a Gateway restart:
 
    ```bash
-   ~/.moon/bin/moon update --version=2.9.3 --check
-   ~/.moon/bin/moon update --version=2.9.3 --dry-run
-   ~/.moon/bin/moon update --version=2.9.3
+   ~/.moon/bin/moon update --version=2.9.4 --check
+   ~/.moon/bin/moon update --version=2.9.4 --dry-run
+   ~/.moon/bin/moon update --version=2.9.4
    ```
 
    Read the plan and confirmation. If active leases are reported, allow work to
@@ -67,7 +67,7 @@ shared agents as part of the cutover. Existing model settings are preserved.
    openclaw plugins doctor
    ```
 
-   Expect version `2.9.3`, schema `21`, integrity `ok`, zero logical violations
+   Expect version `2.9.4`, schema `21`, integrity `ok`, zero logical violations
    and the loaded adapter from the selected release. Verify a fresh conversation
    and current injection evidence separately from storage health. See
    [verification](getting-started.md#verify-the-installation).
@@ -76,7 +76,7 @@ shared agents as part of the cutover. Existing model settings are preserved.
 
 ### Six-file compatibility bridge
 
-Moon 2.9.3 retains the six signed payloads introduced by the 2.7.0 bridge. The
+Moon 2.9.4 retains the six signed payloads introduced by the 2.7.0 bridge. The
 published 2.6.6 updater accepts this archive shape. The binary, adapter files
 and `SKILL.md` are in the signed archive. Install the supporting Markdown guides
 from the matching release tag. For local development builds, check both the
@@ -84,17 +84,17 @@ commit reported by `moon --json --version` and the database schema.
 
 ## Refresh the agent skill
 
-**`SKILL.md` changed in 2.9.3. Update it wherever you previously copied it.**
+**`SKILL.md` changed in 2.9.4. Update it wherever you previously copied it.**
 The native updater refreshes its managed OpenClaw skill; it does not find or
 update separate Codex/other-agent copies. Verify the installed
-`moon-version: 2.9.3` marker. The updated skill has pinned online links so it
+`moon-version: 2.9.4` marker. The updated skill has pinned online links so it
 works without local guides.
 
 To install the complete guide set, use a reviewed checkout of the **same tag**:
 
 ```bash
-git clone --branch v2.9.3 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.9.3-guides
-cd moon-2.9.3-guides
+git clone --branch v2.9.4 --depth 1 https://github.com/zhuisDEV/moon.git moon-2.9.4-guides
+cd moon-2.9.4-guides
 ```
 
 For an existing skill, first preserve its entire directory in a new private
@@ -308,7 +308,7 @@ OpenClaw configuration or infer provider credentials.
 
 ```bash
 moon update
-moon update --version=2.9.3
+moon update --version=2.9.4
 moon --json update --yes
 ```
 
@@ -437,7 +437,7 @@ add the newer updater's rollback behaviour to an old executable.
 ```text
 ~/.moon/
   bin/moon -> ../current/bin/moon
-  current -> releases/2.9.3
+  current -> releases/2.9.4
   openclaw-plugin -> current/openclaw-plugin
   releases/<version>/
   state/moon.sqlite

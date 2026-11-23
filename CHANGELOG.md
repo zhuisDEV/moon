@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.9.4 - 2026-11-23
+
+- Let the replying agent use an authorised skill when an optional Moon lookup
+  finds no supporting record. Explicit requests for saved memory or original
+  messages can still receive a notice about that source.
+- Cover the FO packing list question with both an empty lookup and a rejected
+  candidate. Both paths preserve the question and available skill context.
+  Existing audience checks and original-message restrictions continue to apply.
+- Update the locked Rust `url` dependency to 2.5.9 for RUSTSEC-2026-0592.
+
+Moon 2.9.4 uses schema **21** and accepts signed updates from schemas **6–21**.
+The six-file compatibility bundle refreshes the managed OpenClaw skill.
+**Refresh separately installed copies of `SKILL.md`** and use the guides from
+this tag.
+
 ## 2.9.3 - 2026-11-22
 
 - Give a slow OpenClaw Gateway one more native readiness check within the

@@ -5,7 +5,7 @@ turns. One Rust binary owns the full path. SQLite stores the evidence, memories,
 indexes, citations, and runtime state; FTS5 and statically linked `sqlite-vec`
 provide search. QMD and a separate vector service are not involved.
 
-Moon 2.9.3 uses database schema 21. For installation, start with
+Moon 2.9.4 uses database schema 21. For installation, start with
 [getting started](getting-started.md); for an existing runtime, follow
 [updating](updating.md), including its `SKILL.md` refresh guidance.
 
@@ -332,9 +332,9 @@ require the hook; see the
 [canary settings](openclaw-canary.md#native-recall-compatibility).
 
 The model can request up to three grounded searches, request recent original
-messages, decline recall or ask for clarification. Original-message requests
-default to the current conversation. Each search uses the same reader grant,
-count and character limits. On historical questions with permission for
+messages, decline recall or flag an ambiguous reference. Original-message
+requests default to the current conversation. Each search uses the same reader
+grant, count and character limits. On historical questions with permission for
 originals, a matching current record can carry dated sources and up to two
 directly linked earlier revisions. Their timestamps describe when something was
 recorded. The model judges what the sources establish about the date in the
@@ -342,10 +342,14 @@ question.
 
 After retrieval the same chat model selects supported IDs. Moon renders the
 corresponding records, preserves source speakers and rechecks access before
-returning a private contribution. Empty selections produce a short unavailable
-notice. An opt-out makes zero stored-content reads. If OpenClaw cannot identify
-or run the turn's model, the adapter contributes no stored evidence. Legacy
-assembly needs a host-resolved model and has access to explicit publications.
+returning a private contribution. When optional recall yields no supporting
+record, Moon adds nothing to the prompt about the search. The replying model can
+use an authorised skill. If the user limits the answer to saved memory or
+requests original messages, Moon can report that the requested source supplied
+no supporting record. An opt-out makes zero stored-content reads. If OpenClaw
+cannot identify or run the turn's model, the adapter contributes no stored
+evidence. Legacy assembly needs a host-resolved model and has access to explicit
+publications.
 
 The operator CLI below demonstrates a separate scoped lookup that can also
 include reviewed sources and topics.

@@ -2,7 +2,7 @@
 
 For installation and ordinary upgrades, start with
 [Getting started](getting-started.md) or [Updating](updating.md). The tagged
-2.9.3 source includes this operator check. The signed release uses the six-file
+2.9.4 source includes this operator check. The signed release uses the six-file
 binary bundle. Install the updated
 [skill and guides](updating.md#refresh-the-agent-skill) with the release.
 

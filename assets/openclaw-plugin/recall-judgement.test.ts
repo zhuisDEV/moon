@@ -181,7 +181,7 @@ Deno.test("history scopes default to the current conversation and never attach t
 Deno.test("historical questions limited to saved facts retain dates without requesting original messages", async () => {
   const currentText = "As of June, where was my key? Use only saved facts.";
   const f = fixture({
-    intent: "facts",
+    intent: "saved_facts_only",
     queries: [{ spans: ["As of June", "my key"], includeTimeline: false }],
   });
   const plan = await planTurnRecall(f.api, settings, ctx, { currentText });
@@ -230,6 +230,8 @@ Deno.test("an invalid plan cannot author a query, choose sources or discard an o
   for (
     const plan of [
       { intent: "facts", queries: [] },
+      { intent: "saved_facts_only", queries: [] },
+      { intent: "saved_facts_only", queries: [timeline] },
       {
         intent: "facts",
         queries: [{ spans: ["new words"], includeTimeline: false }],

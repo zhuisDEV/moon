@@ -325,8 +325,12 @@ Deno.test("identical admission IDs in separate chats do not share retrieval", as
   }
 });
 
-Deno.test("empty recall packets record a non-injection", async () => {
+Deno.test("a saved-memory-only miss reports the source and records a non-injection", async () => {
   const f = fixture({
+    judge: (turn) => ({
+      intent: "saved_facts_only",
+      queries: [{ spans: [turn.currentText], includeTimeline: false }],
+    }),
     result: () => ({
       code: 0,
       stdout: JSON.stringify(envelope(null)),
@@ -334,7 +338,17 @@ Deno.test("empty recall packets record a non-injection", async () => {
     }),
   });
   try {
-    assert(JSON.stringify(await f.prepare()).includes("no permitted evidence"));
+    equal(
+      await f.prepare({
+        ...event,
+        currentUserMessage:
+          "What do my saved memories say about the SQLite plan?",
+      }),
+      {
+        prependContext:
+          "Moon supplied no matching saved fact for this request.",
+      },
+    );
     equal(f.calls.length, 2);
     assert(f.calls[1].includes("mark-injection"));
     assert(!f.calls[1].includes("--injected"));
@@ -863,8 +877,7 @@ Deno.test("Moon binds private recall to the audience of the admitted message, ch
       ...ctx,
       runId: "too-long",
     });
-    assert(oversized?.prependContext.includes("no permitted evidence"));
-    assert(!oversized.prependContext.includes(packet));
+    equal(oversized, undefined);
     assert(f.logs.at(-1)?.includes("injected=false"));
 
     acknowledgeOwners = false;
@@ -1177,7 +1190,10 @@ Deno.test("Discord DM recall with native memory disabled follows the admitted hu
         assert(result?.prependContext.includes("unavailable"));
       }
       if (source === "clarify") {
-        assert(result?.prependContext.includes("clarify"));
+        equal(
+          result?.prependContext,
+          "Moon could not identify which saved fact or conversation the request refers to.",
+        );
       }
     }
     planned = [];
@@ -1793,6 +1809,54 @@ Deno.test("follow-up planning receives only already-visible verified excerpts fr
     equal(f.calls.length, 0);
   } finally {
     await f.service.stop();
+  }
+});
+
+Deno.test("a Moon miss leaves the FO packing list question available to the afw-stock skill", async () => {
+  const question = "What FO packing list do you have?";
+  const input = {
+    ...event,
+    currentUserMessage: question,
+    prompt: question,
+    messages: [
+      {
+        role: "developer",
+        content: "Available skill: afw-stock (FO shipments and packing lists).",
+      },
+      { role: "user", content: question },
+    ],
+  };
+  const original = structuredClone(input);
+  for (const candidate of [null, "FO ships cut flowers."]) {
+    const judged: string[] = [];
+    const f = fixture({
+      judge: (turn) => {
+        if (!turn.candidates) return fixtureJudgement(turn);
+        judged.push(...turn.candidates.map((row) => row.text));
+        return { ids: [] };
+      },
+      result: () => ({
+        code: 0,
+        stdout: JSON.stringify(envelope(candidate)),
+        stderr: "",
+      }),
+    });
+    try {
+      equal(await f.prepare(input), undefined);
+      equal(input, original);
+      equal(judged, candidate ? [candidate] : []);
+      equal(f.errors, []);
+      equal(JSON.parse(f.inputs[0]!), [{ text: question, temporal: false }]);
+      const [lookup, metric] = f.calls;
+      assert(lookup.includes("recall-candidates"));
+      equal(lookup[lookup.indexOf("--audience-json") + 1], "[]");
+      assert(!lookup.includes("--allow-originals"));
+      assert(
+        metric.includes("mark-injection") && !metric.includes("--injected"),
+      );
+    } finally {
+      await f.service.stop();
+    }
   }
 });
 

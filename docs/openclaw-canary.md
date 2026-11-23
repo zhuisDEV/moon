@@ -11,7 +11,7 @@ canary always uses an explicit temporary runtime and OpenClaw state directory.
 1. OpenClaw identifies the current turn, its model and its audience. The main
    model uses the current request and up to two already-visible verified
    excerpts to decide whether to recall saved facts, request original messages,
-   ask for clarification or answer directly.
+   flag an ambiguous reference or skip recall.
 2. Moon checks the requested sources against the audience grant. An opt-out
    causes zero stored-memory reads. A verified DM with a saved-facts-only grant
    can retrieve eligible facts. On that route, an original-message request
@@ -21,10 +21,11 @@ canary always uses an explicit temporary runtime and OpenClaw state directory.
    Original-message searches default to the current conversation.
 4. When there are eligible candidates, the main model selects supporting IDs.
    Moon rechecks private access, then sends the exact selected records through
-   `before_prompt_build`. An empty selection produces an unavailable notice. The
-   context engine passes messages through when that hook is active. Stock legacy
-   assembly requires a host-resolved model and only supplies explicitly
-   published records.
+   `before_prompt_build`. An optional lookup that finds no support adds no
+   search notice. The FO packing list regression checks that the question stays
+   available for the stock skill after a miss. The context engine passes
+   messages through when that hook is active. Stock legacy assembly requires a
+   host-resolved model and only supplies explicitly published records.
 5. OpenClaw owns transcript compaction. With `moon-local` selected, Moon
    supplies the requested summary through the host's compaction-provider hook.
 6. After an eligible turn, Moon records the accepted human message as private
@@ -359,7 +360,7 @@ The offline hash provider remains suitable only for plumbing tests. Production
 semantic acceptance uses the local multilingual provider and a representative
 recall corpus.
 
-Before deploying Moon 2.9.3, back up with the installed pre-upgrade binary,
+Before deploying Moon 2.9.4, back up with the installed pre-upgrade binary,
 retain configuration and rehearse schema 21 on a copy. Preserve the prior binary
 with its matching database backup. The signed release accepts schemas 6–21.
 Rollback to 2.9.0 requires its schema-20 backup. Follow the
