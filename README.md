@@ -15,7 +15,7 @@ keyword and vector search assemble context for the current question.
 | Capture articles or notes | [Source capture and review](docs/source-storage.md)                         |
 | Combine reviewed sources  | [Topic synthesis](docs/topics.md)                                           |
 
-**Moon 2.9.3 updates `SKILL.md`. Refresh every separately installed copy**,
+**Moon 2.9.4 updates `SKILL.md`. Refresh every separately installed copy**,
 including Codex or other agent folders. The updater refreshes its managed
 OpenClaw skill. The six-file compatibility bundle omits the supporting guides.
 Copy the guides from the same release using the
@@ -27,12 +27,13 @@ rollback before starting another update.
 ## What runs automatically
 
 The OpenClaw main model selected for each chat turn decides whether to use saved
-facts, request original messages, ask for clarification or answer directly. It
+facts, request original messages, flag an ambiguous reference or skip recall. It
 can split a question across up to three subjects. Moon checks the available
 sources and readers before retrieval. Planning takes one tool-free call to the
 chat model. When Moon finds eligible candidates, a second call selects
-supporting record IDs. Moon supplies those exact records to the answer. An
-opt-out makes no stored memory or history reads. Each newly recorded private
+supporting record IDs. Moon supplies those exact records to the answer. When
+optional recall finds no support, the replying model can use a relevant skill.
+An opt-out makes no stored memory or history reads. Each newly recorded private
 chat turn keeps the verified sender ID, question owners and potential readers.
 Confirmed replies have separate delivery owners. L1 interprets the current turn
 and proposes memories worth keeping. A lasting preference keeps the topic or
@@ -81,7 +82,7 @@ count are separate limits. See [packet comparison](docs/packet-selection.md) and
 ## Storage and safety
 
 - Runtime: `~/.moon`; database: `~/.moon/state/moon.sqlite`.
-- Moon 2.9.3 accepts schemas **6–21** and migrates transactionally to schema
+- Moon 2.9.4 accepts schemas **6–21** and migrates transactionally to schema
   **21**. A human citation can link to the verified Discord reply it accepts.
   Keep the schema-20 backup and matching executable for rollback to 2.9.0.
 - SQLite uses WAL with `synchronous=FULL`. Unix runtime directories and data

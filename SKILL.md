@@ -3,12 +3,12 @@ name: moon
 description: Inspect and operate Moon's SQLite memory and OpenClaw integration. Use for health, recall diagnosis, learning configuration, backups, signed updates, source review, topic synthesis and lifecycle recovery.
 ---
 
-<!-- moon-version: 2.9.3 -->
+<!-- moon-version: 2.9.4 -->
 
 # Moon
 
 Moon uses one Rust binary and one canonical SQLite database. Default home is
-`~/.moon`. Moon 2.9.3 uses schema **21**. OpenClaw owns model execution,
+`~/.moon`. Moon 2.9.4 uses schema **21**. OpenClaw owns model execution,
 provider credentials and transcript compaction. Moon creates no second provider
 login.
 
@@ -19,7 +19,9 @@ lookup is for local administration and must stay outside model-facing tools.
 Normal conversations need no manual Moon commands. The OpenClaw main model
 selected for the turn decides whether it needs saved facts, original words or
 clarification before Moon reads stored content. The adapter supplies only
-selected records permitted for every reader. It also records accepted turns,
+selected records permitted for every reader. When optional recall finds no
+matching records, continue with the user's request and any relevant authorised
+skill. Honour any source limits the user set. Moon also records accepted turns,
 runs eligible L1 extraction and drains embeddings. Daily session L2 is disabled
 by default. Source extraction and topic compilation are explicit, separately
 reviewed workflows; no automatic source/topic worker exists.
@@ -84,9 +86,9 @@ configured binary and repair command resolution. Dirty or unknown Git provenance
 is not a verified release. Tests and rehearsals must pass an explicit temporary
 `--home` and database; never test mutations against the live runtime.
 
-This skill changed in 2.9.3. Verify its `moon-version` marker as well as the
+This skill changed in 2.9.4. Verify its `moon-version` marker as well as the
 binary. Native updates refresh their managed OpenClaw `SKILL.md`; separate agent
-copies must be refreshed too. The 2.9.3 six-file compatibility bundle omits
+copies must be refreshed too. The 2.9.4 six-file compatibility bundle omits
 supporting Markdown guides. Install matching `docs/` from the reviewed tag, or
 follow the pinned online guides below. Read only the guide relevant to the
 current task.
@@ -240,16 +242,16 @@ overwrite newer work with an older backup.
 These links are pinned so the skill also works without a local documentation
 tree:
 
-- [Public and private memory, room access and legacy ownership](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/memory-privacy.md)
-- [First setup and verification](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/getting-started.md)
-- [Upgrade checklist, skill refresh and recovery](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/updating.md)
-- [L1/L2 configuration and session reconciliation](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/learning.md)
-- [Source capture, claim review and lifecycle](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/source-storage.md)
-- [Topic compilation and acceptance](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/topics.md)
-- [Isolated real-model canary](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/source-learning-canary.md)
-- [Native recall delivery](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/openclaw-canary.md)
-- [Optional compaction](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/compaction.md)
-- [Recall evaluation](https://github.com/zhuisDEV/moon/blob/v2.9.3/docs/memory-improvement-plan.md)
+- [Public and private memory, room access and legacy ownership](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/memory-privacy.md)
+- [First setup and verification](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/getting-started.md)
+- [Upgrade checklist, skill refresh and recovery](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/updating.md)
+- [L1/L2 configuration and session reconciliation](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/learning.md)
+- [Source capture, claim review and lifecycle](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/source-storage.md)
+- [Topic compilation and acceptance](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/topics.md)
+- [Isolated real-model canary](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/source-learning-canary.md)
+- [Native recall delivery](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/openclaw-canary.md)
+- [Optional compaction](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/compaction.md)
+- [Recall evaluation](https://github.com/zhuisDEV/moon/blob/v2.9.4/docs/memory-improvement-plan.md)
 
 Do not use removed v1 `recall`, `watch`, `cleanse`, `context-engine`, `install`
 or other daemon commands. Use `moon <command> --help` for the installed

@@ -279,7 +279,7 @@ Deno.test("adapter skips retrieval for greetings and empty packets", async () =>
     sessionKey: "agent:main:synthetic",
     messages: emptyMessages,
   });
-  assert(empty.messages[0].content[0].text.includes("no permitted evidence"));
+  assertEquals(empty.messages, emptyMessages);
   assertEquals(emptyCalls.length, 2);
   assert(emptyCalls[1].argv.includes("mark-injection"));
   assert(!emptyCalls[1].argv.includes("--injected"));

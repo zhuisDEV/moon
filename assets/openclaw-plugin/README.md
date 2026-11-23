@@ -2,11 +2,11 @@
 
 This adapter registers the `moon` context engine. The OpenClaw main model
 selected for each turn decides whether to recall saved facts, request original
-messages, ask for clarification or answer directly. Moon supplies the selected
+messages, flag an ambiguous reference or skip recall. Moon supplies the selected
 evidence within the current audience and packet budget, then records eligible
 completed turns for learning.
 
-This 2.9.3 adapter requires the matching schema-21 binary and 2.9.3 skill. See
+This 2.9.4 adapter requires the matching schema-21 binary and 2.9.4 skill. See
 [audience rules and legacy review](../../docs/memory-privacy.md). For a first
 installation, use [getting started](../../docs/getting-started.md). For an
 existing installation, use [updating](../../docs/updating.md); do not copy this
@@ -16,7 +16,7 @@ production.
 ## Installation and upgrade checks
 
 The signed updater treats the binary, adapter, skill and database as one
-compatibility set. Moon 2.9.3 retains the six-file bundle for older updaters.
+compatibility set. Moon 2.9.4 retains the six-file bundle for older updaters.
 Its companion documentation must be installed from the same reviewed release tag
 when an agent needs local references. Refresh separately installed skill copies
 as well. The upgrade guide explains which skill files are updated automatically
@@ -109,8 +109,10 @@ The adapter enforces the following boundaries.
   attempts require related new evidence, changed grounding rules, or an explicit
   session review. Fixed failure phases and codes never include generated claims
   or provider error bodies.
-- An empty evidence selection gives the replying model an unavailable notice.
-  Ambiguous references can produce a clarification request.
+- When optional recall finds no supporting record, the replying model can use
+  the skills authorised for the request. A request limited to saved memory or
+  asking for original messages can receive a notice about that source. If a
+  reference is ambiguous, the replying model decides whether to clarify.
 - The optional `moon_source_learn` tool explicitly processes one queued eligible
   source and submits verbatim proposals for separate operator review. It does
   not approve claims or run from the scheduler.

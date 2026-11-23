@@ -2,12 +2,12 @@
 
 For normal Moon v2 updates, use the signed transaction in
 [updating](updating.md). You do not need to export and reimport your knowledge
-or convert Markdown files to use Moon 2.9.3. New users should follow
+or convert Markdown files to use Moon 2.9.4. New users should follow
 [getting started](getting-started.md). The
 [v1 migration](#legacy-v1-to-v2-migration) below applies only to the retired
 QMD/watcher runtime.
 
-Moon 2.9.3 uses database **schema 21** and accepts schemas 6 through 21. The
+Moon 2.9.4 uses database **schema 21** and accepts schemas 6 through 21. The
 runtime remains `~/.moon`, the database remains `~/.moon/state/moon.sqlite`, and
 the OpenClaw plugin ID remains `moon`. Runtime settings in `moon.toml` survive
 updates; migration does not enable L2, call a model or create a new login.
